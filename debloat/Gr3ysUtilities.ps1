@@ -869,6 +869,8 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
             <Button Name="BtnSelectAll" Content="Select All"/>
             <Button Name="BtnClearSelection" Content="Clear Selection"/>
             <TextBlock Name="SelectedCountText" Text="Selected: 0" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{StaticResource MutedBrush}"/>
+            <Ellipse Name="WinGetStatusDot" Width="8" Height="8" Fill="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="16,0,5,0"/>
+            <TextBlock Name="WinGetStatusText" Text="Checking winget..." VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
           </StackPanel>
           <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
             <Button Name="BtnCheckInstalled" Content="Scan" BorderBrush="{StaticResource OrangeBrush}" ToolTip="Scan the catalog against what's actually installed on this machine and check the boxes for anything found - ready to hand off to Uninstall Selected."/>
@@ -1000,6 +1002,8 @@ $btnStopInstall = $window.FindName('BtnStopInstall')
 $installStatusText = $window.FindName('InstallStatusText')
 $installAppsPanel = $window.FindName('InstallAppsPanel')
 $installLogBox = $window.FindName('InstallLogBox')
+$wingetStatusDot = $window.FindName('WinGetStatusDot')
+$wingetStatusText = $window.FindName('WinGetStatusText')
 
 # --- Tab 3 controls ---
 $btnFixSystemRepair = $window.FindName('BtnFixSystemRepair')
@@ -1014,6 +1018,30 @@ $greenBrush = $window.Resources['GreenBrush']
 $redBrush = $window.Resources['RedBrush']
 $accentBrush = $window.Resources['AccentBrush']
 $headerBrush = $window.Resources['HeaderBrush']
+
+# winget presence check - Install Apps is entirely winget-backed, and a machine
+# without it (a minimal/no-Store image like Windows Sandbox, or a broken App
+# Installer) would otherwise only find out via a raw Start-Process exception the
+# moment a button is clicked. Check once at startup and disable the winget-backed
+# buttons up front instead, with an explanation instead of a stack trace.
+$script:wingetAvailable = [bool](Get-Command 'winget.exe' -ErrorAction SilentlyContinue)
+if ($script:wingetAvailable) {
+    $wingetStatusDot.Fill = $greenBrush
+    $wingetStatusText.Text = 'winget ready'
+    $wingetStatusText.Foreground = $greenBrush
+} else {
+    $wingetStatusDot.Fill = $redBrush
+    $wingetStatusText.Text = 'winget not found'
+    $wingetStatusText.Foreground = $redBrush
+    $wingetTooltip = "winget (App Installer) was not found on this machine, so Install Apps is disabled. " +
+        "Install it from the Microsoft Store, or on a minimal/no-Store image (e.g. Windows Sandbox) run: " +
+        "Install-Module Microsoft.WinGet.Client -Force; Repair-WinGetPackageManager"
+    $wingetStatusText.ToolTip = $wingetTooltip
+    foreach ($b in @($btnInstallSelected, $btnUninstallSelected, $btnUpgradeAll, $btnCheckInstalled)) {
+        $b.IsEnabled = $false
+        $b.ToolTip = $wingetTooltip
+    }
+}
 
 function Set-ActiveTab {
     param([int]$Index)
