@@ -708,15 +708,10 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
               Width="10" Height="10" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0" IsHitTestVisible="False"/>
       </Grid>
 
-      <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
-        <Button Name="BtnOpenNetworkTools" Content="10.10.30.10:8088" Margin="0,0,8,0"
-                ToolTip="Open Gr3y Network Tools (http://10.10.30.10:8088)"
-                WindowChrome.IsHitTestVisibleInChrome="True"/>
-        <Button Name="BtnOpenLogs" Style="{StaticResource WindowButton}" ToolTip="Open the log folder"
-                WindowChrome.IsHitTestVisibleInChrome="True">
-          <Path Data="M0,2 L4,2 L5,3.5 L12,3.5 L12,11 L0,11 Z" Stroke="{StaticResource TextBrush}" StrokeThickness="1" Width="12" Height="12"/>
-        </Button>
-      </StackPanel>
+      <Button Grid.Column="3" Name="BtnOpenLogs" Style="{StaticResource WindowButton}" ToolTip="Open the log folder"
+              WindowChrome.IsHitTestVisibleInChrome="True">
+        <Path Data="M0,2 L4,2 L5,3.5 L12,3.5 L12,11 L0,11 Z" Stroke="{StaticResource TextBrush}" StrokeThickness="1" Width="12" Height="12"/>
+      </Button>
 
       <StackPanel Grid.Column="4" Orientation="Horizontal">
         <Button Name="BtnWinMin" Style="{StaticResource WindowButton}" WindowChrome.IsHitTestVisibleInChrome="True">
@@ -980,7 +975,6 @@ $navDebloat = $window.FindName('NavDebloat')
 $navInstall = $window.FindName('NavInstall')
 $navFixes = $window.FindName('NavFixes')
 $searchHint = $window.FindName('SearchHint')
-$btnOpenNetworkTools = $window.FindName('BtnOpenNetworkTools')
 $btnOpenLogs = $window.FindName('BtnOpenLogs')
 $btnWinMin = $window.FindName('BtnWinMin')
 $btnWinMax = $window.FindName('BtnWinMax')
@@ -1044,7 +1038,6 @@ $window.Add_StateChanged({
     $iconRestore.Visibility = if ($isMax) { 'Visible' } else { 'Collapsed' }
 })
 $btnOpenLogs.Add_Click({ Invoke-Item -Path $workDir })
-$btnOpenNetworkTools.Add_Click({ Start-Process 'http://10.10.30.10:8088' })
 
 # ============================================================================
 # Populate Install Apps tab from apps-catalog.json
