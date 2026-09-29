@@ -295,44 +295,115 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
 [xml]$xamlDoc = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Gr3y's Utilities" Height="820" Width="1150"
-        WindowStartupLocation="CenterScreen" Background="#0f1420">
+        Title="Gr3y's Utilities" Height="820" Width="1150" MinHeight="640" MinWidth="980"
+        WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize"
+        AllowsTransparency="False" Background="#232629"
+        FontFamily="Segoe UI" FontSize="12"
+        UseLayoutRounding="True" SnapsToDevicePixels="True"
+        TextOptions.TextFormattingMode="Display" TextOptions.TextRenderingMode="ClearType">
+  <WindowChrome.WindowChrome>
+    <WindowChrome CaptionHeight="44" ResizeBorderThickness="6" GlassFrameThickness="0"
+                  CornerRadius="0" UseAeroCaptionButtons="False"/>
+  </WindowChrome.WindowChrome>
   <Window.Resources>
-    <SolidColorBrush x:Key="BgBrush" Color="#0f1420"/>
-    <SolidColorBrush x:Key="PanelBrush" Color="#1a2030"/>
-    <SolidColorBrush x:Key="CardBrush" Color="#171d2b"/>
-    <SolidColorBrush x:Key="BorderBrush2" Color="#2a3245"/>
-    <SolidColorBrush x:Key="TextBrush" Color="#e4e7ec"/>
-    <SolidColorBrush x:Key="MutedBrush" Color="#7d8699"/>
-    <SolidColorBrush x:Key="AccentBrush" Color="#4fd1c9"/>
-    <SolidColorBrush x:Key="ToggleOnBrush" Color="#3b82f6"/>
-    <SolidColorBrush x:Key="ToggleOffBrush" Color="#3a4257"/>
-    <SolidColorBrush x:Key="GreenBrush" Color="#3fb950"/>
-    <SolidColorBrush x:Key="RedBrush" Color="#f85149"/>
-    <SolidColorBrush x:Key="YellowBrush" Color="#d29922"/>
+    <SolidColorBrush x:Key="BgBrush" Color="#232629"/>
+    <SolidColorBrush x:Key="PanelBorderBrush" Color="#2F373D"/>
+    <SolidColorBrush x:Key="ButtonBrush" Color="#1E3747"/>
+    <SolidColorBrush x:Key="ButtonHoverBrush" Color="#2A4C69"/>
+    <SolidColorBrush x:Key="ControlBorderBrush" Color="#707070"/>
+    <SolidColorBrush x:Key="TextBrush" Color="#F7F7F7"/>
+    <SolidColorBrush x:Key="MutedBrush" Color="#9AA3AB"/>
+    <SolidColorBrush x:Key="HeaderBrush" Color="#5BDCFF"/>
+    <SolidColorBrush x:Key="HintBrush" Color="#4FB5D2"/>
+    <SolidColorBrush x:Key="NavSelectedBrush" Color="#5E81AC"/>
+    <SolidColorBrush x:Key="ToggleOnBrush" Color="#2E77FF"/>
+    <SolidColorBrush x:Key="ToggleOffBrush" Color="#707070"/>
+    <SolidColorBrush x:Key="LogBgBrush" Color="#1B1E21"/>
+    <SolidColorBrush x:Key="ScrollThumbBrush" Color="#3C4146"/>
+    <SolidColorBrush x:Key="CloseHoverBrush" Color="#C42B1C"/>
+    <SolidColorBrush x:Key="AccentBrush" Color="#5BDCFF"/>
+    <SolidColorBrush x:Key="GreenBrush" Color="#3FB950"/>
+    <SolidColorBrush x:Key="RedBrush" Color="#F85149"/>
+    <SolidColorBrush x:Key="YellowBrush" Color="#D29922"/>
+
+    <Style TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+    </Style>
+    <Style x:Key="Header" TargetType="TextBlock">
+      <Setter Property="FontFamily" Value="Consolas"/>
+      <Setter Property="FontSize" Value="16"/>
+      <Setter Property="Foreground" Value="{StaticResource HeaderBrush}"/>
+      <Setter Property="Margin" Value="0,0,0,6"/>
+    </Style>
+    <Style x:Key="Hint" TargetType="TextBlock">
+      <Setter Property="Text" Value="(?)"/>
+      <Setter Property="FontSize" Value="11"/>
+      <Setter Property="Foreground" Value="{StaticResource HintBrush}"/>
+      <Setter Property="Margin" Value="6,0,0,0"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+      <Setter Property="Cursor" Value="Help"/>
+      <Setter Property="ToolTipService.InitialShowDelay" Value="200"/>
+    </Style>
+    <Style x:Key="StatusLabel" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="11"/>
+      <Setter Property="Foreground" Value="{StaticResource HintBrush}"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+      <Setter Property="Margin" Value="0,0,6,0"/>
+    </Style>
+    <Style x:Key="StatusSep" TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource PanelBorderBrush}"/>
+      <Setter Property="Margin" Value="12,0,12,0"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
+
+    <Style x:Key="Panel" TargetType="Border">
+      <Setter Property="Background" Value="{StaticResource BgBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource PanelBorderBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="0"/>
+      <Setter Property="Padding" Value="10,8"/>
+    </Style>
+    <Style TargetType="ToolTip">
+      <Setter Property="Background" Value="{StaticResource ButtonBrush}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource ControlBorderBrush}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ToolTip">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" Padding="8,5" MaxWidth="380">
+              <TextBlock Text="{TemplateBinding Content}" TextWrapping="Wrap" Foreground="{TemplateBinding Foreground}"/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
 
     <Style TargetType="Button">
-      <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+      <Setter Property="Background" Value="{StaticResource ButtonBrush}"/>
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-      <Setter Property="BorderBrush" Value="{StaticResource BorderBrush2}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource ControlBorderBrush}"/>
       <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Padding" Value="12,7"/>
-      <Setter Property="Margin" Value="4"/>
-      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Padding" Value="10,3"/>
+      <Setter Property="Margin" Value="0,0,6,0"/>
+      <Setter Property="Height" Value="25"/>
+      <Setter Property="MinWidth" Value="90"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
-                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+            <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="0">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter Property="Opacity" Value="0.85"/>
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource ButtonHoverBrush}"/>
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource NavSelectedBrush}"/>
               </Trigger>
               <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.4"/>
+                <Setter Property="Opacity" Value="0.45"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -340,27 +411,78 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
       </Setter>
     </Style>
 
-    <!-- Default CheckBox = dark square with an accent checkmark (used by the
-         Install Apps catalog list, matching WinUtil's tweaks-list checkboxes). -->
+    <Style x:Key="NavButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+      <Setter Property="Width" Value="110"/>
+      <Setter Property="Background" Value="{StaticResource BgBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource TextBrush}"/>
+      <Setter Property="Margin" Value="0,0,6,0"/>
+      <Setter Property="Padding" Value="4,2"/>
+      <Style.Triggers>
+        <Trigger Property="Tag" Value="selected">
+          <Setter Property="Background" Value="{StaticResource NavSelectedBrush}"/>
+        </Trigger>
+      </Style.Triggers>
+    </Style>
+
+    <Style x:Key="WindowButton" TargetType="Button">
+      <Setter Property="Width" Value="46"/>
+      <Setter Property="Height" Value="44"/>
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Cursor" Value="Arrow"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd" Background="{TemplateBinding Background}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource ScrollThumbBrush}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="WindowCloseButton" TargetType="Button" BasedOn="{StaticResource WindowButton}">
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd" Background="{TemplateBinding Background}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource CloseHoverBrush}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <Style TargetType="CheckBox">
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-      <Setter Property="Margin" Value="4"/>
+      <Setter Property="Margin" Value="2,1"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="CheckBox">
-            <StackPanel Orientation="Horizontal">
-              <Border x:Name="Box" Width="16" Height="16" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1.5"
-                      Background="{StaticResource BgBrush}" CornerRadius="3" VerticalAlignment="Center">
-                <Path x:Name="CheckMark" Data="M2,7 L6,11 L14,3" Stroke="{StaticResource AccentBrush}" StrokeThickness="2"
-                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed" Margin="1"/>
+            <StackPanel Orientation="Horizontal" Background="Transparent">
+              <Border x:Name="Box" Width="14" Height="14" Background="{StaticResource ButtonBrush}"
+                      BorderBrush="{StaticResource ControlBorderBrush}" BorderThickness="1" CornerRadius="0" VerticalAlignment="Center">
+                <Path x:Name="CheckMark" Data="M2,7 L5.5,10.5 L12,3.5" Stroke="{StaticResource TextBrush}" StrokeThickness="2"
+                      Visibility="Collapsed"/>
               </Border>
-              <ContentPresenter Margin="6,0,0,0" VerticalAlignment="Center"/>
+              <ContentPresenter Margin="6,0,0,0" VerticalAlignment="Center" RecognizesAccessKey="False"/>
             </StackPanel>
             <ControlTemplate.Triggers>
               <Trigger Property="IsChecked" Value="True">
                 <Setter TargetName="CheckMark" Property="Visibility" Value="Visible"/>
-                <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource HeaderBrush}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -368,16 +490,14 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
       </Setter>
     </Style>
 
-    <!-- Pill-shaped toggle switch, used explicitly (via StaticResource key) for
-         the Debloat + Office tab's preference-style on/off options. -->
     <Style x:Key="ToggleSwitchStyle" TargetType="CheckBox">
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="CheckBox">
-            <Grid Width="40" Height="20">
-              <Border x:Name="Track" CornerRadius="10" Background="{StaticResource ToggleOffBrush}" BorderThickness="0"/>
-              <Ellipse x:Name="Thumb" Width="16" Height="16" Fill="#f4f6f9" HorizontalAlignment="Left" Margin="2,0,0,0"/>
+            <Grid Width="34" Height="17">
+              <Border x:Name="Track" CornerRadius="8.5" Background="{StaticResource ToggleOffBrush}"/>
+              <Ellipse x:Name="Thumb" Width="13" Height="13" Fill="#FFFFFF" HorizontalAlignment="Left" Margin="2,0,0,0"/>
             </Grid>
             <ControlTemplate.Triggers>
               <Trigger Property="IsChecked" Value="True">
@@ -392,18 +512,17 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
     </Style>
 
     <Style TargetType="ComboBoxItem">
-      <Setter Property="Background" Value="{StaticResource CardBrush}"/>
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-      <Setter Property="Padding" Value="8,5"/>
+      <Setter Property="Padding" Value="8,4"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="ComboBoxItem">
-            <Border x:Name="Bd" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+            <Border x:Name="Bd" Background="Transparent" Padding="{TemplateBinding Padding}">
               <ContentPresenter/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsHighlighted" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource ToggleOnBrush}"/>
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource NavSelectedBrush}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -411,11 +530,9 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
       </Setter>
     </Style>
     <Style TargetType="ComboBox">
-      <Setter Property="Margin" Value="4"/>
-      <Setter Property="Padding" Value="8,5"/>
-      <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+      <Setter Property="Height" Value="25"/>
+      <Setter Property="Padding" Value="8,2"/>
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-      <Setter Property="BorderBrush" Value="{StaticResource BorderBrush2}"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="ComboBox">
@@ -424,14 +541,14 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
                             IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
                 <ToggleButton.Template>
                   <ControlTemplate TargetType="ToggleButton">
-                    <Border Background="{StaticResource CardBrush}" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1" CornerRadius="6">
+                    <Border Background="{StaticResource ButtonBrush}" BorderBrush="{StaticResource ControlBorderBrush}" BorderThickness="1" CornerRadius="0">
                       <Grid>
                         <Grid.ColumnDefinitions>
                           <ColumnDefinition Width="*"/>
-                          <ColumnDefinition Width="24"/>
+                          <ColumnDefinition Width="22"/>
                         </Grid.ColumnDefinitions>
-                        <Path Grid.Column="1" Data="M0,0 L4,4 L8,0" Stroke="{StaticResource TextBrush}" StrokeThickness="1.5"
-                              StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <Path Grid.Column="1" Data="M0,0 L4,4 L8,0" Stroke="{StaticResource TextBrush}" StrokeThickness="1.2"
+                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
                       </Grid>
                     </Border>
                   </ControlTemplate>
@@ -440,9 +557,9 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
               <ContentPresenter IsHitTestVisible="False" Content="{TemplateBinding SelectionBoxItem}"
                                 ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
                                 Margin="{TemplateBinding Padding}" VerticalAlignment="Center" HorizontalAlignment="Left"/>
-              <Popup IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" Placement="Bottom" PopupAnimation="Slide">
-                <Border Background="{StaticResource CardBrush}" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1" CornerRadius="6"
-                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource AncestorType=ComboBox}}" MaxHeight="220" Margin="0,2,0,0">
+              <Popup IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" Placement="Bottom" PopupAnimation="None">
+                <Border Background="{StaticResource BgBrush}" BorderBrush="{StaticResource ControlBorderBrush}" BorderThickness="1"
+                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource AncestorType=ComboBox}}" MaxHeight="220">
                   <ScrollViewer><ItemsPresenter/></ScrollViewer>
                 </Border>
               </Popup>
@@ -453,194 +570,310 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
     </Style>
 
     <Style TargetType="TextBox">
-      <Setter Property="Background" Value="#0a0e17"/>
+      <Setter Property="Background" Value="{StaticResource BgBrush}"/>
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-      <Setter Property="BorderBrush" Value="{StaticResource BorderBrush2}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource ControlBorderBrush}"/>
       <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Padding" Value="6,4"/>
-      <Setter Property="FontFamily" Value="Consolas"/>
+      <Setter Property="Padding" Value="6,3"/>
       <Setter Property="CaretBrush" Value="{StaticResource TextBrush}"/>
+      <Setter Property="SelectionBrush" Value="{StaticResource NavSelectedBrush}"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="TextBox">
-            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
-                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+            <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="0">
               <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
             </Border>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <!-- Segmented nav-button look for the tab strip, matching the reference's
-         Install/Tweaks/Config row - active tab highlighted in toggle-blue. -->
-    <Style TargetType="TabItem">
-      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-      <Setter Property="FontWeight" Value="SemiBold"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="TabItem">
-            <Border x:Name="Bd" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource BorderBrush2}"
-                    BorderThickness="1" CornerRadius="6" Margin="4,4,4,0" Padding="16,8">
-              <ContentPresenter x:Name="Content" ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
             <ControlTemplate.Triggers>
-              <Trigger Property="IsSelected" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource ToggleOnBrush}"/>
-                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource ToggleOnBrush}"/>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource TextBrush}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
     </Style>
+    <Style x:Key="SearchBox" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+      <Setter Property="BorderBrush" Value="{StaticResource TextBrush}"/>
+      <Setter Property="Padding" Value="6,0,24,0"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+    </Style>
+    <Style x:Key="LogBox" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+      <Setter Property="Background" Value="{StaticResource LogBgBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource PanelBorderBrush}"/>
+      <Setter Property="FontFamily" Value="Consolas"/>
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="Padding" Value="8,6"/>
+    </Style>
+
+    <Style TargetType="ScrollBar">
+      <Setter Property="Background" Value="{StaticResource BgBrush}"/>
+      <Setter Property="Width" Value="10"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ScrollBar">
+            <Grid Background="{TemplateBinding Background}">
+              <Track x:Name="PART_Track" IsDirectionReversed="True">
+                <Track.DecreaseRepeatButton>
+                  <RepeatButton Command="{x:Static ScrollBar.PageUpCommand}" Opacity="0" Focusable="False"/>
+                </Track.DecreaseRepeatButton>
+                <Track.IncreaseRepeatButton>
+                  <RepeatButton Command="{x:Static ScrollBar.PageDownCommand}" Opacity="0" Focusable="False"/>
+                </Track.IncreaseRepeatButton>
+                <Track.Thumb>
+                  <Thumb>
+                    <Thumb.Template>
+                      <ControlTemplate TargetType="Thumb">
+                        <Border Background="{StaticResource ScrollThumbBrush}" Margin="2"/>
+                      </ControlTemplate>
+                    </Thumb.Template>
+                  </Thumb>
+                </Track.Thumb>
+              </Track>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+      <Style.Triggers>
+        <Trigger Property="Orientation" Value="Horizontal">
+          <Setter Property="Width" Value="Auto"/>
+          <Setter Property="Height" Value="10"/>
+          <Setter Property="Template">
+            <Setter.Value>
+              <ControlTemplate TargetType="ScrollBar">
+                <Grid Background="{TemplateBinding Background}">
+                  <Track x:Name="PART_Track" IsDirectionReversed="False">
+                    <Track.DecreaseRepeatButton>
+                      <RepeatButton Command="{x:Static ScrollBar.PageLeftCommand}" Opacity="0" Focusable="False"/>
+                    </Track.DecreaseRepeatButton>
+                    <Track.IncreaseRepeatButton>
+                      <RepeatButton Command="{x:Static ScrollBar.PageRightCommand}" Opacity="0" Focusable="False"/>
+                    </Track.IncreaseRepeatButton>
+                    <Track.Thumb>
+                      <Thumb>
+                        <Thumb.Template>
+                          <ControlTemplate TargetType="Thumb">
+                            <Border Background="{StaticResource ScrollThumbBrush}" Margin="2"/>
+                          </ControlTemplate>
+                        </Thumb.Template>
+                      </Thumb>
+                    </Track.Thumb>
+                  </Track>
+                </Grid>
+              </ControlTemplate>
+            </Setter.Value>
+          </Setter>
+        </Trigger>
+      </Style.Triggers>
+    </Style>
+
+    <Style TargetType="TabItem">
+      <Setter Property="Visibility" Value="Collapsed"/>
+    </Style>
     <Style TargetType="TabControl">
       <Setter Property="Background" Value="{StaticResource BgBrush}"/>
       <Setter Property="BorderThickness" Value="0"/>
-    </Style>
-    <Style TargetType="TextBlock">
-      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+      <Setter Property="Padding" Value="0"/>
     </Style>
   </Window.Resources>
-  <Grid Background="{StaticResource BgBrush}">
+  <Grid Name="RootGrid" Background="{StaticResource BgBrush}">
     <Grid.RowDefinitions>
-      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="44"/>
       <RowDefinition Height="*"/>
     </Grid.RowDefinitions>
-    <Border Grid.Row="0" Background="#0a0e17" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="0,0,0,1" Padding="16,10">
-      <StackPanel Orientation="Horizontal">
-        <TextBlock Text="Gr3y's Utilities" FontSize="18" FontWeight="Bold" Foreground="{StaticResource AccentBrush}"/>
+
+    <Grid Grid.Row="0" Background="{StaticResource BgBrush}">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+
+      <TextBlock Grid.Column="0" Text="Gr3y's Utilities" FontFamily="Consolas" FontSize="16" FontWeight="Bold"
+                 Foreground="{StaticResource HeaderBrush}" VerticalAlignment="Center" Margin="14,0,16,0"/>
+
+      <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+        <Button Name="NavDebloat" Style="{StaticResource NavButton}" Tag="selected" Content="Debloat + Office" WindowChrome.IsHitTestVisibleInChrome="True"/>
+        <Button Name="NavInstall" Style="{StaticResource NavButton}" Content="Install Apps" WindowChrome.IsHitTestVisibleInChrome="True"/>
+        <Button Name="NavFixes" Style="{StaticResource NavButton}" Content="Fixes" WindowChrome.IsHitTestVisibleInChrome="True"/>
       </StackPanel>
-    </Border>
-    <TabControl Grid.Row="1" Name="MainTabs" Background="{StaticResource BgBrush}">
+
+      <Grid Grid.Column="2" Margin="12,0,12,0" VerticalAlignment="Center" WindowChrome.IsHitTestVisibleInChrome="True">
+        <TextBox Name="SearchBox" Height="25" Style="{StaticResource SearchBox}"/>
+        <TextBlock Name="SearchHint" Text="Search apps..." Foreground="{StaticResource MutedBrush}"
+                   Margin="8,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+        <Path Data="M4,4 m-3,0 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0 M6.2,6.2 L9.5,9.5" Stroke="{StaticResource TextBrush}" StrokeThickness="1.2"
+              Width="10" Height="10" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0" IsHitTestVisible="False"/>
+      </Grid>
+
+      <Button Grid.Column="3" Name="BtnOpenLogs" Style="{StaticResource WindowButton}" ToolTip="Open the log folder"
+              WindowChrome.IsHitTestVisibleInChrome="True">
+        <Path Data="M0,2 L4,2 L5,3.5 L12,3.5 L12,11 L0,11 Z" Stroke="{StaticResource TextBrush}" StrokeThickness="1" Width="12" Height="12"/>
+      </Button>
+
+      <StackPanel Grid.Column="4" Orientation="Horizontal">
+        <Button Name="BtnWinMin" Style="{StaticResource WindowButton}" WindowChrome.IsHitTestVisibleInChrome="True">
+          <Path Data="M0,5 L10,5" Stroke="{StaticResource TextBrush}" StrokeThickness="1" Width="10" Height="10"/>
+        </Button>
+        <Button Name="BtnWinMax" Style="{StaticResource WindowButton}" WindowChrome.IsHitTestVisibleInChrome="True">
+          <Grid>
+            <Path Name="IconMax" Data="M0.5,0.5 L9.5,0.5 L9.5,9.5 L0.5,9.5 Z" Stroke="{StaticResource TextBrush}" StrokeThickness="1" Width="10" Height="10"/>
+            <Path Name="IconRestore" Data="M2.5,0.5 L9.5,0.5 L9.5,7.5 M0.5,2.5 L7.5,2.5 L7.5,9.5 L0.5,9.5 Z" Stroke="{StaticResource TextBrush}" StrokeThickness="1" Width="10" Height="10" Visibility="Collapsed"/>
+          </Grid>
+        </Button>
+        <Button Name="BtnWinClose" Style="{StaticResource WindowCloseButton}" WindowChrome.IsHitTestVisibleInChrome="True">
+          <Path Data="M0,0 L10,10 M10,0 L0,10" Stroke="{StaticResource TextBrush}" StrokeThickness="1" Width="10" Height="10"/>
+        </Button>
+      </StackPanel>
+    </Grid>
+
+    <TabControl Grid.Row="1" Name="MainTabs" Margin="10,8,10,10">
       <TabItem Header="Debloat + Office">
-        <ScrollViewer VerticalScrollBarVisibility="Auto">
-        <StackPanel Margin="16">
-          <TextBlock Text="PREFERENCES" FontWeight="Bold" FontSize="13" Foreground="{StaticResource AccentBrush}" Margin="0,0,0,8"/>
-          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1" CornerRadius="8" Padding="14,10">
-            <StackPanel>
-              <Grid Margin="0,6,0,6">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="Dry run (preview only)" VerticalAlignment="Center"/>
-                <CheckBox Grid.Column="1" Name="OptDryRun" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
-              </Grid>
-              <Grid Margin="0,6,0,6">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="Create System Restore point" VerticalAlignment="Center"/>
-                <CheckBox Grid.Column="1" Name="OptCreateRestorePoint" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
-              </Grid>
-              <Grid Margin="0,6,0,6">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="Skip OEM debloat" VerticalAlignment="Center"/>
-                <CheckBox Grid.Column="1" Name="OptSkipDebloat" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
-              </Grid>
-              <Grid Margin="24,6,0,6">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="Debloat Dell software" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
-                <CheckBox Grid.Column="1" Name="OptDell" Style="{StaticResource ToggleSwitchStyle}" IsChecked="True" VerticalAlignment="Center"/>
-              </Grid>
-              <Grid Margin="24,6,0,6">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="Debloat Lenovo software" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
-                <CheckBox Grid.Column="1" Name="OptLenovo" Style="{StaticResource ToggleSwitchStyle}" IsChecked="True" VerticalAlignment="Center"/>
-              </Grid>
-              <Grid Margin="0,6,0,6">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="Skip removing existing Office" VerticalAlignment="Center"/>
-                <CheckBox Grid.Column="1" Name="OptSkipOfficeRemoval" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
-              </Grid>
-              <Grid Margin="0,6,0,6">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="Skip installing Microsoft 365 Apps" VerticalAlignment="Center"/>
-                <CheckBox Grid.Column="1" Name="OptSkipOfficeInstall" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
-              </Grid>
-              <Grid Margin="0,6,0,6">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="Reduce telemetry &amp; activity tracking" VerticalAlignment="Center"/>
-                <CheckBox Grid.Column="1" Name="OptTweakTelemetry" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
-              </Grid>
-              <Grid Margin="0,6,0,6">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="Disable hibernation (frees disk space)" VerticalAlignment="Center"/>
-                <CheckBox Grid.Column="1" Name="OptTweakHibernation" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
-              </Grid>
-              <Grid Margin="0,6,0,0">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="Prevent sleep (keep machine reachable)" VerticalAlignment="Center"/>
-                <CheckBox Grid.Column="1" Name="OptTweakPreventSleep" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
-              </Grid>
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+          </Grid.RowDefinitions>
+
+          <Grid Grid.Row="0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="3*"/>
+              <ColumnDefinition Width="10"/>
+              <ColumnDefinition Width="2*"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource Panel}">
+              <StackPanel>
+                <TextBlock Style="{StaticResource Header}" Text="Debloat"/>
+                <DockPanel LastChildFill="False" Margin="0,0,0,1">
+                  <CheckBox DockPanel.Dock="Left" Name="OptDryRun" Content="Dry run (preview only)"/>
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
+                             ToolTip="Preview only: logs everything a real run would do without changing anything."/>
+                </DockPanel>
+                <DockPanel LastChildFill="False" Margin="0,0,0,1">
+                  <CheckBox DockPanel.Dock="Left" Name="OptCreateRestorePoint" Content="Create System Restore point"/>
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
+                             ToolTip="Creates a System Restore point before any change. Can be blocked by policy; Windows allows one per 24h."/>
+                </DockPanel>
+                <DockPanel LastChildFill="False" Margin="0,0,0,1">
+                  <CheckBox DockPanel.Dock="Left" Name="OptSkipDebloat" Content="Skip OEM debloat"/>
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
+                             ToolTip="Skips Phase 1 entirely: no OEM/McAfee app removal and no scheduled task or service changes."/>
+                </DockPanel>
+                <DockPanel LastChildFill="False" Margin="22,0,0,1">
+                  <CheckBox DockPanel.Dock="Left" Name="OptDell" Content="Debloat Dell software" IsChecked="True"/>
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
+                             ToolTip="Checks the Dell bloat patterns (SupportAssist, Optimizer, Digital Delivery, ...). Dell Command Update is kept."/>
+                </DockPanel>
+                <DockPanel LastChildFill="False" Margin="22,0,0,1">
+                  <CheckBox DockPanel.Dock="Left" Name="OptLenovo" Content="Debloat Lenovo software" IsChecked="True"/>
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
+                             ToolTip="Checks the Lenovo bloat patterns (Lenovo Now, Welcome, Glance, ...). Lenovo Vantage is kept."/>
+                </DockPanel>
+                <TextBlock Style="{StaticResource Header}" Text="Office" Margin="0,10,0,6"/>
+                <DockPanel LastChildFill="False" Margin="0,0,0,1">
+                  <CheckBox DockPanel.Dock="Left" Name="OptSkipOfficeRemoval" Content="Skip removing existing Office"/>
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
+                             ToolTip="Leaves any existing Office / Microsoft 365 install in place instead of removing it first."/>
+                </DockPanel>
+                <DockPanel LastChildFill="False" Margin="0,0,0,1">
+                  <CheckBox DockPanel.Dock="Left" Name="OptSkipOfficeInstall" Content="Skip installing Microsoft 365 Apps"/>
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
+                             ToolTip="Does not install Microsoft 365 Apps for business at the end of the run."/>
+                </DockPanel>
+                <DockPanel LastChildFill="False" Margin="0,6,0,0">
+                  <TextBlock DockPanel.Dock="Left" Text="Office channel:" VerticalAlignment="Center" Margin="2,0,8,0"/>
+                  <ComboBox DockPanel.Dock="Left" Name="OptChannel" Width="170" SelectedIndex="0">
+                    <ComboBoxItem Content="MonthlyEnterprise"/>
+                    <ComboBoxItem Content="Current"/>
+                    <ComboBoxItem Content="SemiAnnual"/>
+                    <ComboBoxItem Content="SemiAnnualPreview"/>
+                  </ComboBox>
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}" ToolTip="Update channel for the new install. MonthlyEnterprise is the fleet default."/>
+                </DockPanel>
+              </StackPanel>
+            </Border>
+
+            <Border Grid.Column="2" Style="{StaticResource Panel}">
+              <StackPanel>
+                <TextBlock Style="{StaticResource Header}" Text="Tweaks"/>
+                <StackPanel Orientation="Horizontal" Margin="0,3,0,3">
+                  <CheckBox Name="OptTweakTelemetry" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
+                  <TextBlock Text="Reduce telemetry &amp; activity tracking" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                  <TextBlock Style="{StaticResource Hint}" ToolTip="AllowTelemetry=0, disables the DiagTrack service and the Activity Feed."/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,3,0,3">
+                  <CheckBox Name="OptTweakHibernation" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
+                  <TextBlock Text="Disable hibernation (frees disk space)" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                  <TextBlock Style="{StaticResource Hint}" ToolTip="Runs powercfg /hibernate off, which removes hiberfil.sys and frees its disk space."/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,3,0,3">
+                  <CheckBox Name="OptTweakPreventSleep" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
+                  <TextBlock Text="Prevent sleep (keep machine reachable)" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                  <TextBlock Style="{StaticResource Hint}" ToolTip="Sets system sleep to Never on AC and battery so the machine stays reachable. Display timeout is untouched, so the screen still locks."/>
+                </StackPanel>
+              </StackPanel>
+            </Border>
+          </Grid>
+
+          <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,10,0,0">
+            <Button Name="BtnScan" Content="Scan This Machine" MinWidth="140"/>
+            <Button Name="BtnStart" Content="Start" MinWidth="110" BorderBrush="{StaticResource GreenBrush}"/>
+            <Button Name="BtnStop" Content="Stop" MinWidth="90" BorderBrush="{StaticResource RedBrush}" Visibility="Collapsed"/>
+            <Button Name="BtnDownloadLog" Content="Download Log" MinWidth="120" Visibility="Collapsed"/>
+            <Button Name="BtnReboot" Content="Reboot Now" MinWidth="110" BorderBrush="{StaticResource YellowBrush}" Visibility="Collapsed"/>
+          </StackPanel>
+
+          <Border Grid.Row="2" Style="{StaticResource Panel}" Padding="10,5" Margin="0,10,0,0">
+            <StackPanel Orientation="Horizontal">
+              <TextBlock Text="STATE" Style="{StaticResource StatusLabel}"/>
+              <Ellipse Name="StatusDot" Width="8" Height="8" Fill="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+              <TextBlock Name="StateText" Text="Idle" VerticalAlignment="Center"/>
+              <TextBlock Text="|" Style="{StaticResource StatusSep}"/>
+              <TextBlock Text="PHASE" Style="{StaticResource StatusLabel}"/>
+              <TextBlock Name="PhaseText" Text="-" VerticalAlignment="Center"/>
+              <TextBlock Text="|" Style="{StaticResource StatusSep}"/>
+              <TextBlock Text="ELAPSED" Style="{StaticResource StatusLabel}"/>
+              <TextBlock Name="ElapsedText" Text="0:00" VerticalAlignment="Center"/>
+              <TextBlock Text="|" Style="{StaticResource StatusSep}"/>
+              <TextBlock Text="CPU (JOB TREE)" Style="{StaticResource StatusLabel}"/>
+              <TextBlock Name="CpuText" Text="0.0s" VerticalAlignment="Center"/>
             </StackPanel>
           </Border>
 
-          <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
-            <TextBlock Text="Office channel:" VerticalAlignment="Center" Margin="0,0,8,0"/>
-            <ComboBox Name="OptChannel" Width="180" SelectedIndex="0">
-              <ComboBoxItem Content="MonthlyEnterprise"/>
-              <ComboBoxItem Content="Current"/>
-              <ComboBoxItem Content="SemiAnnual"/>
-              <ComboBoxItem Content="SemiAnnualPreview"/>
-            </ComboBox>
-          </StackPanel>
-          <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-            <Button Name="BtnScan" Content="Scan This Machine" Background="{StaticResource AccentBrush}" Foreground="#04122a"/>
-            <Button Name="BtnStart" Content="Start" Background="{StaticResource GreenBrush}" Foreground="#04220d"/>
-            <Button Name="BtnStop" Content="Stop" Background="{StaticResource RedBrush}" Foreground="#2a0a08" Visibility="Collapsed"/>
-            <Button Name="BtnDownloadLog" Content="Download Log" Background="{StaticResource AccentBrush}" Foreground="#04122a" Visibility="Collapsed"/>
-            <Button Name="BtnReboot" Content="Reboot Now" Background="{StaticResource YellowBrush}" Foreground="#241a00" Visibility="Collapsed"/>
-          </StackPanel>
-
-          <TextBlock Text="STATUS" FontWeight="Bold" FontSize="13" Foreground="{StaticResource AccentBrush}" Margin="0,20,0,8"/>
-          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1" CornerRadius="8" Padding="14,10">
-            <UniformGrid Columns="4">
-              <StackPanel Margin="0,0,8,0">
-                <TextBlock Text="STATE" FontSize="10" Foreground="{StaticResource MutedBrush}"/>
-                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
-                  <Ellipse Name="StatusDot" Width="10" Height="10" Fill="{StaticResource MutedBrush}" Margin="0,0,6,0"/>
-                  <TextBlock Name="StateText" Text="Idle" FontSize="15"/>
-                </StackPanel>
-              </StackPanel>
-              <StackPanel>
-                <TextBlock Text="PHASE" FontSize="10" Foreground="{StaticResource MutedBrush}"/>
-                <TextBlock Name="PhaseText" Text="-" FontSize="15" Margin="0,2,0,0"/>
-              </StackPanel>
-              <StackPanel>
-                <TextBlock Text="ELAPSED" FontSize="10" Foreground="{StaticResource MutedBrush}"/>
-                <TextBlock Name="ElapsedText" Text="0:00" FontSize="15" Margin="0,2,0,0"/>
-              </StackPanel>
-              <StackPanel>
-                <TextBlock Text="CPU TIME (JOB TREE)" FontSize="10" Foreground="{StaticResource MutedBrush}"/>
-                <TextBlock Name="CpuText" Text="0.0s" FontSize="15" Margin="0,2,0,0"/>
-              </StackPanel>
-            </UniformGrid>
-          </Border>
-          <Border Name="BannerBorder" Margin="0,12,0,0" Padding="10" CornerRadius="6" Visibility="Collapsed">
+          <Border Grid.Row="3" Name="BannerBorder" Margin="0,8,0,0" Padding="10,6" BorderThickness="1" Visibility="Collapsed">
             <TextBlock Name="BannerText" TextWrapping="Wrap"/>
           </Border>
 
-          <TextBlock Text="LIVE LOG" FontWeight="Bold" FontSize="13" Foreground="{StaticResource AccentBrush}" Margin="0,20,0,8"/>
-          <TextBox Name="LogBox" Height="300" IsReadOnly="True" TextWrapping="NoWrap"
-                   VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontSize="12"/>
-        </StackPanel>
-        </ScrollViewer>
+          <TextBlock Grid.Row="4" Style="{StaticResource Header}" Text="Live Log" Margin="0,10,0,4"/>
+          <TextBox Grid.Row="5" Name="LogBox" Style="{StaticResource LogBox}" IsReadOnly="True" TextWrapping="NoWrap"
+                   VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
+        </Grid>
       </TabItem>
+
       <TabItem Header="Install Apps">
-        <DockPanel Margin="16">
-          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,10">
-            <TextBlock Text="Search:" VerticalAlignment="Center" Margin="0,0,6,0"/>
-            <TextBox Name="SearchBox" Width="220" Margin="0,0,10,0"/>
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
             <Button Name="CatAll" Content="All"/>
             <Button Name="CatBrowsers" Content="Browsers"/>
             <Button Name="CatMsTools" Content="Microsoft Tools"/>
             <Button Name="CatUtilities" Content="Utilities"/>
+            <Border Width="12"/>
             <Button Name="BtnSelectAll" Content="Select All"/>
             <Button Name="BtnClearSelection" Content="Clear Selection"/>
             <Button Name="BtnCheckInstalled" Content="Check Installed"/>
             <TextBlock Name="SelectedCountText" Text="Selected: 0" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{StaticResource MutedBrush}"/>
           </StackPanel>
-          <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,10,0,0">
-            <Button Name="BtnInstallSelected" Content="Install Selected" Background="{StaticResource GreenBrush}" Foreground="#04220d"/>
-            <Button Name="BtnUninstallSelected" Content="Uninstall Selected" Background="{StaticResource RedBrush}" Foreground="#2a0a08"/>
-            <Button Name="BtnUpgradeAll" Content="Upgrade All Installed" Background="{StaticResource AccentBrush}" Foreground="#04122a"/>
+          <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+            <Button Name="BtnInstallSelected" Content="Install Selected" BorderBrush="{StaticResource GreenBrush}"/>
+            <Button Name="BtnUninstallSelected" Content="Uninstall Selected" BorderBrush="{StaticResource RedBrush}"/>
+            <Button Name="BtnUpgradeAll" Content="Upgrade All Installed"/>
             <Button Name="BtnStopInstall" Content="Stop" Visibility="Collapsed"/>
             <TextBlock Name="InstallStatusText" Text="Idle" VerticalAlignment="Center" Margin="12,0,0,0"/>
           </StackPanel>
@@ -649,66 +882,53 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
               <ColumnDefinition Width="*"/>
               <ColumnDefinition Width="300"/>
             </Grid.ColumnDefinitions>
-            <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
-              <StackPanel Name="InstallAppsPanel"/>
-            </ScrollViewer>
-            <Border Grid.Column="1" Margin="12,0,0,0" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1" CornerRadius="8">
-              <TextBox Name="InstallLogBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontSize="11" Background="Transparent" BorderThickness="0"/>
+            <Border Grid.Column="0" Style="{StaticResource Panel}">
+              <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel Name="InstallAppsPanel"/>
+              </ScrollViewer>
+            </Border>
+            <Border Grid.Column="1" Margin="10,0,0,0" Style="{StaticResource Panel}" Padding="0">
+              <TextBox Name="InstallLogBox" Style="{StaticResource LogBox}" BorderThickness="0" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontSize="11"/>
             </Border>
           </Grid>
         </DockPanel>
       </TabItem>
+
       <TabItem Header="Fixes">
-        <ScrollViewer VerticalScrollBarVisibility="Auto">
-        <StackPanel Margin="16">
-          <TextBlock Text="ONE-CLICK FIXES" FontWeight="Bold" FontSize="13" Foreground="{StaticResource AccentBrush}" Margin="0,0,0,8"/>
-          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1" CornerRadius="8" Padding="14,10">
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="400"/>
+            <ColumnDefinition Width="10"/>
+            <ColumnDefinition Width="*"/>
+          </Grid.ColumnDefinitions>
+          <Border Grid.Column="0" Style="{StaticResource Panel}">
             <StackPanel>
-              <Grid Margin="0,6,0,6">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                  <TextBlock Text="System File Repair" FontWeight="SemiBold"/>
-                  <TextBlock Text="Runs sfc /scannow then DISM RestoreHealth. Can take 10-20+ minutes." Foreground="{StaticResource MutedBrush}" FontSize="11"/>
-                </StackPanel>
-                <Button Grid.Column="1" Name="BtnFixSystemRepair" Content="Run" Background="{StaticResource AccentBrush}" Foreground="#04122a"/>
-              </Grid>
-              <Grid Margin="0,6,0,6">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                  <TextBlock Text="Reset Network" FontWeight="SemiBold"/>
-                  <TextBlock Text="Resets Winsock and TCP/IP, flushes DNS. Requires a reboot after." Foreground="{StaticResource MutedBrush}" FontSize="11"/>
-                </StackPanel>
-                <Button Grid.Column="1" Name="BtnFixNetworkReset" Content="Run" Background="{StaticResource AccentBrush}" Foreground="#04122a"/>
-              </Grid>
-              <Grid Margin="0,6,0,6">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                  <TextBlock Text="Reset Windows Update" FontWeight="SemiBold"/>
-                  <TextBlock Text="Clears the update cache and restarts related services - standard fix for a stuck Windows Update." Foreground="{StaticResource MutedBrush}" FontSize="11"/>
-                </StackPanel>
-                <Button Grid.Column="1" Name="BtnFixWindowsUpdate" Content="Run" Background="{StaticResource AccentBrush}" Foreground="#04122a"/>
-              </Grid>
-              <Grid Margin="0,6,0,0">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                  <TextBlock Text="Reinstall winget (App Installer)" FontWeight="SemiBold"/>
-                  <TextBlock Text="Re-registers the App Installer package - fixes a missing/broken winget." Foreground="{StaticResource MutedBrush}" FontSize="11"/>
-                </StackPanel>
-                <Button Grid.Column="1" Name="BtnFixWinGet" Content="Run" Background="{StaticResource AccentBrush}" Foreground="#04122a"/>
-              </Grid>
+              <TextBlock Style="{StaticResource Header}" Text="Fixes"/>
+              <Button Name="BtnFixSystemRepair" Content="System File Repair - Run" HorizontalAlignment="Stretch" Margin="0,0,0,4"
+                      ToolTip="Runs sfc /scannow then DISM RestoreHealth. Can take 10-20+ minutes."/>
+              <Button Name="BtnFixNetworkReset" Content="Network - Reset" HorizontalAlignment="Stretch" Margin="0,0,0,4"
+                      ToolTip="Resets Winsock and TCP/IP, flushes DNS. Requires a reboot after."/>
+              <Button Name="BtnFixWindowsUpdate" Content="Windows Update - Reset" HorizontalAlignment="Stretch" Margin="0,0,0,4"
+                      ToolTip="Clears the update cache and restarts related services - standard fix for a stuck Windows Update."/>
+              <Button Name="BtnFixWinGet" Content="WinGet - Reinstall" HorizontalAlignment="Stretch" Margin="0,0,0,4"
+                      ToolTip="Re-registers the App Installer package - fixes a missing/broken winget."/>
             </StackPanel>
           </Border>
-
-          <StackPanel Orientation="Horizontal" Margin="0,20,0,0">
-            <TextBlock Text="STATUS" FontWeight="Bold" FontSize="13" Foreground="{StaticResource AccentBrush}" Margin="0,0,10,0"/>
-            <TextBlock Name="FixesStatusText" Text="Idle" FontSize="13" VerticalAlignment="Center"/>
-          </StackPanel>
-
-          <TextBlock Text="LOG" FontWeight="Bold" FontSize="13" Foreground="{StaticResource AccentBrush}" Margin="0,20,0,8"/>
-          <TextBox Name="FixesLogBox" Height="320" IsReadOnly="True" TextWrapping="NoWrap"
-                   VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontSize="12"/>
-        </StackPanel>
-        </ScrollViewer>
+          <Grid Grid.Column="2">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <StackPanel Grid.Row="0" Orientation="Horizontal">
+              <TextBlock Style="{StaticResource Header}" Text="Status" Margin="0,0,10,0"/>
+              <TextBlock Name="FixesStatusText" Text="Idle" VerticalAlignment="Bottom"/>
+            </StackPanel>
+            <TextBlock Grid.Row="1" Style="{StaticResource Header}" Text="Log" Margin="0,10,0,4"/>
+            <TextBox Grid.Row="2" Name="FixesLogBox" Style="{StaticResource LogBox}" IsReadOnly="True" TextWrapping="NoWrap"
+                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
+          </Grid>
+        </Grid>
       </TabItem>
     </TabControl>
   </Grid>
@@ -748,6 +968,18 @@ $cpuText = $window.FindName('CpuText')
 $bannerBorder = $window.FindName('BannerBorder')
 $bannerText = $window.FindName('BannerText')
 $logBox = $window.FindName('LogBox')
+$mainTabs = $window.FindName('MainTabs')
+$rootGrid = $window.FindName('RootGrid')
+$navDebloat = $window.FindName('NavDebloat')
+$navInstall = $window.FindName('NavInstall')
+$navFixes = $window.FindName('NavFixes')
+$searchHint = $window.FindName('SearchHint')
+$btnOpenLogs = $window.FindName('BtnOpenLogs')
+$btnWinMin = $window.FindName('BtnWinMin')
+$btnWinMax = $window.FindName('BtnWinMax')
+$btnWinClose = $window.FindName('BtnWinClose')
+$iconMax = $window.FindName('IconMax')
+$iconRestore = $window.FindName('IconRestore')
 
 # --- Tab 2 controls ---
 $searchBox = $window.FindName('SearchBox')
@@ -778,6 +1010,32 @@ $fixesLogBox = $window.FindName('FixesLogBox')
 $greenBrush = $window.Resources['GreenBrush']
 $redBrush = $window.Resources['RedBrush']
 $accentBrush = $window.Resources['AccentBrush']
+$headerBrush = $window.Resources['HeaderBrush']
+
+function Set-ActiveTab {
+    param([int]$Index)
+    $mainTabs.SelectedIndex = $Index
+    $navDebloat.Tag = if ($Index -eq 0) { 'selected' } else { '' }
+    $navInstall.Tag = if ($Index -eq 1) { 'selected' } else { '' }
+    $navFixes.Tag = if ($Index -eq 2) { 'selected' } else { '' }
+}
+$navDebloat.Add_Click({ Set-ActiveTab -Index 0 })
+$navInstall.Add_Click({ Set-ActiveTab -Index 1 })
+$navFixes.Add_Click({ Set-ActiveTab -Index 2 })
+
+$btnWinMin.Add_Click({ $window.WindowState = 'Minimized' })
+$btnWinMax.Add_Click({
+    if ($window.WindowState -eq 'Maximized') { $window.WindowState = 'Normal' } else { $window.WindowState = 'Maximized' }
+})
+$btnWinClose.Add_Click({ $window.Close() })
+$window.Add_StateChanged({
+    # WindowChrome lets a maximized window overflow the screen by its resize border.
+    $isMax = $window.WindowState -eq 'Maximized'
+    $rootGrid.Margin = if ($isMax) { '7' } else { '0' }
+    $iconMax.Visibility = if ($isMax) { 'Collapsed' } else { 'Visible' }
+    $iconRestore.Visibility = if ($isMax) { 'Visible' } else { 'Collapsed' }
+})
+$btnOpenLogs.Add_Click({ Invoke-Item -Path $workDir })
 
 # ============================================================================
 # Populate Install Apps tab from apps-catalog.json
@@ -789,11 +1047,11 @@ $script:categoryBlocks = New-Object System.Collections.Generic.List[object]
 $categories = $catalog.apps | Group-Object category | Sort-Object Name
 foreach ($cat in $categories) {
     $header = New-Object System.Windows.Controls.TextBlock
-    $header.Text = "- $($cat.Name)"
-    $header.FontWeight = 'Bold'
-    $header.FontSize = 14
-    $header.Foreground = $accentBrush
-    $header.Margin = '0,14,0,6'
+    $header.Text = $cat.Name
+    $header.FontFamily = 'Consolas'
+    $header.FontSize = 16
+    $header.Foreground = $headerBrush
+    $header.Margin = '0,8,0,4'
     $installAppsPanel.Children.Add($header) | Out-Null
 
     $wrap = New-Object System.Windows.Controls.WrapPanel
@@ -802,7 +1060,7 @@ foreach ($cat in $categories) {
         $cb.Content = $app.name
         $cb.Tag = $app.wingetId
         $cb.Width = 230
-        $cb.Margin = '4'
+        $cb.Margin = '2,1'
         $wrap.Children.Add($cb) | Out-Null
         $entry = [PSCustomObject]@{ CheckBox = $cb; Name = $app.name; Category = $cat.Name; WingetId = $app.wingetId }
         $script:appEntries.Add($entry)
@@ -840,7 +1098,11 @@ function Update-AppVisibility {
     }
 }
 
-$searchBox.Add_TextChanged({ Update-AppVisibility })
+$searchBox.Add_TextChanged({
+    $searchHint.Visibility = if ($searchBox.Text) { 'Collapsed' } else { 'Visible' }
+    if ($searchBox.Text -and $mainTabs.SelectedIndex -ne 1) { Set-ActiveTab -Index 1 }
+    Update-AppVisibility
+})
 $catAllBtn.Add_Click({ $script:activeCategory = 'All'; Update-AppVisibility })
 $catBrowsersBtn.Add_Click({ $script:activeCategory = 'Browsers'; Update-AppVisibility })
 $catMsToolsBtn.Add_Click({ $script:activeCategory = 'Microsoft Tools'; Update-AppVisibility })

@@ -6,7 +6,10 @@ no keeping a USB kit in sync across every laptop.
 
 ## Gr3y's Utilities - Debloat + Office Deploy + App Installer
 
-A native Windows GUI (WPF, no browser involved) with two tabs:
+A native Windows GUI (WPF, no browser involved) styled after ChrisTitusTech's
+WinUtil: a custom dark window chrome with the tabs, a search box, and window
+controls built into the title bar itself, and a dense two-column layout instead
+of a typical "settings app" look. Three tabs:
 
 - **Debloat + Office** - removes Dell/Lenovo OEM bloatware, McAfee trialware, and
   the Windows 11 built-in consumer Teams/Chat AppX package (not the real work/
@@ -25,6 +28,8 @@ A native Windows GUI (WPF, no browser involved) with two tabs:
   [`debloat/apps-catalog.json`](debloat/apps-catalog.json) - edit that file to add,
   remove, or rename entries; every future run picks up the change automatically,
   no code edits needed.
+- **Fixes** - one-click System File Repair (sfc + DISM), network reset, Windows
+  Update reset, and winget re-registration, each run standalone with its own log.
 
 Run from an elevated or non-elevated PowerShell prompt (it self-elevates, one UAC
 prompt, and switches to STA if needed - both handled automatically):
