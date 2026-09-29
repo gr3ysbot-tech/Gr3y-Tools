@@ -54,4 +54,14 @@ foreach ($relativePath in $toolFiles) {
 }
 
 Write-Host "Starting Gr3y's Utilities..." -ForegroundColor Green
-& (Join-Path $installDir 'Gr3ysUtilities.ps1')
+
+# Always launch as its own -ExecutionPolicy Bypass process, regardless of what
+# policy the CURRENT session has. Relying on the elevation relaunch above to set
+# Bypass isn't enough - if the operator already had an elevated window open (a
+# very normal thing for an IT admin to do), that relaunch never happens, and a
+# plain "& script.ps1" call here would inherit whatever policy this session
+# already has (Restricted by default on an unmodified/clean machine - exactly
+# what this tool's target laptops are).
+Start-Process -FilePath 'powershell.exe' -Wait -ArgumentList @(
+    '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $installDir 'Gr3ysUtilities.ps1')
+)
