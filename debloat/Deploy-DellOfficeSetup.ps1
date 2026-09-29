@@ -240,6 +240,70 @@ function Get-UninstallEntries {
         Where-Object { $_.DisplayName }
 }
 
+function Invoke-ThrottledSteps {
+    # Runs a batch of independent script actions in a bounded runspace pool
+    # (default 3 at a time) instead of fully serial or fully unbounded-parallel.
+    # Each Action must be self-contained (no closures over outer variables) -
+    # pass inputs via Args, since runspaces don't share the caller's scope.
+    param(
+        [System.Collections.Generic.List[hashtable]]$Steps,
+        [int]$MaxConcurrency = 3
+    )
+    if ($DryRun) {
+        foreach ($step in $Steps) { Write-Log "DRYRUN: $($step.Description)" 'DRYRUN' }
+        return
+    }
+    if ($Steps.Count -eq 0) { return }
+
+    $pool = [runspacefactory]::CreateRunspacePool(1, $MaxConcurrency)
+    $pool.Open()
+    $handles = New-Object System.Collections.Generic.List[object]
+
+    foreach ($step in $Steps) {
+        $ps = [powershell]::Create()
+        $ps.RunspacePool = $pool
+        [void]$ps.AddScript($step.Action)
+        if ($step.Args) {
+            foreach ($key in $step.Args.Keys) {
+                [void]$ps.AddParameter($key, $step.Args[$key])
+            }
+        }
+        $handle = $ps.BeginInvoke()
+        $handles.Add([pscustomobject]@{ PowerShell = $ps; Handle = $handle; Description = $step.Description })
+    }
+
+    # Log from the main thread only - Start-Transcript doesn't capture output
+    # written inside separate runspaces, and it keeps the log file write single-threaded.
+    foreach ($item in $handles) {
+        try {
+            $item.PowerShell.EndInvoke($item.Handle) | Out-Null
+            Write-Log $item.Description
+        } catch {
+            Write-Log "Failed: $($item.Description) - $($_.Exception.Message)" 'WARN'
+        } finally {
+            $item.PowerShell.Dispose()
+        }
+    }
+
+    $pool.Close()
+    $pool.Dispose()
+}
+
+function Start-ProcessLowPriority {
+    # Launches an uninstaller at BelowNormal process priority so it yields to
+    # whatever else is using the machine (remote session, foreground apps)
+    # instead of competing for CPU/disk at full priority.
+    param(
+        [string]$FilePath,
+        [string]$ArgumentList
+    )
+    $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru -WindowStyle Hidden -ErrorAction SilentlyContinue
+    if ($proc) {
+        try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch {}
+        $proc.WaitForExit()
+    }
+}
+
 function Remove-OemBloatware {
     Write-Log '--- Phase 1: Removing OEM (Dell/Lenovo) bloatware and McAfee trialware ---'
 
@@ -251,25 +315,45 @@ function Remove-OemBloatware {
     $allInstalledAppx = Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue
     $allProvisionedAppx = Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
 
+    # AppX removals are cheap and independent of each other, so a few run at once
+    # in a bounded pool instead of one at a time - real time drops without the
+    # machine-choking effect an unbounded parallel pass would cause.
+    $appxRemoveAction = { param($FullName) Remove-AppxPackage -Package $FullName -AllUsers -ErrorAction SilentlyContinue }
+    $appxDeprovisionAction = { param($PackageName) Remove-AppxProvisionedPackage -Online -PackageName $PackageName -ErrorAction SilentlyContinue | Out-Null }
+
+    $appxSteps = New-Object System.Collections.Generic.List[hashtable]
     foreach ($pattern in $OemBloatAppxPatterns) {
         $installed = $allInstalledAppx | Where-Object { $_.Name -like $pattern }
         foreach ($pkg in $installed) {
-            Invoke-Step "Removing AppX package: $($pkg.PackageFullName)" {
-                Remove-AppxPackage -Package $pkg.PackageFullName -AllUsers -ErrorAction SilentlyContinue
-            }
+            $appxSteps.Add(@{
+                Description = "Removing AppX package: $($pkg.PackageFullName)"
+                Action = $appxRemoveAction
+                Args = @{ FullName = $pkg.PackageFullName }
+            })
         }
         $provisioned = $allProvisionedAppx | Where-Object { $_.DisplayName -like $pattern }
         foreach ($pkg in $provisioned) {
-            Invoke-Step "De-provisioning AppX package: $($pkg.DisplayName)" {
-                Remove-AppxProvisionedPackage -Online -PackageName $pkg.PackageName -ErrorAction SilentlyContinue | Out-Null
-            }
+            $appxSteps.Add(@{
+                Description = "De-provisioning AppX package: $($pkg.DisplayName)"
+                Action = $appxDeprovisionAction
+                Args = @{ PackageName = $pkg.PackageName }
+            })
         }
     }
+    if ($appxSteps.Count -gt 0) {
+        Write-Log "Removing $($appxSteps.Count) AppX package/provisioning entries (up to 3 at a time)..."
+    }
+    Invoke-ThrottledSteps -Steps $appxSteps -MaxConcurrency 3
 
     # --- Win32 programs, via their own registry uninstall string ---
     # (Previously also tried winget first on every match, but the registry uninstall
     # string below always ran anyway - winget rarely recognizes OEM-bundled software
     # by name, so it was pure added latency for no extra removals.)
+    # These stay serial - Windows Installer serializes MSI operations internally
+    # regardless, so "parallel" here would just queue up and fail with "another
+    # installation is already in progress." Instead: run each uninstaller at
+    # BelowNormal priority and pause briefly between them so disk/AV activity
+    # has a moment to settle instead of stacking back-to-back at full throttle.
     $entries = Get-UninstallEntries
 
     foreach ($pattern in $Win32BloatPatterns) {
@@ -281,21 +365,22 @@ function Remove-OemBloatware {
                 if ($uninstallString) {
                     if ($uninstallString -match 'msiexec') {
                         $productCode = $match.PSChildName
-                        Write-Log "Running msiexec /x $productCode /qn /norestart for '$name'"
-                        Start-Process msiexec.exe -ArgumentList "/x $productCode /qn /norestart" -Wait -ErrorAction SilentlyContinue
+                        Write-Log "Running msiexec /x $productCode /qn /norestart for '$name' (low priority)"
+                        Start-ProcessLowPriority -FilePath 'msiexec.exe' -ArgumentList "/x $productCode /qn /norestart"
                     } else {
                         # Best-effort silent flags for EXE-based uninstallers (NSIS/InstallShield/Inno).
                         foreach ($flag in @('/S', '/silent', '/verysilent /norestart', '/quiet')) {
-                            Write-Log "Attempting EXE uninstall for '$name' with flag(s): $flag"
+                            Write-Log "Attempting EXE uninstall for '$name' with flag(s): $flag (low priority)"
                             $exe = ($uninstallString -replace '"', '') -split ' ' | Select-Object -First 1
                             if (Test-Path $exe) {
-                                Start-Process $exe -ArgumentList $flag -Wait -ErrorAction SilentlyContinue
+                                Start-ProcessLowPriority -FilePath $exe -ArgumentList $flag
                                 break
                             }
                         }
                     }
                 }
             }
+            if (-not $DryRun) { Start-Sleep -Milliseconds 400 }
         }
     }
 
