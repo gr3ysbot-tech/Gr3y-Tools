@@ -1343,7 +1343,7 @@ function Start-NextInQueue {
     $wingetArgs = switch ($script:installMode) {
         'install' { @('install', '--id', $entry.WingetId, '-e', '--source', 'winget', '--silent', '--accept-package-agreements', '--accept-source-agreements') }
         'uninstall' { @('uninstall', '--id', $entry.WingetId, '-e', '--source', 'winget', '--silent') }
-        'check' { @('list', '--id', $entry.WingetId, '-e', '--accept-source-agreements') }
+        'check' { @('list', '--id', $entry.WingetId, '-e', '--source', 'winget', '--accept-source-agreements') }
     }
 
     $script:installProc = Start-Process -FilePath 'winget.exe' -ArgumentList $wingetArgs `
