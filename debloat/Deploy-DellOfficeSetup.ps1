@@ -26,6 +26,40 @@
 .PARAMETER SkipDebloat
     Skip OEM (Dell/Lenovo) bloatware / McAfee removal (phase 1).
 
+.PARAMETER Dell
+.PARAMETER Lenovo
+    Limit phase 1 to the selected OEM's patterns (generic bloat like McAfee/Dropbox/
+    Widgets/Teams always runs regardless, since it isn't OEM-specific). If NEITHER is
+    passed, both run - this is the safe default for standalone/command-line use; the
+    GUI always passes at least one explicitly based on its checkboxes.
+
+.PARAMETER TweakReduceTelemetry
+    Set AllowTelemetry=0, disable the DiagTrack service, and disable the Activity
+    Feed (publish/upload) registry values. Off by default.
+
+.PARAMETER TweakDisableHibernation
+    Run "powercfg /hibernate off" to remove hiberfil.sys and free its disk space.
+    Off by default.
+
+.PARAMETER FixSystemRepair
+    Run sfc /scannow then DISM /Online /Cleanup-Image /RestoreHealth. Can take
+    10-20+ minutes. Off by default - intended to be triggered standalone from the
+    GUI's Fixes tab, not bundled into a normal debloat/Office run.
+
+.PARAMETER FixNetworkReset
+    Reset Winsock and the TCP/IP stack, then flush DNS. Requires a reboot to fully
+    take effect. Off by default - standalone Fixes-tab action.
+
+.PARAMETER FixWindowsUpdateReset
+    Stop the Windows Update-related services, clear the SoftwareDistribution and
+    Catroot2 caches, and restart the services - the standard fix for a stuck/broken
+    Windows Update. Off by default - standalone Fixes-tab action.
+
+.PARAMETER FixWinGetReinstall
+    Re-register the App Installer (winget) package for the current user, the
+    standard fix when winget itself is missing or broken. Off by default -
+    standalone Fixes-tab action.
+
 .PARAMETER SkipOfficeRemoval
     Skip removing existing Office installs (phase 2).
 
@@ -68,12 +102,20 @@ param(
     [switch]$DryRun,
     [switch]$CreateRestorePoint,
     [switch]$SkipDebloat,
+    [switch]$Dell,
+    [switch]$Lenovo,
     [switch]$SkipOfficeRemoval,
     [switch]$SkipOfficeInstall,
     [ValidateSet('Current', 'MonthlyEnterprise', 'SemiAnnual', 'SemiAnnualPreview')]
     [string]$OfficeChannel = 'MonthlyEnterprise',
     [string]$OfficeLanguage = 'en-us',
-    [switch]$NoReboot
+    [switch]$NoReboot,
+    [switch]$TweakReduceTelemetry,
+    [switch]$TweakDisableHibernation,
+    [switch]$FixSystemRepair,
+    [switch]$FixNetworkReset,
+    [switch]$FixWindowsUpdateReset,
+    [switch]$FixWinGetReinstall
 )
 
 $ErrorActionPreference = 'Continue'
@@ -164,8 +206,29 @@ if (-not (Test-Path $patternsPath)) {
     exit 1
 }
 $bloatPatterns = Get-Content -Path $patternsPath -Raw | ConvertFrom-Json
-$OemBloatAppxPatterns = $bloatPatterns.appxPatterns
-$Win32BloatPatterns = $bloatPatterns.win32Patterns
+
+# Which OEM section(s) to actually check - avoids matching Lenovo patterns on a
+# known-Dell machine (and vice versa) when the operator already knows the brand.
+# Generic bloat (McAfee/Dropbox/Widgets/Teams) isn't OEM-specific, so it always runs.
+$script:selectedOems = @()
+if ($Dell) { $script:selectedOems += 'dell' }
+if ($Lenovo) { $script:selectedOems += 'lenovo' }
+if ($script:selectedOems.Count -eq 0) { $script:selectedOems = @('dell', 'lenovo') }
+
+$OemBloatAppxPatterns = @($bloatPatterns.generic.appxPatterns)
+$Win32BloatPatterns = @($bloatPatterns.generic.win32Patterns)
+$OemTaskFolders = @()
+$OemTaskKeepPatterns = @()
+$OemServicePatterns = @()
+foreach ($oemName in $script:selectedOems) {
+    $section = $bloatPatterns.$oemName
+    if (-not $section) { continue }
+    $OemBloatAppxPatterns += $section.appxPatterns
+    $Win32BloatPatterns += $section.win32Patterns
+    $OemTaskFolders += $section.scheduledTaskFolders
+    $OemTaskKeepPatterns += $section.scheduledTaskKeepPatterns
+    $OemServicePatterns += $section.servicePatterns
+}
 
 function Get-UninstallEntries {
     $paths = @(
@@ -248,14 +311,11 @@ function Disable-OemScheduledTasksAndServices {
     # disable (not delete, so it stays reversible) everything under \Dell\ and
     # \Lenovo\ except the driver/BIOS update tooling deliberately kept installed
     # above (Dell Command Update, Lenovo Vantage).
-    $oemTaskFolders = $bloatPatterns.scheduledTaskFolders
-    $keepTaskPatterns = $bloatPatterns.scheduledTaskKeepPatterns
-
-    foreach ($folder in $oemTaskFolders) {
+    foreach ($folder in $OemTaskFolders) {
         $tasks = Get-ScheduledTask -TaskPath "$folder*" -ErrorAction SilentlyContinue
         foreach ($task in $tasks) {
             $isKept = $false
-            foreach ($keep in $keepTaskPatterns) {
+            foreach ($keep in $OemTaskKeepPatterns) {
                 if ($task.TaskName -like $keep) { $isKept = $true; break }
             }
             if ($isKept -or $task.State -eq 'Disabled') { continue }
@@ -268,7 +328,7 @@ function Disable-OemScheduledTasksAndServices {
     # Same bloat keywords used for the Win32 program removal above, matched against
     # Windows services instead - disabling stops the app respawning itself even when
     # its uninstaller didn't clean up its service registration.
-    foreach ($pattern in $bloatPatterns.servicePatterns) {
+    foreach ($pattern in $OemServicePatterns) {
         $services = Get-Service -ErrorAction SilentlyContinue |
             Where-Object { $_.DisplayName -like $pattern -or $_.Name -like $pattern }
         foreach ($svc in $services) {
@@ -280,6 +340,104 @@ function Disable-OemScheduledTasksAndServices {
     }
 
     Write-Log 'OEM scheduled task / service cleanup pass complete.'
+}
+
+# ============================================================================
+# TWEAKS - opt-in preference changes, bundled into a normal run alongside debloat
+# ============================================================================
+
+function Set-TelemetryReduced {
+    Invoke-Step 'Reducing telemetry and activity tracking' {
+        try {
+            New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' -Name 'AllowTelemetry' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+
+            New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name 'EnableActivityFeed' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name 'PublishUserActivities' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name 'UploadUserActivities' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+
+            Stop-Service -Name DiagTrack -Force -ErrorAction SilentlyContinue
+            Set-Service -Name DiagTrack -StartupType Disabled -ErrorAction SilentlyContinue
+
+            Write-Log 'Telemetry and activity tracking reduced (AllowTelemetry=0, Activity Feed disabled, DiagTrack service disabled).'
+        } catch {
+            Write-Log "Could not fully apply the telemetry tweak: $($_.Exception.Message)" 'WARN'
+        }
+    }
+}
+
+function Disable-Hibernation {
+    Invoke-Step 'Disabling hibernation (frees hiberfil.sys disk space)' {
+        powercfg /hibernate off 2>&1 | ForEach-Object { Write-Log "powercfg: $_" }
+    }
+}
+
+# ============================================================================
+# FIXES - standalone one-click troubleshooting actions. Not bundled into a
+# normal debloat/Office run; each is only invoked when its own flag is passed.
+# ============================================================================
+
+function Invoke-SystemRepair {
+    Write-Log '--- Fix: Running System File Repair (sfc + DISM) - this can take 10-20+ minutes ---'
+    Invoke-Step 'Running sfc /scannow' {
+        sfc /scannow 2>&1 | ForEach-Object { Write-Log "sfc: $_" }
+    }
+    Invoke-Step 'Running DISM /Online /Cleanup-Image /RestoreHealth' {
+        DISM /Online /Cleanup-Image /RestoreHealth 2>&1 | ForEach-Object { Write-Log "DISM: $_" }
+    }
+    Write-Log 'System file repair complete.'
+}
+
+function Invoke-NetworkReset {
+    Write-Log '--- Fix: Resetting network stack ---'
+    Invoke-Step 'Resetting Winsock' { netsh winsock reset 2>&1 | ForEach-Object { Write-Log "netsh: $_" } }
+    Invoke-Step 'Resetting TCP/IP stack' { netsh int ip reset 2>&1 | ForEach-Object { Write-Log "netsh: $_" } }
+    Invoke-Step 'Flushing DNS cache' { ipconfig /flushdns 2>&1 | ForEach-Object { Write-Log "ipconfig: $_" } }
+    Write-Log 'Network reset complete. A reboot is required for the Winsock/TCP-IP reset to fully take effect.'
+}
+
+function Invoke-WindowsUpdateReset {
+    Write-Log '--- Fix: Resetting Windows Update ---'
+    $services = @('wuauserv', 'bits', 'cryptsvc', 'msiserver')
+    Invoke-Step "Stopping services: $($services -join ', ')" {
+        foreach ($svc in $services) { Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue }
+    }
+    $softwareDistribution = Join-Path $env:WINDIR 'SoftwareDistribution'
+    $catroot2 = Join-Path $env:WINDIR 'System32\catroot2'
+    Invoke-Step "Renaming $softwareDistribution and $catroot2 so Windows Update rebuilds them fresh" {
+        if (Test-Path $softwareDistribution) {
+            Remove-Item -Path "$softwareDistribution.bak" -Recurse -Force -ErrorAction SilentlyContinue
+            Rename-Item -Path $softwareDistribution -NewName 'SoftwareDistribution.bak' -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path $catroot2) {
+            Remove-Item -Path "$catroot2.bak" -Recurse -Force -ErrorAction SilentlyContinue
+            Rename-Item -Path $catroot2 -NewName 'catroot2.bak' -Force -ErrorAction SilentlyContinue
+        }
+    }
+    Invoke-Step "Restarting services: $($services -join ', ')" {
+        foreach ($svc in $services) { Start-Service -Name $svc -ErrorAction SilentlyContinue }
+    }
+    Write-Log 'Windows Update reset complete.'
+}
+
+function Invoke-WinGetReinstall {
+    Write-Log '--- Fix: Re-registering winget (App Installer) ---'
+    Invoke-Step 'Re-registering Microsoft.DesktopAppInstaller for the current user' {
+        try {
+            Add-AppxPackage -RegisterByFamilyName -MainPackage 'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe' -ErrorAction Stop
+            Write-Log 'winget re-registered successfully.'
+        } catch {
+            Write-Log "Re-register failed ($($_.Exception.Message)); trying to re-register from the existing package's own manifest instead." 'WARN'
+            $pkg = Get-AppxPackage -AllUsers -Name 'Microsoft.DesktopAppInstaller' -ErrorAction SilentlyContinue
+            if ($pkg) {
+                Add-AppxPackage -Register "$($pkg.InstallLocation)\AppXManifest.xml" -DisableDevelopmentMode -ErrorAction SilentlyContinue
+                Write-Log 'Re-registered from local package manifest.'
+            } else {
+                Write-Log 'App Installer is not present on this machine at all - install it from the Microsoft Store manually.' 'WARN'
+            }
+        }
+    }
 }
 
 # ============================================================================
@@ -428,12 +586,21 @@ $languageLines
 Write-Log "Starting run. DryRun=$DryRun CreateRestorePoint=$CreateRestorePoint SkipDebloat=$SkipDebloat SkipOfficeRemoval=$SkipOfficeRemoval SkipOfficeInstall=$SkipOfficeInstall"
 
 if ($CreateRestorePoint) { New-PreDeploySystemRestorePoint }
+
+if ($TweakReduceTelemetry) { Set-TelemetryReduced }
+if ($TweakDisableHibernation) { Disable-Hibernation }
+
 if (-not $SkipDebloat) {
     Remove-OemBloatware
     Disable-OemScheduledTasksAndServices
 }
 if (-not $SkipOfficeRemoval) { Uninstall-ExistingOffice }
 if (-not $SkipOfficeInstall) { Install-Microsoft365Business }
+
+if ($FixSystemRepair) { Invoke-SystemRepair }
+if ($FixNetworkReset) { Invoke-NetworkReset }
+if ($FixWindowsUpdateReset) { Invoke-WindowsUpdateReset }
+if ($FixWinGetReinstall) { Invoke-WinGetReinstall }
 
 Write-Log "Run complete. Log saved to $logPath"
 

@@ -181,13 +181,35 @@ function Get-UninstallEntries {
 function Get-BloatScanReport {
     # Read-only inspection using the exact same patterns Deploy-DellOfficeSetup.ps1
     # acts on (both load from bloat-patterns.json) - nothing here changes the system,
-    # it only reports what a real run would touch.
+    # it only reports what a real run would touch. Respects the Dell/Lenovo toggles
+    # the same way the real run does, so the scan matches what Start would actually do.
     $lines = New-Object System.Collections.Generic.List[string]
-    $totalFound = 0
+
+    $oemsToScan = @()
+    if ($optDell.IsChecked) { $oemsToScan += 'dell' }
+    if ($optLenovo.IsChecked) { $oemsToScan += 'lenovo' }
+    if ($oemsToScan.Count -eq 0) { $oemsToScan = @('dell', 'lenovo') }
+
+    $appxPatternsToScan = New-Object System.Collections.Generic.List[string]
+    $win32PatternsToScan = New-Object System.Collections.Generic.List[string]
+    $taskFoldersToScan = New-Object System.Collections.Generic.List[string]
+    $taskKeepPatternsToScan = New-Object System.Collections.Generic.List[string]
+    $servicePatternsToScan = New-Object System.Collections.Generic.List[string]
+    foreach ($p in $bloatPatterns.generic.appxPatterns) { $appxPatternsToScan.Add($p) }
+    foreach ($p in $bloatPatterns.generic.win32Patterns) { $win32PatternsToScan.Add($p) }
+    foreach ($oemName in $oemsToScan) {
+        $section = $bloatPatterns.$oemName
+        if (-not $section) { continue }
+        foreach ($p in $section.appxPatterns) { $appxPatternsToScan.Add($p) }
+        foreach ($p in $section.win32Patterns) { $win32PatternsToScan.Add($p) }
+        foreach ($p in $section.scheduledTaskFolders) { $taskFoldersToScan.Add($p) }
+        foreach ($p in $section.scheduledTaskKeepPatterns) { $taskKeepPatternsToScan.Add($p) }
+        foreach ($p in $section.servicePatterns) { $servicePatternsToScan.Add($p) }
+    }
 
     $allInstalledAppx = Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue
     $foundAppx = New-Object System.Collections.Generic.List[string]
-    foreach ($pattern in $bloatPatterns.appxPatterns) {
+    foreach ($pattern in $appxPatternsToScan) {
         foreach ($pkg in ($allInstalledAppx | Where-Object { $_.Name -like $pattern })) {
             $foundAppx.Add($pkg.Name)
         }
@@ -195,18 +217,18 @@ function Get-BloatScanReport {
 
     $entries = Get-UninstallEntries
     $foundWin32 = New-Object System.Collections.Generic.List[string]
-    foreach ($pattern in $bloatPatterns.win32Patterns) {
+    foreach ($pattern in $win32PatternsToScan) {
         foreach ($match in ($entries | Where-Object { $_.DisplayName -like $pattern })) {
             $foundWin32.Add($match.DisplayName)
         }
     }
 
     $foundTasks = New-Object System.Collections.Generic.List[string]
-    foreach ($folder in $bloatPatterns.scheduledTaskFolders) {
+    foreach ($folder in $taskFoldersToScan) {
         $tasks = Get-ScheduledTask -TaskPath "$folder*" -ErrorAction SilentlyContinue
         foreach ($task in $tasks) {
             $isKept = $false
-            foreach ($keep in $bloatPatterns.scheduledTaskKeepPatterns) {
+            foreach ($keep in $taskKeepPatternsToScan) {
                 if ($task.TaskName -like $keep) { $isKept = $true; break }
             }
             if (-not $isKept -and $task.State -ne 'Disabled') {
@@ -216,7 +238,7 @@ function Get-BloatScanReport {
     }
 
     $foundServices = New-Object System.Collections.Generic.List[string]
-    foreach ($pattern in $bloatPatterns.servicePatterns) {
+    foreach ($pattern in $servicePatternsToScan) {
         foreach ($svc in (Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like $pattern -or $_.Name -like $pattern })) {
             $foundServices.Add("$($svc.DisplayName) ($($svc.Name))")
         }
@@ -512,15 +534,35 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
                 <TextBlock Grid.Column="0" Text="Skip OEM debloat" VerticalAlignment="Center"/>
                 <CheckBox Grid.Column="1" Name="OptSkipDebloat" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
               </Grid>
+              <Grid Margin="24,6,0,6">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Debloat Dell software" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
+                <CheckBox Grid.Column="1" Name="OptDell" Style="{StaticResource ToggleSwitchStyle}" IsChecked="True" VerticalAlignment="Center"/>
+              </Grid>
+              <Grid Margin="24,6,0,6">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Debloat Lenovo software" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
+                <CheckBox Grid.Column="1" Name="OptLenovo" Style="{StaticResource ToggleSwitchStyle}" IsChecked="True" VerticalAlignment="Center"/>
+              </Grid>
               <Grid Margin="0,6,0,6">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="Skip removing existing Office" VerticalAlignment="Center"/>
                 <CheckBox Grid.Column="1" Name="OptSkipOfficeRemoval" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
               </Grid>
-              <Grid Margin="0,6,0,0">
+              <Grid Margin="0,6,0,6">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="Skip installing Microsoft 365 Apps" VerticalAlignment="Center"/>
                 <CheckBox Grid.Column="1" Name="OptSkipOfficeInstall" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
+              </Grid>
+              <Grid Margin="0,6,0,6">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Reduce telemetry &amp; activity tracking" VerticalAlignment="Center"/>
+                <CheckBox Grid.Column="1" Name="OptTweakTelemetry" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
+              </Grid>
+              <Grid Margin="0,6,0,0">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Disable hibernation (frees disk space)" VerticalAlignment="Center"/>
+                <CheckBox Grid.Column="1" Name="OptTweakHibernation" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
               </Grid>
             </StackPanel>
           </Border>
@@ -611,6 +653,58 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
           </Grid>
         </DockPanel>
       </TabItem>
+      <TabItem Header="Fixes">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="16">
+          <TextBlock Text="ONE-CLICK FIXES" FontWeight="Bold" FontSize="13" Foreground="{StaticResource AccentBrush}" Margin="0,0,0,8"/>
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1" CornerRadius="8" Padding="14,10">
+            <StackPanel>
+              <Grid Margin="0,6,0,6">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                  <TextBlock Text="System File Repair" FontWeight="SemiBold"/>
+                  <TextBlock Text="Runs sfc /scannow then DISM RestoreHealth. Can take 10-20+ minutes." Foreground="{StaticResource MutedBrush}" FontSize="11"/>
+                </StackPanel>
+                <Button Grid.Column="1" Name="BtnFixSystemRepair" Content="Run" Background="{StaticResource AccentBrush}" Foreground="#04122a"/>
+              </Grid>
+              <Grid Margin="0,6,0,6">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                  <TextBlock Text="Reset Network" FontWeight="SemiBold"/>
+                  <TextBlock Text="Resets Winsock and TCP/IP, flushes DNS. Requires a reboot after." Foreground="{StaticResource MutedBrush}" FontSize="11"/>
+                </StackPanel>
+                <Button Grid.Column="1" Name="BtnFixNetworkReset" Content="Run" Background="{StaticResource AccentBrush}" Foreground="#04122a"/>
+              </Grid>
+              <Grid Margin="0,6,0,6">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                  <TextBlock Text="Reset Windows Update" FontWeight="SemiBold"/>
+                  <TextBlock Text="Clears the update cache and restarts related services - standard fix for a stuck Windows Update." Foreground="{StaticResource MutedBrush}" FontSize="11"/>
+                </StackPanel>
+                <Button Grid.Column="1" Name="BtnFixWindowsUpdate" Content="Run" Background="{StaticResource AccentBrush}" Foreground="#04122a"/>
+              </Grid>
+              <Grid Margin="0,6,0,0">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                  <TextBlock Text="Reinstall winget (App Installer)" FontWeight="SemiBold"/>
+                  <TextBlock Text="Re-registers the App Installer package - fixes a missing/broken winget." Foreground="{StaticResource MutedBrush}" FontSize="11"/>
+                </StackPanel>
+                <Button Grid.Column="1" Name="BtnFixWinGet" Content="Run" Background="{StaticResource AccentBrush}" Foreground="#04122a"/>
+              </Grid>
+            </StackPanel>
+          </Border>
+
+          <StackPanel Orientation="Horizontal" Margin="0,20,0,0">
+            <TextBlock Text="STATUS" FontWeight="Bold" FontSize="13" Foreground="{StaticResource AccentBrush}" Margin="0,0,10,0"/>
+            <TextBlock Name="FixesStatusText" Text="Idle" FontSize="13" VerticalAlignment="Center"/>
+          </StackPanel>
+
+          <TextBlock Text="LOG" FontWeight="Bold" FontSize="13" Foreground="{StaticResource AccentBrush}" Margin="0,20,0,8"/>
+          <TextBox Name="FixesLogBox" Height="320" IsReadOnly="True" TextWrapping="NoWrap"
+                   VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontSize="12"/>
+        </StackPanel>
+        </ScrollViewer>
+      </TabItem>
     </TabControl>
   </Grid>
 </Window>
@@ -628,8 +722,12 @@ try {
 $optDryRun = $window.FindName('OptDryRun')
 $optCreateRestorePoint = $window.FindName('OptCreateRestorePoint')
 $optSkipDebloat = $window.FindName('OptSkipDebloat')
+$optDell = $window.FindName('OptDell')
+$optLenovo = $window.FindName('OptLenovo')
 $optSkipOfficeRemoval = $window.FindName('OptSkipOfficeRemoval')
 $optSkipOfficeInstall = $window.FindName('OptSkipOfficeInstall')
+$optTweakTelemetry = $window.FindName('OptTweakTelemetry')
+$optTweakHibernation = $window.FindName('OptTweakHibernation')
 $optChannel = $window.FindName('OptChannel')
 $btnScan = $window.FindName('BtnScan')
 $btnStart = $window.FindName('BtnStart')
@@ -662,6 +760,14 @@ $btnStopInstall = $window.FindName('BtnStopInstall')
 $installStatusText = $window.FindName('InstallStatusText')
 $installAppsPanel = $window.FindName('InstallAppsPanel')
 $installLogBox = $window.FindName('InstallLogBox')
+
+# --- Tab 3 controls ---
+$btnFixSystemRepair = $window.FindName('BtnFixSystemRepair')
+$btnFixNetworkReset = $window.FindName('BtnFixNetworkReset')
+$btnFixWindowsUpdate = $window.FindName('BtnFixWindowsUpdate')
+$btnFixWinGet = $window.FindName('BtnFixWinGet')
+$fixesStatusText = $window.FindName('FixesStatusText')
+$fixesLogBox = $window.FindName('FixesLogBox')
 
 $greenBrush = $window.Resources['GreenBrush']
 $redBrush = $window.Resources['RedBrush']
@@ -779,8 +885,12 @@ $btnStart.Add_Click({
     if ($optDryRun.IsChecked) { $argList += '-DryRun' }
     if ($optCreateRestorePoint.IsChecked) { $argList += '-CreateRestorePoint' }
     if ($optSkipDebloat.IsChecked) { $argList += '-SkipDebloat' }
+    if ($optDell.IsChecked) { $argList += '-Dell' }
+    if ($optLenovo.IsChecked) { $argList += '-Lenovo' }
     if ($optSkipOfficeRemoval.IsChecked) { $argList += '-SkipOfficeRemoval' }
     if ($optSkipOfficeInstall.IsChecked) { $argList += '-SkipOfficeInstall' }
+    if ($optTweakTelemetry.IsChecked) { $argList += '-TweakReduceTelemetry' }
+    if ($optTweakHibernation.IsChecked) { $argList += '-TweakDisableHibernation' }
     $channel = $optChannel.SelectedItem.Content
     $argList += @('-OfficeChannel', $channel)
 
@@ -829,6 +939,55 @@ $btnReboot.Add_Click({
         Restart-Computer -Force
     }
 })
+
+# ============================================================================
+# Tab 3: One-click Fixes - each runs Deploy-DellOfficeSetup.ps1 standalone (all
+# three main phases skipped) with just its own -Fix... flag, reusing the same
+# child-process + redirected-log pattern as the Start button.
+# ============================================================================
+
+$script:fixProc = $null
+$script:fixLogFile = $null
+$script:fixErrFile = $null
+$script:fixLogOffset = 0
+$script:fixStartTime = $null
+
+$fixButtons = @($btnFixSystemRepair, $btnFixNetworkReset, $btnFixWindowsUpdate, $btnFixWinGet)
+
+function Start-FixJob {
+    param([string]$FixFlag, [string]$Label)
+    if ($script:fixProc -and -not $script:fixProc.HasExited) { return }
+
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $deployScript,
+                 '-NoReboot', '-SkipDebloat', '-SkipOfficeRemoval', '-SkipOfficeInstall', $FixFlag)
+
+    $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    $script:fixLogFile = Join-Path $workDir "gui_fix_$stamp.out.log"
+    $script:fixErrFile = Join-Path $workDir "gui_fix_$stamp.err.log"
+    $script:fixLogOffset = 0
+    $fixesLogBox.Text = ''
+    $fixesStatusText.Text = "Running: $Label..."
+    foreach ($b in $fixButtons) { $b.IsEnabled = $false }
+
+    $script:fixProc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList `
+        -RedirectStandardOutput $script:fixLogFile -RedirectStandardError $script:fixErrFile `
+        -WindowStyle Hidden -PassThru
+    $script:fixStartTime = Get-Date
+}
+
+$btnFixSystemRepair.Add_Click({ Start-FixJob -FixFlag '-FixSystemRepair' -Label 'System File Repair' })
+
+$btnFixNetworkReset.Add_Click({
+    $result = [System.Windows.MessageBox]::Show('This resets Winsock and TCP/IP and requires a reboot afterward to fully take effect. Continue?', 'Confirm Network Reset', 'YesNo', 'Warning')
+    if ($result -eq 'Yes') { Start-FixJob -FixFlag '-FixNetworkReset' -Label 'Network Reset' }
+})
+
+$btnFixWindowsUpdate.Add_Click({
+    $result = [System.Windows.MessageBox]::Show('This stops Windows Update-related services and clears their cache. Continue?', 'Confirm Windows Update Reset', 'YesNo', 'Warning')
+    if ($result -eq 'Yes') { Start-FixJob -FixFlag '-FixWindowsUpdateReset' -Label 'Windows Update Reset' }
+})
+
+$btnFixWinGet.Add_Click({ Start-FixJob -FixFlag '-FixWinGetReinstall' -Label 'Reinstall winget' })
 
 # ============================================================================
 # Tab 2: Install/Uninstall/Upgrade queue control
@@ -1045,6 +1204,32 @@ $timer.Add_Tick({
                 $btnCheckInstalled.IsEnabled = $true
                 $btnStopInstall.Visibility = 'Collapsed'
             }
+        }
+    }
+
+    # --- Tab 3 ---
+    if ($script:fixProc) {
+        $running = $false
+        try {
+            $script:fixProc.Refresh()
+            $running = -not $script:fixProc.HasExited
+        } catch {}
+
+        $logResult = Get-LogTail -Path $script:fixLogFile -Offset $script:fixLogOffset
+        if ($logResult.text) {
+            $fixesLogBox.AppendText($logResult.text)
+            $fixesLogBox.ScrollToEnd()
+        }
+        $script:fixLogOffset = $logResult.offset
+
+        if ($running) {
+            $elapsed = [int]((Get-Date) - $script:fixStartTime).TotalSeconds
+            $fixesStatusText.Text = "Running... ({0}:{1:D2} elapsed)" -f [int]($elapsed / 60), ($elapsed % 60)
+        } else {
+            $summary = Get-LogSummary -LogPath $script:fixLogFile
+            $fixesStatusText.Text = if ($summary.completed) { 'Done.' } else { 'Ended before finishing - check the log above.' }
+            foreach ($b in $fixButtons) { $b.IsEnabled = $true }
+            $script:fixProc = $null
         }
     }
 })

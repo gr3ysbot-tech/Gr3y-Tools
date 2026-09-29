@@ -1,67 +1,76 @@
 {
-  "appxPatterns": [
-    "DellInc.DellSupportAssistforPCs",
-    "DellInc.DellOptimizer*",
-    "DellInc.PartnerPromo*",
-    "DellInc.DellCustomerConnect",
-    "DellInc.MyDell",
-    "DellInc.DellDigitalDelivery",
-    "DellInc.DellProductRegistration",
-    "DellInc.DellPremierColor",
-    "DellInc.DellCinemaColor",
-    "DellInc.DellPowerManager",
-    "DellInc.DellPeripheralManager",
-    "DellInc.DellPair",
-    "DellInc.DellMobileConnect",
-    "DellInc.PrivacyandSecurity",
-    "E046963F.LenovoCompanion",
-    "E046963F.LenovoNow",
-    "E046963F.LenovoWelcome",
-    "E046963F.LenovoVoice",
-    "E046963F.LenovoFamilyCloud",
-    "E046963F.LenovoUtility",
-    "E046963F.LenovoServiceBridge",
-    "MirametrixInc.GlancebyMirametrix",
-    "*Dropbox*",
-    "*McAfee*",
-    "*WildTangent*",
-    "MicrosoftTeams"
-  ],
-  "win32Patterns": [
-    "Dell SupportAssist*",
-    "Dell SupportAssist Remediation",
-    "Dell SupportAssist OS Recovery*",
-    "Dell Optimizer*",
-    "Dell Digital Delivery*",
-    "Dell Product Registration",
-    "Dell Peripheral Manager*",
-    "Dell Mobile Connect*",
-    "Dell Pair",
-    "Dell Core Services",
-    "Waves MaxxAudio*",
-    "MaxxAudioPro*",
-    "Lenovo Now",
-    "Lenovo Welcome",
-    "Lenovo Voice",
-    "Lenovo Family Cloud",
-    "Lenovo Utility*",
-    "Lenovo Service Bridge",
-    "Glance by Mirametrix*",
-    "Dropbox Promotion",
-    "McAfee*",
-    "WildTangent*"
-  ],
-  "scheduledTaskFolders": ["\\Dell\\", "\\Lenovo\\"],
-  "scheduledTaskKeepPatterns": ["*CommandUpdate*", "*Vantage*"],
-  "servicePatterns": [
-    "*SupportAssist*",
-    "*Dell Digital Delivery*",
-    "*Dell Optimizer*",
-    "*Lenovo Now*",
-    "*Lenovo Welcome*",
-    "*Lenovo Voice*",
-    "*Lenovo Family Cloud*",
-    "*Lenovo Utility*",
-    "*Lenovo Service Bridge*"
-  ]
+  "dell": {
+    "appxPatterns": [
+      "DellInc.DellSupportAssistforPCs",
+      "DellInc.DellOptimizer*",
+      "DellInc.PartnerPromo*",
+      "DellInc.DellCustomerConnect",
+      "DellInc.MyDell",
+      "DellInc.DellDigitalDelivery",
+      "DellInc.DellProductRegistration",
+      "DellInc.DellPremierColor",
+      "DellInc.DellCinemaColor",
+      "DellInc.DellPowerManager",
+      "DellInc.DellPeripheralManager",
+      "DellInc.DellPair",
+      "DellInc.DellMobileConnect",
+      "DellInc.PrivacyandSecurity"
+    ],
+    "win32Patterns": [
+      "Dell SupportAssist*",
+      "Dell SupportAssist Remediation",
+      "Dell SupportAssist OS Recovery*",
+      "Dell Optimizer*",
+      "Dell Digital Delivery*",
+      "Dell Product Registration",
+      "Dell Peripheral Manager*",
+      "Dell Mobile Connect*",
+      "Dell Pair",
+      "Dell Core Services",
+      "Waves MaxxAudio*",
+      "MaxxAudioPro*"
+    ],
+    "scheduledTaskFolders": ["\\Dell\\"],
+    "scheduledTaskKeepPatterns": ["*CommandUpdate*"],
+    "servicePatterns": [
+      "*SupportAssist*",
+      "*Dell Digital Delivery*",
+      "*Dell Optimizer*"
+    ]
+  },
+  "lenovo": {
+    "appxPatterns": [
+      "E046963F.LenovoCompanion",
+      "E046963F.LenovoNow",
+      "E046963F.LenovoWelcome",
+      "E046963F.LenovoVoice",
+      "E046963F.LenovoFamilyCloud",
+      "E046963F.LenovoUtility",
+      "E046963F.LenovoServiceBridge",
+      "MirametrixInc.GlancebyMirametrix"
+    ],
+    "win32Patterns": [
+      "Lenovo Now",
+      "Lenovo Welcome",
+      "Lenovo Voice",
+      "Lenovo Family Cloud",
+      "Lenovo Utility*",
+      "Lenovo Service Bridge",
+      "Glance by Mirametrix*"
+    ],
+    "scheduledTaskFolders": ["\\Lenovo\\"],
+    "scheduledTaskKeepPatterns": ["*Vantage*"],
+    "servicePatterns": [
+      "*Lenovo Now*",
+      "*Lenovo Welcome*",
+      "*Lenovo Voice*",
+      "*Lenovo Family Cloud*",
+      "*Lenovo Utility*",
+      "*Lenovo Service Bridge*"
+    ]
+  },
+  "generic": {
+    "appxPatterns": ["*Dropbox*", "*McAfee*", "*WildTangent*", "MicrosoftTeams", "MicrosoftWindows.Client.WebExperience"],
+    "win32Patterns": ["Dropbox Promotion", "McAfee*", "WildTangent*"]
+  }
 }
