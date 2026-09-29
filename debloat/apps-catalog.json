@@ -17,6 +17,7 @@
     {"name": "NTLite", "category": "Microsoft Tools", "wingetId": "Nlitesoft.NTLite"},
     {"name": "NuGet", "category": "Microsoft Tools", "wingetId": "Microsoft.NuGet"},
     {"name": "OneDrive", "category": "Microsoft Tools", "wingetId": "Microsoft.OneDrive"},
+    {"name": "Microsoft Teams (work/school)", "category": "Microsoft Tools", "wingetId": "Microsoft.Teams"},
     {"name": "PowerShell", "category": "Microsoft Tools", "wingetId": "Microsoft.PowerShell"},
     {"name": "PowerToys", "category": "Microsoft Tools", "wingetId": "Microsoft.PowerToys"},
     {"name": "Process Explorer", "category": "Microsoft Tools", "wingetId": "Microsoft.Sysinternals.ProcessExplorer"},
