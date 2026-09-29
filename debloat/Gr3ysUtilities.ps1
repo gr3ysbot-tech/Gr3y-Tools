@@ -274,44 +274,203 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Gr3y's Utilities" Height="820" Width="1150"
-        WindowStartupLocation="CenterScreen" Background="#0d1117">
+        WindowStartupLocation="CenterScreen" Background="#0f1420">
   <Window.Resources>
-    <SolidColorBrush x:Key="BgBrush" Color="#0d1117"/>
-    <SolidColorBrush x:Key="PanelBrush" Color="#161b22"/>
-    <SolidColorBrush x:Key="BorderBrush2" Color="#30363d"/>
-    <SolidColorBrush x:Key="TextBrush" Color="#c9d1d9"/>
-    <SolidColorBrush x:Key="MutedBrush" Color="#8b949e"/>
-    <SolidColorBrush x:Key="AccentBrush" Color="#2f81f7"/>
+    <SolidColorBrush x:Key="BgBrush" Color="#0f1420"/>
+    <SolidColorBrush x:Key="PanelBrush" Color="#1a2030"/>
+    <SolidColorBrush x:Key="CardBrush" Color="#171d2b"/>
+    <SolidColorBrush x:Key="BorderBrush2" Color="#2a3245"/>
+    <SolidColorBrush x:Key="TextBrush" Color="#e4e7ec"/>
+    <SolidColorBrush x:Key="MutedBrush" Color="#7d8699"/>
+    <SolidColorBrush x:Key="AccentBrush" Color="#4fd1c9"/>
+    <SolidColorBrush x:Key="ToggleOnBrush" Color="#3b82f6"/>
+    <SolidColorBrush x:Key="ToggleOffBrush" Color="#3a4257"/>
     <SolidColorBrush x:Key="GreenBrush" Color="#3fb950"/>
     <SolidColorBrush x:Key="RedBrush" Color="#f85149"/>
     <SolidColorBrush x:Key="YellowBrush" Color="#d29922"/>
+
     <Style TargetType="Button">
-      <Setter Property="Background" Value="{StaticResource PanelBrush}"/>
+      <Setter Property="Background" Value="{StaticResource CardBrush}"/>
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
       <Setter Property="BorderBrush" Value="{StaticResource BorderBrush2}"/>
       <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Padding" Value="12,6"/>
+      <Setter Property="Padding" Value="12,7"/>
       <Setter Property="Margin" Value="4"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Opacity" Value="0.85"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.4"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
+
+    <!-- Default CheckBox = dark square with an accent checkmark (used by the
+         Install Apps catalog list, matching WinUtil's tweaks-list checkboxes). -->
     <Style TargetType="CheckBox">
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
       <Setter Property="Margin" Value="4"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <StackPanel Orientation="Horizontal">
+              <Border x:Name="Box" Width="16" Height="16" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1.5"
+                      Background="{StaticResource BgBrush}" CornerRadius="3" VerticalAlignment="Center">
+                <Path x:Name="CheckMark" Data="M2,7 L6,11 L14,3" Stroke="{StaticResource AccentBrush}" StrokeThickness="2"
+                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed" Margin="1"/>
+              </Border>
+              <ContentPresenter Margin="6,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="CheckMark" Property="Visibility" Value="Visible"/>
+                <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- Pill-shaped toggle switch, used explicitly (via StaticResource key) for
+         the Debloat + Office tab's preference-style on/off options. -->
+    <Style x:Key="ToggleSwitchStyle" TargetType="CheckBox">
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <Grid Width="40" Height="20">
+              <Border x:Name="Track" CornerRadius="10" Background="{StaticResource ToggleOffBrush}" BorderThickness="0"/>
+              <Ellipse x:Name="Thumb" Width="16" Height="16" Fill="#f4f6f9" HorizontalAlignment="Left" Margin="2,0,0,0"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="Track" Property="Background" Value="{StaticResource ToggleOnBrush}"/>
+                <Setter TargetName="Thumb" Property="HorizontalAlignment" Value="Right"/>
+                <Setter TargetName="Thumb" Property="Margin" Value="0,0,2,0"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style TargetType="ComboBoxItem">
+      <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+      <Setter Property="Padding" Value="8,5"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ComboBoxItem">
+            <Border x:Name="Bd" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+              <ContentPresenter/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsHighlighted" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource ToggleOnBrush}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
     <Style TargetType="ComboBox">
       <Setter Property="Margin" Value="4"/>
-    </Style>
-    <Style TargetType="TextBox">
-      <Setter Property="Background" Value="#010409"/>
+      <Setter Property="Padding" Value="8,5"/>
+      <Setter Property="Background" Value="{StaticResource CardBrush}"/>
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
       <Setter Property="BorderBrush" Value="{StaticResource BorderBrush2}"/>
-      <Setter Property="FontFamily" Value="Consolas"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ComboBox">
+            <Grid>
+              <ToggleButton Focusable="False" ClickMode="Press"
+                            IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
+                <ToggleButton.Template>
+                  <ControlTemplate TargetType="ToggleButton">
+                    <Border Background="{StaticResource CardBrush}" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1" CornerRadius="6">
+                      <Grid>
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="*"/>
+                          <ColumnDefinition Width="24"/>
+                        </Grid.ColumnDefinitions>
+                        <Path Grid.Column="1" Data="M0,0 L4,4 L8,0" Stroke="{StaticResource TextBrush}" StrokeThickness="1.5"
+                              StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                      </Grid>
+                    </Border>
+                  </ControlTemplate>
+                </ToggleButton.Template>
+              </ToggleButton>
+              <ContentPresenter IsHitTestVisible="False" Content="{TemplateBinding SelectionBoxItem}"
+                                ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                Margin="{TemplateBinding Padding}" VerticalAlignment="Center" HorizontalAlignment="Left"/>
+              <Popup IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" Placement="Bottom" PopupAnimation="Slide">
+                <Border Background="{StaticResource CardBrush}" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1" CornerRadius="6"
+                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource AncestorType=ComboBox}}" MaxHeight="220" Margin="0,2,0,0">
+                  <ScrollViewer><ItemsPresenter/></ScrollViewer>
+                </Border>
+              </Popup>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
+
+    <Style TargetType="TextBox">
+      <Setter Property="Background" Value="#0a0e17"/>
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource BorderBrush2}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="6,4"/>
+      <Setter Property="FontFamily" Value="Consolas"/>
+      <Setter Property="CaretBrush" Value="{StaticResource TextBrush}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TextBox">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+              <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- Segmented nav-button look for the tab strip, matching the reference's
+         Install/Tweaks/Config row - active tab highlighted in toggle-blue. -->
     <Style TargetType="TabItem">
-      <Setter Property="Foreground" Value="Black"/>
-      <Setter Property="Padding" Value="16,8"/>
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TabItem">
+            <Border x:Name="Bd" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource BorderBrush2}"
+                    BorderThickness="1" CornerRadius="6" Margin="4,4,4,0" Padding="16,8">
+              <ContentPresenter x:Name="Content" ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsSelected" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource ToggleOnBrush}"/>
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource ToggleOnBrush}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
     <Style TargetType="TabControl">
       <Setter Property="Background" Value="{StaticResource BgBrush}"/>
@@ -321,27 +480,52 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
     </Style>
   </Window.Resources>
-  <Grid>
+  <Grid Background="{StaticResource BgBrush}">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
     </Grid.RowDefinitions>
-    <Border Grid.Row="0" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="0,0,0,1" Padding="16,10">
-      <TextBlock Text="Gr3y's Utilities" FontSize="18" FontWeight="Bold"/>
+    <Border Grid.Row="0" Background="#0a0e17" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="0,0,0,1" Padding="16,10">
+      <StackPanel Orientation="Horizontal">
+        <TextBlock Text="Gr3y's Utilities" FontSize="18" FontWeight="Bold" Foreground="{StaticResource AccentBrush}"/>
+      </StackPanel>
     </Border>
-    <TabControl Grid.Row="1" Name="MainTabs">
+    <TabControl Grid.Row="1" Name="MainTabs" Background="{StaticResource BgBrush}">
       <TabItem Header="Debloat + Office">
         <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="16">
-          <TextBlock Text="OPTIONS" FontWeight="Bold" FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
-          <WrapPanel>
-            <CheckBox Name="OptDryRun" Content="Dry run (preview only)"/>
-            <CheckBox Name="OptCreateRestorePoint" Content="Create System Restore point"/>
-            <CheckBox Name="OptSkipDebloat" Content="Skip OEM debloat"/>
-            <CheckBox Name="OptSkipOfficeRemoval" Content="Skip removing existing Office"/>
-            <CheckBox Name="OptSkipOfficeInstall" Content="Skip installing Microsoft 365 Apps"/>
-          </WrapPanel>
-          <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+          <TextBlock Text="PREFERENCES" FontWeight="Bold" FontSize="13" Foreground="{StaticResource AccentBrush}" Margin="0,0,0,8"/>
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1" CornerRadius="8" Padding="14,10">
+            <StackPanel>
+              <Grid Margin="0,6,0,6">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Dry run (preview only)" VerticalAlignment="Center"/>
+                <CheckBox Grid.Column="1" Name="OptDryRun" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
+              </Grid>
+              <Grid Margin="0,6,0,6">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Create System Restore point" VerticalAlignment="Center"/>
+                <CheckBox Grid.Column="1" Name="OptCreateRestorePoint" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
+              </Grid>
+              <Grid Margin="0,6,0,6">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Skip OEM debloat" VerticalAlignment="Center"/>
+                <CheckBox Grid.Column="1" Name="OptSkipDebloat" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
+              </Grid>
+              <Grid Margin="0,6,0,6">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Skip removing existing Office" VerticalAlignment="Center"/>
+                <CheckBox Grid.Column="1" Name="OptSkipOfficeRemoval" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
+              </Grid>
+              <Grid Margin="0,6,0,0">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Skip installing Microsoft 365 Apps" VerticalAlignment="Center"/>
+                <CheckBox Grid.Column="1" Name="OptSkipOfficeInstall" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
+              </Grid>
+            </StackPanel>
+          </Border>
+
+          <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
             <TextBlock Text="Office channel:" VerticalAlignment="Center" Margin="0,0,8,0"/>
             <ComboBox Name="OptChannel" Width="180" SelectedIndex="0">
               <ComboBoxItem Content="MonthlyEnterprise"/>
@@ -358,33 +542,35 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
             <Button Name="BtnReboot" Content="Reboot Now" Background="{StaticResource YellowBrush}" Foreground="#241a00" Visibility="Collapsed"/>
           </StackPanel>
 
-          <TextBlock Text="STATUS" FontWeight="Bold" FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,20,0,8"/>
-          <UniformGrid Columns="4">
-            <StackPanel Margin="0,0,8,0">
-              <TextBlock Text="STATE" FontSize="10" Foreground="{StaticResource MutedBrush}"/>
-              <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
-                <Ellipse Name="StatusDot" Width="10" Height="10" Fill="{StaticResource MutedBrush}" Margin="0,0,6,0"/>
-                <TextBlock Name="StateText" Text="Idle" FontSize="15"/>
+          <TextBlock Text="STATUS" FontWeight="Bold" FontSize="13" Foreground="{StaticResource AccentBrush}" Margin="0,20,0,8"/>
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1" CornerRadius="8" Padding="14,10">
+            <UniformGrid Columns="4">
+              <StackPanel Margin="0,0,8,0">
+                <TextBlock Text="STATE" FontSize="10" Foreground="{StaticResource MutedBrush}"/>
+                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                  <Ellipse Name="StatusDot" Width="10" Height="10" Fill="{StaticResource MutedBrush}" Margin="0,0,6,0"/>
+                  <TextBlock Name="StateText" Text="Idle" FontSize="15"/>
+                </StackPanel>
               </StackPanel>
-            </StackPanel>
-            <StackPanel>
-              <TextBlock Text="PHASE" FontSize="10" Foreground="{StaticResource MutedBrush}"/>
-              <TextBlock Name="PhaseText" Text="-" FontSize="15" Margin="0,2,0,0"/>
-            </StackPanel>
-            <StackPanel>
-              <TextBlock Text="ELAPSED" FontSize="10" Foreground="{StaticResource MutedBrush}"/>
-              <TextBlock Name="ElapsedText" Text="0:00" FontSize="15" Margin="0,2,0,0"/>
-            </StackPanel>
-            <StackPanel>
-              <TextBlock Text="CPU TIME (JOB TREE)" FontSize="10" Foreground="{StaticResource MutedBrush}"/>
-              <TextBlock Name="CpuText" Text="0.0s" FontSize="15" Margin="0,2,0,0"/>
-            </StackPanel>
-          </UniformGrid>
-          <Border Name="BannerBorder" Margin="0,12,0,0" Padding="10" CornerRadius="4" Visibility="Collapsed">
+              <StackPanel>
+                <TextBlock Text="PHASE" FontSize="10" Foreground="{StaticResource MutedBrush}"/>
+                <TextBlock Name="PhaseText" Text="-" FontSize="15" Margin="0,2,0,0"/>
+              </StackPanel>
+              <StackPanel>
+                <TextBlock Text="ELAPSED" FontSize="10" Foreground="{StaticResource MutedBrush}"/>
+                <TextBlock Name="ElapsedText" Text="0:00" FontSize="15" Margin="0,2,0,0"/>
+              </StackPanel>
+              <StackPanel>
+                <TextBlock Text="CPU TIME (JOB TREE)" FontSize="10" Foreground="{StaticResource MutedBrush}"/>
+                <TextBlock Name="CpuText" Text="0.0s" FontSize="15" Margin="0,2,0,0"/>
+              </StackPanel>
+            </UniformGrid>
+          </Border>
+          <Border Name="BannerBorder" Margin="0,12,0,0" Padding="10" CornerRadius="6" Visibility="Collapsed">
             <TextBlock Name="BannerText" TextWrapping="Wrap"/>
           </Border>
 
-          <TextBlock Text="LIVE LOG" FontWeight="Bold" FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,20,0,8"/>
+          <TextBlock Text="LIVE LOG" FontWeight="Bold" FontSize="13" Foreground="{StaticResource AccentBrush}" Margin="0,20,0,8"/>
           <TextBox Name="LogBox" Height="300" IsReadOnly="True" TextWrapping="NoWrap"
                    VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontSize="12"/>
         </StackPanel>
@@ -419,8 +605,8 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
             <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
               <StackPanel Name="InstallAppsPanel"/>
             </ScrollViewer>
-            <Border Grid.Column="1" Margin="12,0,0,0" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1">
-              <TextBox Name="InstallLogBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontSize="11"/>
+            <Border Grid.Column="1" Margin="12,0,0,0" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1" CornerRadius="8">
+              <TextBox Name="InstallLogBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontSize="11" Background="Transparent" BorderThickness="0"/>
             </Border>
           </Grid>
         </DockPanel>
