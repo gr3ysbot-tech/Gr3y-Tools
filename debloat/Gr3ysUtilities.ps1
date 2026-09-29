@@ -1462,10 +1462,12 @@ $timer.Add_Tick({
                 if ($tail -notmatch 'No installed package found') {
                     $cb.Foreground = $greenBrush
                     $cb.Content = "$($script:currentQueueEntry.Name) (installed)"
+                    $cb.IsChecked = $true
                     $script:installFoundCount++
                 } else {
                     $cb.ClearValue([System.Windows.Controls.Control]::ForegroundProperty)
                     $cb.Content = $script:currentQueueEntry.Name
+                    $cb.IsChecked = $false
                 }
             }
 
@@ -1474,7 +1476,7 @@ $timer.Add_Tick({
                 Start-NextInQueue
             } else {
                 $installStatusText.Text = if ($script:installMode -eq 'check') {
-                    "Done - $($script:installFoundCount) of $($script:installTotal) already installed"
+                    "Done - $($script:installFoundCount) of $($script:installTotal) already installed (selected below - use Uninstall Selected to remove them)"
                 } else {
                     'Idle'
                 }
