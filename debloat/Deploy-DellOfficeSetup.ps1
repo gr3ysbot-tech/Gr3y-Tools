@@ -41,6 +41,13 @@
     Run "powercfg /hibernate off" to remove hiberfil.sys and free its disk space.
     Off by default.
 
+.PARAMETER TweakPreventSleep
+    Set system sleep timeout to Never on both AC and battery, so the machine
+    stays reachable for remote support/management tools instead of dropping off
+    the network. Display timeout is left untouched, so the screen still locks
+    for security. Off by default - on battery this trades battery life for
+    availability, so only enable it where that tradeoff makes sense.
+
 .PARAMETER FixSystemRepair
     Run sfc /scannow then DISM /Online /Cleanup-Image /RestoreHealth. Can take
     10-20+ minutes. Off by default - intended to be triggered standalone from the
@@ -112,6 +119,7 @@ param(
     [switch]$NoReboot,
     [switch]$TweakReduceTelemetry,
     [switch]$TweakDisableHibernation,
+    [switch]$TweakPreventSleep,
     [switch]$FixSystemRepair,
     [switch]$FixNetworkReset,
     [switch]$FixWindowsUpdateReset,
@@ -458,6 +466,14 @@ function Disable-Hibernation {
     }
 }
 
+function Set-SleepNever {
+    Invoke-Step 'Setting sleep to Never on AC and battery (display timeout left as-is)' {
+        powercfg /change standby-timeout-ac 0 2>&1 | ForEach-Object { Write-Log "powercfg: $_" }
+        powercfg /change standby-timeout-dc 0 2>&1 | ForEach-Object { Write-Log "powercfg: $_" }
+        Write-Log 'Sleep timeout set to Never (AC and battery). The screen will still lock on its own timeout for security - only system sleep was disabled, so the machine stays reachable for remote support/management.'
+    }
+}
+
 # ============================================================================
 # FIXES - standalone one-click troubleshooting actions. Not bundled into a
 # normal debloat/Office run; each is only invoked when its own flag is passed.
@@ -674,6 +690,7 @@ if ($CreateRestorePoint) { New-PreDeploySystemRestorePoint }
 
 if ($TweakReduceTelemetry) { Set-TelemetryReduced }
 if ($TweakDisableHibernation) { Disable-Hibernation }
+if ($TweakPreventSleep) { Set-SleepNever }
 
 if (-not $SkipDebloat) {
     Remove-OemBloatware

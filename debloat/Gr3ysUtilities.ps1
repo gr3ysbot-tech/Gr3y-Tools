@@ -559,10 +559,15 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
                 <TextBlock Grid.Column="0" Text="Reduce telemetry &amp; activity tracking" VerticalAlignment="Center"/>
                 <CheckBox Grid.Column="1" Name="OptTweakTelemetry" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
               </Grid>
-              <Grid Margin="0,6,0,0">
+              <Grid Margin="0,6,0,6">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="Disable hibernation (frees disk space)" VerticalAlignment="Center"/>
                 <CheckBox Grid.Column="1" Name="OptTweakHibernation" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
+              </Grid>
+              <Grid Margin="0,6,0,0">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Prevent sleep (keep machine reachable)" VerticalAlignment="Center"/>
+                <CheckBox Grid.Column="1" Name="OptTweakPreventSleep" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
               </Grid>
             </StackPanel>
           </Border>
@@ -728,6 +733,7 @@ $optSkipOfficeRemoval = $window.FindName('OptSkipOfficeRemoval')
 $optSkipOfficeInstall = $window.FindName('OptSkipOfficeInstall')
 $optTweakTelemetry = $window.FindName('OptTweakTelemetry')
 $optTweakHibernation = $window.FindName('OptTweakHibernation')
+$optTweakPreventSleep = $window.FindName('OptTweakPreventSleep')
 $optChannel = $window.FindName('OptChannel')
 $btnScan = $window.FindName('BtnScan')
 $btnStart = $window.FindName('BtnStart')
@@ -891,6 +897,7 @@ $btnStart.Add_Click({
     if ($optSkipOfficeInstall.IsChecked) { $argList += '-SkipOfficeInstall' }
     if ($optTweakTelemetry.IsChecked) { $argList += '-TweakReduceTelemetry' }
     if ($optTweakHibernation.IsChecked) { $argList += '-TweakDisableHibernation' }
+    if ($optTweakPreventSleep.IsChecked) { $argList += '-TweakPreventSleep' }
     $channel = $optChannel.SelectedItem.Content
     $argList += @('-OfficeChannel', $channel)
 
