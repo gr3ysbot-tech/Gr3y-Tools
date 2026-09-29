@@ -923,6 +923,7 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
             <StackPanel Grid.Row="0" Orientation="Horizontal">
               <TextBlock Style="{StaticResource Header}" Text="Status" Margin="0,0,10,0"/>
               <TextBlock Name="FixesStatusText" Text="Idle" VerticalAlignment="Bottom"/>
+              <Button Name="BtnStopFixes" Content="Stop" Margin="12,0,0,0" BorderBrush="{StaticResource RedBrush}" Visibility="Collapsed"/>
             </StackPanel>
             <TextBlock Grid.Row="1" Style="{StaticResource Header}" Text="Log" Margin="0,10,0,4"/>
             <TextBox Grid.Row="2" Name="FixesLogBox" Style="{StaticResource LogBox}" IsReadOnly="True" TextWrapping="NoWrap"
@@ -1006,6 +1007,7 @@ $btnFixWindowsUpdate = $window.FindName('BtnFixWindowsUpdate')
 $btnFixWinGet = $window.FindName('BtnFixWinGet')
 $fixesStatusText = $window.FindName('FixesStatusText')
 $fixesLogBox = $window.FindName('FixesLogBox')
+$btnStopFixes = $window.FindName('BtnStopFixes')
 
 $greenBrush = $window.Resources['GreenBrush']
 $redBrush = $window.Resources['RedBrush']
@@ -1237,6 +1239,7 @@ function Start-FixJob {
     $fixesLogBox.Text = ''
     $fixesStatusText.Text = "Running: $Label..."
     foreach ($b in $fixButtons) { $b.IsEnabled = $false }
+    $btnStopFixes.Visibility = 'Visible'
 
     $script:fixProc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList `
         -RedirectStandardOutput $script:fixLogFile -RedirectStandardError $script:fixErrFile `
@@ -1257,6 +1260,14 @@ $btnFixWindowsUpdate.Add_Click({
 })
 
 $btnFixWinGet.Add_Click({ Start-FixJob -FixFlag '-FixWinGetReinstall' -Label 'Reinstall winget' })
+
+$btnStopFixes.Add_Click({
+    $result = [System.Windows.MessageBox]::Show('Stop the running fix? Interrupting sfc/DISM mid-scan is safe (just leaves the check unverified) - a network/Windows Update reset should finish quickly on its own instead.', 'Confirm Stop', 'YesNo', 'Warning')
+    if ($result -eq 'Yes' -and $script:fixProc -and -not $script:fixProc.HasExited) {
+        $ids = Get-DescendantProcessIds -RootId $script:fixProc.Id
+        foreach ($id in $ids) { try { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue } catch {} }
+    }
+})
 
 # ============================================================================
 # Tab 2: Install/Uninstall/Upgrade queue control
@@ -1498,6 +1509,7 @@ $timer.Add_Tick({
             $summary = Get-LogSummary -LogPath $script:fixLogFile
             $fixesStatusText.Text = if ($summary.completed) { 'Done.' } else { 'Ended before finishing - check the log above.' }
             foreach ($b in $fixButtons) { $b.IsEnabled = $true }
+            $btnStopFixes.Visibility = 'Collapsed'
             $script:fixProc = $null
         }
     }
