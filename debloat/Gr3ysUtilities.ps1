@@ -867,7 +867,7 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
             <Border Width="12"/>
             <Button Name="BtnSelectAll" Content="Select All"/>
             <Button Name="BtnClearSelection" Content="Clear Selection"/>
-            <Button Name="BtnCheckInstalled" Content="Check Installed"/>
+            <Button Name="BtnCheckInstalled" Content="Scan" ToolTip="Scan the catalog against what's actually installed on this machine and check the boxes for anything found - ready to hand off to Uninstall Selected."/>
             <TextBlock Name="SelectedCountText" Text="Selected: 0" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{StaticResource MutedBrush}"/>
           </StackPanel>
           <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
