@@ -325,6 +325,7 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
     <SolidColorBrush x:Key="GreenBrush" Color="#3FB950"/>
     <SolidColorBrush x:Key="RedBrush" Color="#F85149"/>
     <SolidColorBrush x:Key="YellowBrush" Color="#D29922"/>
+    <SolidColorBrush x:Key="OrangeBrush" Color="#F0883E"/>
 
     <Style TargetType="TextBlock">
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
@@ -867,10 +868,10 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
             <Border Width="12"/>
             <Button Name="BtnSelectAll" Content="Select All"/>
             <Button Name="BtnClearSelection" Content="Clear Selection"/>
-            <Button Name="BtnCheckInstalled" Content="Scan" ToolTip="Scan the catalog against what's actually installed on this machine and check the boxes for anything found - ready to hand off to Uninstall Selected."/>
             <TextBlock Name="SelectedCountText" Text="Selected: 0" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{StaticResource MutedBrush}"/>
           </StackPanel>
           <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+            <Button Name="BtnCheckInstalled" Content="Scan" BorderBrush="{StaticResource OrangeBrush}" ToolTip="Scan the catalog against what's actually installed on this machine and check the boxes for anything found - ready to hand off to Uninstall Selected."/>
             <Button Name="BtnInstallSelected" Content="Install Selected" BorderBrush="{StaticResource GreenBrush}"/>
             <Button Name="BtnUninstallSelected" Content="Uninstall Selected" BorderBrush="{StaticResource RedBrush}"/>
             <Button Name="BtnUpgradeAll" Content="Upgrade All Installed"/>
