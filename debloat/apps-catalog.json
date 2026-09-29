@@ -34,7 +34,6 @@
     {"name": "AutoHotkey", "category": "Utilities", "wingetId": "AutoHotkey.AutoHotkey"},
     {"name": "Bitwarden", "category": "Utilities", "wingetId": "Bitwarden.Bitwarden"},
     {"name": "BlurAutoClicker", "category": "Utilities", "wingetId": "Blur009.BlurAutoClicker"},
-    {"name": "Bulk Crap Uninstaller", "category": "Utilities", "wingetId": "Klocman.BulkCrapUninstaller"},
     {"name": "Cloudflare WARP", "category": "Utilities", "wingetId": "Cloudflare.Warp"},
     {"name": "Crystal Disk Info", "category": "Utilities", "wingetId": "CrystalDewWorld.CrystalDiskInfo"},
     {"name": "Crystal Disk Mark", "category": "Utilities", "wingetId": "CrystalDewWorld.CrystalDiskMark"},
