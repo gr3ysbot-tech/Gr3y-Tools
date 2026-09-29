@@ -51,9 +51,17 @@ if ($needsElevation -or $needsSTA) {
 }
 
 $ErrorActionPreference = 'Continue'
+
+# Loaded up front (not just before XamlReader.Load below) since the file-existence
+# checks right after this also show a MessageBox on failure, and referencing that
+# type before its assembly is loaded would itself throw a confusing error exactly
+# when something has already gone wrong.
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
+
 $scriptDir = Split-Path -Parent $PSCommandPath
 $deployScript = Join-Path $scriptDir 'Deploy-DellOfficeSetup.ps1'
 $catalogPath = Join-Path $scriptDir 'apps-catalog.json'
+$patternsPath = Join-Path $scriptDir 'bloat-patterns.json'
 $workDir = Join-Path $env:ProgramData 'DellOfficeDeploy'
 New-Item -ItemType Directory -Path $workDir -Force | Out-Null
 
@@ -61,6 +69,11 @@ if (-not (Test-Path $deployScript)) {
     [System.Windows.Forms.MessageBox]::Show("Deploy-DellOfficeSetup.ps1 not found next to this script at:`r`n$deployScript", 'Gr3y Tools', 'OK', 'Error') | Out-Null
     exit 1
 }
+if (-not (Test-Path $patternsPath)) {
+    [System.Windows.Forms.MessageBox]::Show("bloat-patterns.json not found next to this script at:`r`n$patternsPath", 'Gr3y Tools', 'OK', 'Error') | Out-Null
+    exit 1
+}
+$bloatPatterns = Get-Content -Path $patternsPath -Raw | ConvertFrom-Json
 
 # ============================================================================
 # Shared helpers (same logic as WebApp.ps1's browser-panel version, reused here
@@ -155,11 +168,101 @@ function Get-LogSummary {
     return $result
 }
 
+function Get-UninstallEntries {
+    $paths = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    Get-ItemProperty -Path $paths -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName }
+}
+
+function Get-BloatScanReport {
+    # Read-only inspection using the exact same patterns Deploy-DellOfficeSetup.ps1
+    # acts on (both load from bloat-patterns.json) - nothing here changes the system,
+    # it only reports what a real run would touch.
+    $lines = New-Object System.Collections.Generic.List[string]
+    $totalFound = 0
+
+    $allInstalledAppx = Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+    $foundAppx = New-Object System.Collections.Generic.List[string]
+    foreach ($pattern in $bloatPatterns.appxPatterns) {
+        foreach ($pkg in ($allInstalledAppx | Where-Object { $_.Name -like $pattern })) {
+            $foundAppx.Add($pkg.Name)
+        }
+    }
+
+    $entries = Get-UninstallEntries
+    $foundWin32 = New-Object System.Collections.Generic.List[string]
+    foreach ($pattern in $bloatPatterns.win32Patterns) {
+        foreach ($match in ($entries | Where-Object { $_.DisplayName -like $pattern })) {
+            $foundWin32.Add($match.DisplayName)
+        }
+    }
+
+    $foundTasks = New-Object System.Collections.Generic.List[string]
+    foreach ($folder in $bloatPatterns.scheduledTaskFolders) {
+        $tasks = Get-ScheduledTask -TaskPath "$folder*" -ErrorAction SilentlyContinue
+        foreach ($task in $tasks) {
+            $isKept = $false
+            foreach ($keep in $bloatPatterns.scheduledTaskKeepPatterns) {
+                if ($task.TaskName -like $keep) { $isKept = $true; break }
+            }
+            if (-not $isKept -and $task.State -ne 'Disabled') {
+                $foundTasks.Add("$($task.TaskPath)$($task.TaskName)")
+            }
+        }
+    }
+
+    $foundServices = New-Object System.Collections.Generic.List[string]
+    foreach ($pattern in $bloatPatterns.servicePatterns) {
+        foreach ($svc in (Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like $pattern -or $_.Name -like $pattern })) {
+            $foundServices.Add("$($svc.DisplayName) ($($svc.Name))")
+        }
+    }
+
+    $hasC2R = Test-Path 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration'
+    $msiOffice = @($entries | Where-Object { $_.DisplayName -like 'Microsoft Office*' -and $_.UninstallString -match 'msiexec' })
+
+    $lines.Add("Scan results for $env:COMPUTERNAME - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+    $lines.Add('Nothing below has been changed - this is a read-only inspection.')
+    $lines.Add('')
+
+    $lines.Add("OEM bloat apps found ($($foundAppx.Count + $foundWin32.Count)):")
+    if ($foundAppx.Count -eq 0 -and $foundWin32.Count -eq 0) {
+        $lines.Add('  (none matched)')
+    } else {
+        foreach ($n in $foundAppx) { $lines.Add("  - $n (AppX)") }
+        foreach ($n in $foundWin32) { $lines.Add("  - $n (program)") }
+    }
+    $lines.Add('')
+
+    $lines.Add("OEM scheduled tasks that would be disabled ($($foundTasks.Count)):")
+    if ($foundTasks.Count -eq 0) { $lines.Add('  (none matched)') }
+    else { foreach ($n in $foundTasks) { $lines.Add("  - $n") } }
+    $lines.Add('')
+
+    $lines.Add("OEM services that would be disabled ($($foundServices.Count)):")
+    if ($foundServices.Count -eq 0) { $lines.Add('  (none matched)') }
+    else { foreach ($n in $foundServices) { $lines.Add("  - $n") } }
+    $lines.Add('')
+
+    $lines.Add('Office:')
+    if ($hasC2R) { $lines.Add('  - Click-to-Run Office install detected (would be fully removed, then Microsoft 365 Apps installed fresh)') }
+    foreach ($m in $msiOffice) { $lines.Add("  - MSI-based Office product detected: $($m.DisplayName)") }
+    if (-not $hasC2R -and $msiOffice.Count -eq 0) { $lines.Add('  - No existing Office installation detected') }
+
+    $totalFound = $foundAppx.Count + $foundWin32.Count + $foundTasks.Count + $foundServices.Count
+    $lines.Add('')
+    $lines.Add("Total items that would be touched: $totalFound" + $(if ($hasC2R -or $msiOffice.Count -gt 0) { ' (plus the existing Office install)' } else { '' }))
+
+    return ($lines -join "`r`n")
+}
+
 # ============================================================================
 # WPF setup
 # ============================================================================
-
-Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
 
 if (-not (Test-Path $catalogPath)) {
     [System.Windows.Forms.MessageBox]::Show("apps-catalog.json not found next to this script at:`r`n$catalogPath", 'Gr3y Tools', 'OK', 'Error') | Out-Null
@@ -248,6 +351,7 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
             </ComboBox>
           </StackPanel>
           <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+            <Button Name="BtnScan" Content="Scan This Machine" Background="{StaticResource AccentBrush}" Foreground="#04122a"/>
             <Button Name="BtnStart" Content="Start" Background="{StaticResource GreenBrush}" Foreground="#04220d"/>
             <Button Name="BtnStop" Content="Stop" Background="{StaticResource RedBrush}" Foreground="#2a0a08" Visibility="Collapsed"/>
             <Button Name="BtnDownloadLog" Content="Download Log" Background="{StaticResource AccentBrush}" Foreground="#04122a" Visibility="Collapsed"/>
@@ -340,6 +444,7 @@ $optSkipDebloat = $window.FindName('OptSkipDebloat')
 $optSkipOfficeRemoval = $window.FindName('OptSkipOfficeRemoval')
 $optSkipOfficeInstall = $window.FindName('OptSkipOfficeInstall')
 $optChannel = $window.FindName('OptChannel')
+$btnScan = $window.FindName('BtnScan')
 $btnStart = $window.FindName('BtnStart')
 $btnStop = $window.FindName('BtnStop')
 $btnDownloadLog = $window.FindName('BtnDownloadLog')
@@ -463,6 +568,23 @@ $script:deployLogOffset = 0
 $script:deployStartTime = $null
 $script:deployIsDryRun = $false
 $script:deployHasFinishedBannerShown = $true
+
+$btnScan.Add_Click({
+    $btnScan.IsEnabled = $false
+    $stateText.Text = 'Scanning...'
+    $bannerBorder.Visibility = 'Collapsed'
+    $logBox.Text = ''
+    $window.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
+    try {
+        $report = Get-BloatScanReport
+        $logBox.Text = $report
+    } catch {
+        $logBox.Text = "Scan failed: $($_.Exception.Message)"
+    } finally {
+        $stateText.Text = 'Idle'
+        $btnScan.IsEnabled = $true
+    }
+})
 
 $btnStart.Add_Click({
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $deployScript, '-NoReboot')

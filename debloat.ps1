@@ -11,12 +11,13 @@
     If the current session isn't elevated, this relaunches itself elevated (one UAC
     prompt) and re-fetches itself there - same pattern as the tools this is modeled
     after. Once elevated, it downloads the actual tool files (Deploy-DellOfficeSetup.ps1,
-    Gr3ysUtilities.ps1, apps-catalog.json) fresh from this repo into a per-run temp
-    folder and opens the native GUI.
+    Gr3ysUtilities.ps1, apps-catalog.json, bloat-patterns.json) fresh from this repo
+    into a per-run temp folder and opens the native GUI.
 
     Always pulls the current version from GitHub, so there's nothing to keep manually
-    copied/updated across client laptops - including edits to apps-catalog.json (add,
-    remove, or rename install-catalog entries there and every future run picks it up).
+    copied/updated across client laptops - including edits to apps-catalog.json or
+    bloat-patterns.json (add, remove, or rename entries there and every future run
+    picks it up).
 #>
 
 function Test-Gr3yToolsIsAdmin {
@@ -43,7 +44,7 @@ Write-Host 'Downloading latest tool files...'
 $installDir = Join-Path $env:TEMP ("Gr3yTools_{0}" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 
-$toolFiles = @('debloat/Deploy-DellOfficeSetup.ps1', 'debloat/Gr3ysUtilities.ps1', 'debloat/apps-catalog.json')
+$toolFiles = @('debloat/Deploy-DellOfficeSetup.ps1', 'debloat/Gr3ysUtilities.ps1', 'debloat/apps-catalog.json', 'debloat/bloat-patterns.json')
 foreach ($relativePath in $toolFiles) {
     $fileName = Split-Path -Leaf $relativePath
     $destPath = Join-Path $installDir $fileName

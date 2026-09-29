@@ -77,6 +77,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+$scriptDir = Split-Path -Parent $PSCommandPath
 $workDir = Join-Path $env:ProgramData 'DellOfficeDeploy'
 New-Item -ItemType Directory -Path $workDir -Force | Out-Null
 
@@ -147,80 +148,24 @@ function New-PreDeploySystemRestorePoint {
 # PHASE 1 - OEM bloatware (Dell + Lenovo) + McAfee removal
 # ============================================================================
 
-# AppX/MSIX package Name patterns known to be Dell/Lenovo OEM bloat, safe to remove
-# on a business fleet managed via Intune/Dell Command | Update/Lenovo Vantage.
-# Deliberately NOT included: DellInc.DellCommandUpdate (driver update tool - keep
-# for IT), Dell display/audio drivers (not AppX packages), Dell.SupportAssistAgent
-# core service if your org actively uses SupportAssist for Business, and the Lenovo
-# Vantage / Commercial Vantage + System Interface Foundation packages (keep for
-# driver/BIOS updates and fan/thermal control - same reasoning as Dell Command Update).
-$OemBloatAppxPatterns = @(
-    # Dell
-    'DellInc.DellSupportAssistforPCs'
-    'DellInc.DellOptimizer*'
-    'DellInc.PartnerPromo*'
-    'DellInc.DellCustomerConnect'
-    'DellInc.MyDell'
-    'DellInc.DellDigitalDelivery'
-    'DellInc.DellProductRegistration'
-    'DellInc.DellPremierColor'
-    'DellInc.DellCinemaColor'
-    'DellInc.DellPowerManager'
-    'DellInc.DellPeripheralManager'
-    'DellInc.DellPair'
-    'DellInc.DellMobileConnect'
-    'DellInc.PrivacyandSecurity'
-    # Lenovo (publisher ID E046963F.*) - Vantage/Commercial Vantage and System
-    # Interface Foundation are intentionally excluded, see note above.
-    'E046963F.LenovoCompanion'
-    'E046963F.LenovoNow'
-    'E046963F.LenovoWelcome'
-    'E046963F.LenovoVoice'
-    'E046963F.LenovoFamilyCloud'
-    'E046963F.LenovoUtility'
-    'E046963F.LenovoServiceBridge'
-    'MirametrixInc.GlancebyMirametrix'
-    # Generic trialware bundled by multiple OEMs
-    '*Dropbox*'
-    '*McAfee*'
-    '*WildTangent*'
-    # Windows 11's built-in consumer "Chat"/Teams AppX (personal Microsoft/Skype
-    # accounts, pinned to the taskbar by default). This is NOT the work/business
-    # Teams client - that installs separately as a Win32 app via MSI, not AppX, so
-    # removing this package leaves a real work Teams install completely untouched.
-    'MicrosoftTeams'
-)
-
-# Win32 (registry Uninstall key) DisplayName patterns for Dell/Lenovo/McAfee bloat.
-# Same exclusions as above apply - Dell Command | Update and Lenovo Vantage are
-# intentionally excluded.
-$Win32BloatPatterns = @(
-    # Dell
-    'Dell SupportAssist*'
-    'Dell SupportAssist Remediation'
-    'Dell SupportAssist OS Recovery*'
-    'Dell Optimizer*'
-    'Dell Digital Delivery*'
-    'Dell Product Registration'
-    'Dell Peripheral Manager*'
-    'Dell Mobile Connect*'
-    'Dell Pair'
-    'Dell Core Services'
-    'Waves MaxxAudio*'
-    'MaxxAudioPro*'
-    # Lenovo
-    'Lenovo Now'
-    'Lenovo Welcome'
-    'Lenovo Voice'
-    'Lenovo Family Cloud'
-    'Lenovo Utility*'
-    'Lenovo Service Bridge'
-    'Glance by Mirametrix*'
-    # Generic trialware bundled by multiple OEMs
-    'Dropbox Promotion'
-    'McAfee*'
-    'WildTangent*'
-)
+# Bloat detection patterns (AppX/Win32/scheduled-task/service) live in
+# bloat-patterns.json, which must sit next to this script - shared with
+# Gr3ysUtilities.ps1's Scan feature so both read from one source of truth
+# instead of two copies that could drift apart. Deliberately NOT included in any
+# of these: DellInc.DellCommandUpdate (driver update tool - keep for IT), Dell
+# display/audio drivers (not AppX packages), Dell.SupportAssistAgent core service
+# if your org actively uses SupportAssist for Business, and the Lenovo Vantage /
+# Commercial Vantage + System Interface Foundation packages (keep for driver/BIOS
+# updates and fan/thermal control - same reasoning as Dell Command Update).
+$patternsPath = Join-Path $scriptDir 'bloat-patterns.json'
+if (-not (Test-Path $patternsPath)) {
+    Write-Log "ERROR: bloat-patterns.json not found next to this script at $patternsPath" 'ERROR'
+    Stop-Transcript | Out-Null
+    exit 1
+}
+$bloatPatterns = Get-Content -Path $patternsPath -Raw | ConvertFrom-Json
+$OemBloatAppxPatterns = $bloatPatterns.appxPatterns
+$Win32BloatPatterns = $bloatPatterns.win32Patterns
 
 function Get-UninstallEntries {
     $paths = @(
@@ -303,8 +248,8 @@ function Disable-OemScheduledTasksAndServices {
     # disable (not delete, so it stays reversible) everything under \Dell\ and
     # \Lenovo\ except the driver/BIOS update tooling deliberately kept installed
     # above (Dell Command Update, Lenovo Vantage).
-    $oemTaskFolders = @('\Dell\', '\Lenovo\')
-    $keepTaskPatterns = @('*CommandUpdate*', '*Vantage*')
+    $oemTaskFolders = $bloatPatterns.scheduledTaskFolders
+    $keepTaskPatterns = $bloatPatterns.scheduledTaskKeepPatterns
 
     foreach ($folder in $oemTaskFolders) {
         $tasks = Get-ScheduledTask -TaskPath "$folder*" -ErrorAction SilentlyContinue
@@ -323,12 +268,7 @@ function Disable-OemScheduledTasksAndServices {
     # Same bloat keywords used for the Win32 program removal above, matched against
     # Windows services instead - disabling stops the app respawning itself even when
     # its uninstaller didn't clean up its service registration.
-    $bloatServicePatterns = @(
-        '*SupportAssist*', '*Dell Digital Delivery*', '*Dell Optimizer*',
-        '*Lenovo Now*', '*Lenovo Welcome*', '*Lenovo Voice*', '*Lenovo Family Cloud*',
-        '*Lenovo Utility*', '*Lenovo Service Bridge*'
-    )
-    foreach ($pattern in $bloatServicePatterns) {
+    foreach ($pattern in $bloatPatterns.servicePatterns) {
         $services = Get-Service -ErrorAction SilentlyContinue |
             Where-Object { $_.DisplayName -like $pattern -or $_.Name -like $pattern }
         foreach ($svc in $services) {
