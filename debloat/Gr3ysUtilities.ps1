@@ -871,6 +871,10 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
             <TextBlock Name="SelectedCountText" Text="Selected: 0" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{StaticResource MutedBrush}"/>
             <Ellipse Name="WinGetStatusDot" Width="8" Height="8" Fill="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="16,0,5,0"/>
             <TextBlock Name="WinGetStatusText" Text="Checking winget..." VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
+            <Button Name="BtnInstallWinGet" Content="Install winget" Margin="10,0,0,0"
+                    Background="{StaticResource AccentBrush}" Foreground="{StaticResource BgBrush}"
+                    Visibility="Collapsed"
+                    ToolTip="Runs Install-Module Microsoft.WinGet.Client -Force; Repair-WinGetPackageManager - needs internet access."/>
           </StackPanel>
           <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
             <Button Name="BtnCheckInstalled" Content="Scan" BorderBrush="{StaticResource OrangeBrush}" ToolTip="Scan the catalog against what's actually installed on this machine and check the boxes for anything found - ready to hand off to Uninstall Selected."/>
@@ -1004,6 +1008,7 @@ $installAppsPanel = $window.FindName('InstallAppsPanel')
 $installLogBox = $window.FindName('InstallLogBox')
 $wingetStatusDot = $window.FindName('WinGetStatusDot')
 $wingetStatusText = $window.FindName('WinGetStatusText')
+$btnInstallWinGet = $window.FindName('BtnInstallWinGet')
 
 # --- Tab 3 controls ---
 $btnFixSystemRepair = $window.FindName('BtnFixSystemRepair')
@@ -1034,13 +1039,13 @@ if ($script:wingetAvailable) {
     $wingetStatusText.Text = 'winget not found'
     $wingetStatusText.Foreground = $redBrush
     $wingetTooltip = "winget (App Installer) was not found on this machine, so Install Apps is disabled. " +
-        "Install it from the Microsoft Store, or on a minimal/no-Store image (e.g. Windows Sandbox) run: " +
-        "Install-Module Microsoft.WinGet.Client -Force; Repair-WinGetPackageManager"
+        "Click Install winget, or install it from the Microsoft Store yourself."
     $wingetStatusText.ToolTip = $wingetTooltip
     foreach ($b in @($btnInstallSelected, $btnUninstallSelected, $btnUpgradeAll, $btnCheckInstalled)) {
         $b.IsEnabled = $false
         $b.ToolTip = $wingetTooltip
     }
+    $btnInstallWinGet.Visibility = 'Visible'
 }
 
 function Set-ActiveTab {
@@ -1407,6 +1412,26 @@ $btnStopInstall.Add_Click({
     $btnStopInstall.Visibility = 'Collapsed'
 })
 
+$script:wingetInstallProc = $null
+$script:wingetInstallLogFile = $null
+
+$btnInstallWinGet.Add_Click({
+    $btnInstallWinGet.IsEnabled = $false
+    $btnInstallWinGet.Content = 'Installing winget...'
+    $wingetStatusDot.Fill = $accentBrush
+    $wingetStatusText.Text = 'Installing winget (needs internet)...'
+    $wingetStatusText.Foreground = $accentBrush
+
+    $script:wingetInstallLogFile = Join-Path $workDir "wingetinstall_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+    $installCmd = 'Install-PackageProvider -Name NuGet -Force | Out-Null; ' +
+        'Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery | Out-Null; ' +
+        'Repair-WinGetPackageManager'
+    $script:wingetInstallProc = Start-Process -FilePath 'powershell.exe' `
+        -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $installCmd) `
+        -RedirectStandardOutput $script:wingetInstallLogFile -RedirectStandardError "$($script:wingetInstallLogFile).err" `
+        -WindowStyle Hidden -PassThru
+})
+
 # ============================================================================
 # Poll timer - drives both tabs
 # ============================================================================
@@ -1514,6 +1539,44 @@ $timer.Add_Tick({
                 $btnUpgradeAll.IsEnabled = $true
                 $btnCheckInstalled.IsEnabled = $true
                 $btnStopInstall.Visibility = 'Collapsed'
+            }
+        }
+    }
+
+    if ($script:wingetInstallProc) {
+        $running = $false
+        try {
+            $script:wingetInstallProc.Refresh()
+            $running = -not $script:wingetInstallProc.HasExited
+        } catch {}
+        if (-not $running) {
+            $script:wingetInstallProc = $null
+            $script:wingetAvailable = [bool](Get-Command 'winget.exe' -ErrorAction SilentlyContinue)
+            if ($script:wingetAvailable) {
+                $wingetStatusDot.Fill = $greenBrush
+                $wingetStatusText.Text = 'winget ready'
+                $wingetStatusText.Foreground = $greenBrush
+                $wingetStatusText.ClearValue([System.Windows.Controls.Control]::ToolTipProperty)
+                $btnInstallWinGet.Visibility = 'Collapsed'
+                foreach ($b in @($btnInstallSelected, $btnUninstallSelected, $btnUpgradeAll, $btnCheckInstalled)) {
+                    $b.IsEnabled = $true
+                    $b.ClearValue([System.Windows.Controls.Control]::ToolTipProperty)
+                }
+            } else {
+                $wingetStatusDot.Fill = $redBrush
+                $wingetStatusText.Text = 'winget install failed - see Install Apps log'
+                $wingetStatusText.Foreground = $redBrush
+                $btnInstallWinGet.IsEnabled = $true
+                $btnInstallWinGet.Content = 'Retry Install winget'
+                if ($script:wingetInstallLogFile -and (Test-Path $script:wingetInstallLogFile)) {
+                    $tail = Get-Content -Path $script:wingetInstallLogFile -Raw -ErrorAction SilentlyContinue
+                    if ($tail) { $installLogBox.AppendText("=== winget install output ===`r`n$tail`r`n"); $installLogBox.ScrollToEnd() }
+                }
+                $errFile = "$($script:wingetInstallLogFile).err"
+                if (Test-Path $errFile) {
+                    $errTail = Get-Content -Path $errFile -Raw -ErrorAction SilentlyContinue
+                    if ($errTail) { $installLogBox.AppendText("=== winget install errors ===`r`n$errTail`r`n"); $installLogBox.ScrollToEnd() }
+                }
             }
         }
     }
