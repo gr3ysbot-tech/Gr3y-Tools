@@ -401,6 +401,7 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
             <Button Name="CatUtilities" Content="Utilities"/>
             <Button Name="BtnSelectAll" Content="Select All"/>
             <Button Name="BtnClearSelection" Content="Clear Selection"/>
+            <Button Name="BtnCheckInstalled" Content="Check Installed"/>
             <TextBlock Name="SelectedCountText" Text="Selected: 0" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{StaticResource MutedBrush}"/>
           </StackPanel>
           <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,10,0,0">
@@ -466,6 +467,7 @@ $catMsToolsBtn = $window.FindName('CatMsTools')
 $catUtilitiesBtn = $window.FindName('CatUtilities')
 $btnSelectAll = $window.FindName('BtnSelectAll')
 $btnClearSelection = $window.FindName('BtnClearSelection')
+$btnCheckInstalled = $window.FindName('BtnCheckInstalled')
 $selectedCountText = $window.FindName('SelectedCountText')
 $btnInstallSelected = $window.FindName('BtnInstallSelected')
 $btnUninstallSelected = $window.FindName('BtnUninstallSelected')
@@ -652,6 +654,8 @@ $script:installLogFile = $null
 $script:installMode = $null
 $script:installTotal = 0
 $script:installDone = 0
+$script:installFoundCount = 0
+$script:currentQueueEntry = $null
 
 function Start-NextInQueue {
     if ($script:installQueue.Count -eq 0) {
@@ -659,21 +663,28 @@ function Start-NextInQueue {
         $btnInstallSelected.IsEnabled = $true
         $btnUninstallSelected.IsEnabled = $true
         $btnUpgradeAll.IsEnabled = $true
+        $btnCheckInstalled.IsEnabled = $true
         $btnStopInstall.Visibility = 'Collapsed'
         $script:installProc = $null
+        $script:currentQueueEntry = $null
         return
     }
     $entry = $script:installQueue.Dequeue()
-    $actionWord = if ($script:installMode -eq 'install') { 'Installing' } else { 'Uninstalling' }
+    $script:currentQueueEntry = $entry
+    $actionWord = switch ($script:installMode) {
+        'install' { 'Installing' }
+        'uninstall' { 'Uninstalling' }
+        'check' { 'Checking' }
+    }
     $installStatusText.Text = "$actionWord $($entry.Name)... ($($script:installDone + 1)/$($script:installTotal))"
     $installLogBox.AppendText("=== $actionWord`: $($entry.Name) ($($entry.WingetId)) ===`r`n")
     $installLogBox.ScrollToEnd()
 
     $script:installLogFile = Join-Path $workDir "winget_$($script:installMode)_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').log"
-    $wingetArgs = if ($script:installMode -eq 'install') {
-        @('install', '--id', $entry.WingetId, '-e', '--source', 'winget', '--silent', '--accept-package-agreements', '--accept-source-agreements')
-    } else {
-        @('uninstall', '--id', $entry.WingetId, '-e', '--source', 'winget', '--silent')
+    $wingetArgs = switch ($script:installMode) {
+        'install' { @('install', '--id', $entry.WingetId, '-e', '--source', 'winget', '--silent', '--accept-package-agreements', '--accept-source-agreements') }
+        'uninstall' { @('uninstall', '--id', $entry.WingetId, '-e', '--source', 'winget', '--silent') }
+        'check' { @('list', '--id', $entry.WingetId, '-e', '--accept-source-agreements') }
     }
 
     $script:installProc = Start-Process -FilePath 'winget.exe' -ArgumentList $wingetArgs `
@@ -684,25 +695,38 @@ function Start-NextInQueue {
 
 function Start-AppQueue {
     param([string]$Mode)
-    $selected = @($script:appEntries | Where-Object { $_.CheckBox.IsChecked })
+    # 'check' scans the whole catalog regardless of what's ticked - detecting install
+    # status is meant to answer "what's already here", not act on a selection.
+    # .ToArray(), not @(...) - wrapping a List[object] directly in @() throws
+    # "Argument types do not match" (a real PowerShell quirk, reproduced on both
+    # 5.1 and 7); piping through Where-Object below sidesteps it, but the 'check'
+    # branch has nothing to pipe through, so it needs the explicit .ToArray().
+    $selected = if ($Mode -eq 'check') { $script:appEntries.ToArray() } else { @($script:appEntries | Where-Object { $_.CheckBox.IsChecked }) }
     if ($selected.Count -eq 0) { return }
     $script:installQueue = New-Object System.Collections.Generic.Queue[object]
     foreach ($entry in $selected) { $script:installQueue.Enqueue($entry) }
     $script:installMode = $Mode
     $script:installTotal = $selected.Count
     $script:installDone = 0
+    $script:installFoundCount = 0
     $installLogBox.Text = ''
     $btnInstallSelected.IsEnabled = $false
     $btnUninstallSelected.IsEnabled = $false
     $btnUpgradeAll.IsEnabled = $false
+    $btnCheckInstalled.IsEnabled = $false
     $btnStopInstall.Visibility = 'Visible'
     Start-NextInQueue
 }
 
 $btnInstallSelected.Add_Click({ Start-AppQueue -Mode 'install' })
 $btnUninstallSelected.Add_Click({ Start-AppQueue -Mode 'uninstall' })
+$btnCheckInstalled.Add_Click({ Start-AppQueue -Mode 'check' })
 
 $btnUpgradeAll.Add_Click({
+    # Distinct mode (not reusing 'install'/'check') so the per-entry completion
+    # handling below never mistakes this one-off run for a queued check result.
+    $script:installMode = 'upgrade'
+    $script:currentQueueEntry = $null
     $script:installLogFile = Join-Path $workDir "winget_upgrade_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
     $installLogBox.Text = "=== Upgrading all installed apps ===`r`n"
     $script:installProc = Start-Process -FilePath 'winget.exe' -ArgumentList @('upgrade', '--all', '--silent', '--accept-package-agreements', '--accept-source-agreements') `
@@ -711,6 +735,7 @@ $btnUpgradeAll.Add_Click({
     $btnInstallSelected.IsEnabled = $false
     $btnUninstallSelected.IsEnabled = $false
     $btnUpgradeAll.IsEnabled = $false
+    $btnCheckInstalled.IsEnabled = $false
     $btnStopInstall.Visibility = 'Visible'
 })
 
@@ -719,10 +744,12 @@ $btnStopInstall.Add_Click({
         try { Stop-Process -Id $script:installProc.Id -Force -ErrorAction SilentlyContinue } catch {}
     }
     $script:installQueue.Clear()
+    $script:currentQueueEntry = $null
     $installStatusText.Text = 'Stopped.'
     $btnInstallSelected.IsEnabled = $true
     $btnUninstallSelected.IsEnabled = $true
     $btnUpgradeAll.IsEnabled = $true
+    $btnCheckInstalled.IsEnabled = $true
     $btnStopInstall.Visibility = 'Collapsed'
 })
 
@@ -796,18 +823,40 @@ $timer.Add_Tick({
             $running = -not $script:installProc.HasExited
         } catch {}
         if (-not $running) {
+            $tail = $null
             if ($script:installLogFile -and (Test-Path $script:installLogFile)) {
                 $tail = Get-Content -Path $script:installLogFile -Raw -ErrorAction SilentlyContinue
                 if ($tail) { $installLogBox.AppendText($tail); $installLogBox.AppendText("`r`n"); $installLogBox.ScrollToEnd() }
             }
+
+            # 'check' mode: mark this entry's checkbox installed/not based on winget's
+            # own "No installed package found" text, not the process exit code - exit
+            # codes from Start-Process have proven unreliable to read back in testing.
+            if ($script:installMode -eq 'check' -and $script:currentQueueEntry -and $tail) {
+                $cb = $script:currentQueueEntry.CheckBox
+                if ($tail -notmatch 'No installed package found') {
+                    $cb.Foreground = $greenBrush
+                    $cb.Content = "$($script:currentQueueEntry.Name) (installed)"
+                    $script:installFoundCount++
+                } else {
+                    $cb.ClearValue([System.Windows.Controls.Control]::ForegroundProperty)
+                    $cb.Content = $script:currentQueueEntry.Name
+                }
+            }
+
             $script:installProc = $null
             if ($script:installQueue -and $script:installQueue.Count -gt 0) {
                 Start-NextInQueue
             } else {
-                $installStatusText.Text = 'Idle'
+                $installStatusText.Text = if ($script:installMode -eq 'check') {
+                    "Done - $($script:installFoundCount) of $($script:installTotal) already installed"
+                } else {
+                    'Idle'
+                }
                 $btnInstallSelected.IsEnabled = $true
                 $btnUninstallSelected.IsEnabled = $true
                 $btnUpgradeAll.IsEnabled = $true
+                $btnCheckInstalled.IsEnabled = $true
                 $btnStopInstall.Visibility = 'Collapsed'
             }
         }
