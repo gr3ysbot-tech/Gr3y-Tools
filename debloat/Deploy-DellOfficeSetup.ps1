@@ -15,6 +15,14 @@
 .PARAMETER DryRun
     List what would be removed/installed without making any changes.
 
+.PARAMETER CreateRestorePoint
+    Create a System Restore point before making any changes. Off by default when this
+    script is run standalone/from the command line; the GUI surfaces it as a checkbox
+    that defaults to checked (recommended) and passes this flag explicitly either way.
+    Windows throttles restore point creation to one per 24 hours and some OEM images
+    ship with System Protection disabled by policy, so it won't always succeed - a
+    failure here is logged as a warning and never blocks the rest of the run.
+
 .PARAMETER SkipDebloat
     Skip OEM (Dell/Lenovo) bloatware / McAfee removal (phase 1).
 
@@ -58,6 +66,7 @@
 [CmdletBinding()]
 param(
     [switch]$DryRun,
+    [switch]$CreateRestorePoint,
     [switch]$SkipDebloat,
     [switch]$SkipOfficeRemoval,
     [switch]$SkipOfficeInstall,
@@ -122,6 +131,18 @@ function Invoke-Step {
     }
 }
 
+function New-PreDeploySystemRestorePoint {
+    Invoke-Step 'Creating a System Restore point before making any changes' {
+        try {
+            Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
+            Checkpoint-Computer -Description 'Gr3y Tools - before debloat/Office deploy' -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop
+            Write-Log 'System Restore point created.'
+        } catch {
+            Write-Log "Could not create a System Restore point (often blocked by policy, or Windows allows only one per 24h): $($_.Exception.Message)" 'WARN'
+        }
+    }
+}
+
 # ============================================================================
 # PHASE 1 - OEM bloatware (Dell + Lenovo) + McAfee removal
 # ============================================================================
@@ -163,6 +184,11 @@ $OemBloatAppxPatterns = @(
     '*Dropbox*'
     '*McAfee*'
     '*WildTangent*'
+    # Windows 11's built-in consumer "Chat"/Teams AppX (personal Microsoft/Skype
+    # accounts, pinned to the taskbar by default). This is NOT the work/business
+    # Teams client - that installs separately as a Win32 app via MSI, not AppX, so
+    # removing this package leaves a real work Teams install completely untouched.
+    'MicrosoftTeams'
 )
 
 # Win32 (registry Uninstall key) DisplayName patterns for Dell/Lenovo/McAfee bloat.
@@ -267,6 +293,53 @@ function Remove-OemBloatware {
 
     Write-Log 'OEM bloatware / McAfee removal pass complete.'
     Write-Log 'If McAfee remnants remain (rare once the MSI above runs cleanly), download the official removal tool from https://www.mcafee.com/en-us/consumer-support/mcpr.html and run it manually - it is designed to run interactively.'
+}
+
+function Disable-OemScheduledTasksAndServices {
+    Write-Log '--- Phase 1b: Disabling leftover OEM scheduled tasks/services ---'
+
+    # OEMs create their own Task Scheduler folders. Uninstalling the app alone often
+    # leaves a scheduled task behind that silently re-triggers/reinstalls it later -
+    # disable (not delete, so it stays reversible) everything under \Dell\ and
+    # \Lenovo\ except the driver/BIOS update tooling deliberately kept installed
+    # above (Dell Command Update, Lenovo Vantage).
+    $oemTaskFolders = @('\Dell\', '\Lenovo\')
+    $keepTaskPatterns = @('*CommandUpdate*', '*Vantage*')
+
+    foreach ($folder in $oemTaskFolders) {
+        $tasks = Get-ScheduledTask -TaskPath "$folder*" -ErrorAction SilentlyContinue
+        foreach ($task in $tasks) {
+            $isKept = $false
+            foreach ($keep in $keepTaskPatterns) {
+                if ($task.TaskName -like $keep) { $isKept = $true; break }
+            }
+            if ($isKept -or $task.State -eq 'Disabled') { continue }
+            Invoke-Step "Disabling scheduled task: $($task.TaskPath)$($task.TaskName)" {
+                Disable-ScheduledTask -TaskName $task.TaskName -TaskPath $task.TaskPath -ErrorAction SilentlyContinue | Out-Null
+            }
+        }
+    }
+
+    # Same bloat keywords used for the Win32 program removal above, matched against
+    # Windows services instead - disabling stops the app respawning itself even when
+    # its uninstaller didn't clean up its service registration.
+    $bloatServicePatterns = @(
+        '*SupportAssist*', '*Dell Digital Delivery*', '*Dell Optimizer*',
+        '*Lenovo Now*', '*Lenovo Welcome*', '*Lenovo Voice*', '*Lenovo Family Cloud*',
+        '*Lenovo Utility*', '*Lenovo Service Bridge*'
+    )
+    foreach ($pattern in $bloatServicePatterns) {
+        $services = Get-Service -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -like $pattern -or $_.Name -like $pattern }
+        foreach ($svc in $services) {
+            Invoke-Step "Disabling service: $($svc.DisplayName) ($($svc.Name))" {
+                Stop-Service -Name $svc.Name -Force -ErrorAction SilentlyContinue
+                Set-Service -Name $svc.Name -StartupType Disabled -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    Write-Log 'OEM scheduled task / service cleanup pass complete.'
 }
 
 # ============================================================================
@@ -412,9 +485,13 @@ $languageLines
 # MAIN
 # ============================================================================
 
-Write-Log "Starting run. DryRun=$DryRun SkipDebloat=$SkipDebloat SkipOfficeRemoval=$SkipOfficeRemoval SkipOfficeInstall=$SkipOfficeInstall"
+Write-Log "Starting run. DryRun=$DryRun CreateRestorePoint=$CreateRestorePoint SkipDebloat=$SkipDebloat SkipOfficeRemoval=$SkipOfficeRemoval SkipOfficeInstall=$SkipOfficeInstall"
 
-if (-not $SkipDebloat) { Remove-OemBloatware }
+if ($CreateRestorePoint) { New-PreDeploySystemRestorePoint }
+if (-not $SkipDebloat) {
+    Remove-OemBloatware
+    Disable-OemScheduledTasksAndServices
+}
 if (-not $SkipOfficeRemoval) { Uninstall-ExistingOffice }
 if (-not $SkipOfficeInstall) { Install-Microsoft365Business }
 
