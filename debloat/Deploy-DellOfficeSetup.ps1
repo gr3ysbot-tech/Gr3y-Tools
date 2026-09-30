@@ -220,6 +220,7 @@ function Write-Log {
     Write-Host $line
 }
 
+Write-Log "Worker PID: $PID"
 Write-Log "Machine: $machineHost | $machineManufacturer $machineModel | Serial/Service Tag: $machineSerial"
 if ($osInfo) {
     Write-Log "OS: $($osInfo.Caption) (Build $($osInfo.BuildNumber)) | Logged-in user: $env:USERNAME"

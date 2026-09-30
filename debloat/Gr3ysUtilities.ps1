@@ -1423,6 +1423,36 @@ $window.Add_StateChanged({
 })
 $btnOpenLogs.Add_Click({ Invoke-Item -Path $workDir })
 
+$window.Add_Closing({
+    # Capture the CancelEventArgs into a named variable before the switch below - switch
+    # rebinds the automatic $_ to the value it's matching on for the duration of its
+    # clauses, which would otherwise shadow this handler's own $_ (the event args) and
+    # silently turn "Cancel = $true" into a no-op set on the wrong object.
+    $closingArgs = $_
+
+    $anyRunning = ($script:deployProc -and -not $script:deployProc.HasExited) -or
+                  ($script:fixProc -and -not $script:fixProc.HasExited) -or
+                  ($script:installProc -and -not $script:installProc.HasExited)
+    if (-not $anyRunning) { return }
+
+    $result = [System.Windows.MessageBox]::Show(
+        "A job is still running.`r`n`r`nYes = stop it and close`r`nNo = close and leave it running in the background`r`nCancel = go back without closing",
+        'Job Still Running', 'YesNoCancel', 'Warning')
+
+    switch ($result) {
+        'Yes' {
+            foreach ($proc in @($script:deployProc, $script:fixProc, $script:installProc)) {
+                if ($proc -and -not $proc.HasExited) {
+                    $ids = Get-DescendantProcessIds -RootId $proc.Id
+                    Stop-ProcessTreeSafely -Descendants $ids
+                }
+            }
+        }
+        'No' { }
+        default { $closingArgs.Cancel = $true }
+    }
+})
+
 # ============================================================================
 # Populate Install Apps tab from apps-catalog.json
 # ============================================================================
