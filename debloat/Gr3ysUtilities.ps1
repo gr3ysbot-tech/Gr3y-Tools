@@ -1311,6 +1311,8 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
               <TextBlock Style="{StaticResource Header}" Text="Regional, Power and Lock Baseline"/>
               <TextBlock Style="{StaticResource Hint}" Text="Applies the time zone, region, power plan and lock timeout selected above, plus a 15-minute monitor timeout and Fast Startup off (needed for clean Wake-on-LAN and Windows Update)."
                          TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
+              <CheckBox Name="OptProvisionPreventSleep" Content="Prevent sleep (keep machine reachable)" Margin="0,0,0,8"
+                         ToolTip="Sets system sleep/standby to Never on both AC and battery (powercfg standby-timeout-ac/dc = 0). The screen and lock timeout above are untouched - only sleep itself is disabled, so the machine stays reachable for remote support."/>
               <Button Name="BtnApplyRegionalBaseline" Content="Apply Regional/Power/Lock Baseline" Width="240" HorizontalAlignment="Left"/>
 
               <Separator Margin="0,10,0,10"/>
@@ -1701,6 +1703,7 @@ $optKfmDocuments = $window.FindName('OptKfmDocuments')
 $optKfmPictures = $window.FindName('OptKfmPictures')
 $btnApplyOneDriveKfm = $window.FindName('BtnApplyOneDriveKfm')
 $btnApplyRegionalBaseline = $window.FindName('BtnApplyRegionalBaseline')
+$optProvisionPreventSleep = $window.FindName('OptProvisionPreventSleep')
 $btnApplyOemUpdates = $window.FindName('BtnApplyOemUpdates')
 $btnRunWindowsUpdate = $window.FindName('BtnRunWindowsUpdate')
 $textWindowsUpdateResume = $window.FindName('TextWindowsUpdateResume')
@@ -1903,6 +1906,11 @@ $btnApplyRegionalBaseline.Add_Click({
         if ($culture) { $provisionArgs += @('-CultureName', $culture) }
     }
     if ($optPowerPlan.SelectedItem) { $provisionArgs += @('-PowerPlanName', $optPowerPlan.SelectedItem.Content) }
+    # Reuses the exact same -TweakPreventSleep switch (-> Set-SleepNever) the Config
+    # tab's "Prevent sleep" toggle already uses - same powercfg calls, same undo-snapshot
+    # registration - just bundled into this same provisioning job instead of a separate
+    # trip to the Config tab.
+    if ($optProvisionPreventSleep.IsChecked) { $provisionArgs += '-TweakPreventSleep' }
     Start-ProvisionJob -ProvisionArgs $provisionArgs -Label 'Apply Regional/Power/Lock Baseline'
 })
 
