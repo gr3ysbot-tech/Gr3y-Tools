@@ -1109,6 +1109,8 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                 <TextBlock Style="{StaticResource Header}" Text="Customize Preferences" Margin="0,14,0,0"/>
                 <TextBlock Style="{StaticResource Hint}" Text="Each switch reflects the machine's current setting. Toggle what you want and Apply only sends what changed. Explorer restarts once at the end if needed."
                            TextWrapping="Wrap" Margin="0,0,0,4" Opacity="0.7"/>
+                <Button Name="BtnScanTweaks" Content="Scan Current State" HorizontalAlignment="Left" Margin="0,0,0,6"
+                        ToolTip="Re-reads every switch's live registry/BCD state and refreshes the checkboxes below to match - useful after a manual change, a Revert Last Run, or just to double-check before Apply. Also lists what's currently enabled in the log below."/>
                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                   <TextBlock Text="Apply to:" VerticalAlignment="Center" Margin="0,0,8,0"/>
                   <ComboBox Name="OptTweakTargetProfile" Width="230" SelectedIndex="2">
@@ -1832,6 +1834,7 @@ $btnPostProvisioningCleanup.Add_Click({
 $tweaksPanelA = $window.FindName('TweaksPanelA')
 $tweaksPanelB = $window.FindName('TweaksPanelB')
 $btnApplyTweaks = $window.FindName('BtnApplyTweaks')
+$btnScanTweaks = $window.FindName('BtnScanTweaks')
 $optTweakTargetProfile = $window.FindName('OptTweakTargetProfile')
 $dnsPresetCombo = $window.FindName('DnsPresetCombo')
 $btnApplyDns = $window.FindName('BtnApplyDns')
@@ -1942,6 +1945,36 @@ $btnApplyTweaks.Add_Click({
     # Optimistic - assumes the job succeeds, so a second Apply later only sends whatever
     # changes again from here, rather than re-sending everything just applied.
     foreach ($key in $changed) { $script:tweakInitialState[$key] = [bool]$script:tweakCheckBoxes[$key].IsChecked }
+})
+
+$btnScanTweaks.Add_Click({
+    # Fast, synchronous re-check - unlike the Debloat + Office tab's Scan (which
+    # enumerates AppX/scheduled tasks/services and can take 5-20s, hence its background
+    # runspace), Test-TweakIsOn per tweak is just a handful of registry reads plus one
+    # bcdedit call for F8BootMenuOn - all 46 tweaks complete well under a second, so this
+    # runs directly on the UI thread rather than adding runspace complexity for no
+    # real benefit.
+    $fixesLogBox.Text = ''
+    $fixesStatusText.Text = 'Scanning current tweak state...'
+    $enabledLabels = New-Object System.Collections.Generic.List[string]
+    foreach ($t in $tweaksCatalog) {
+        $isOn = Test-TweakIsOn -TweakDef $t
+        $script:tweakCheckBoxes[$t.key].IsChecked = $isOn
+        # Re-baseline here too, not just the checkbox - otherwise Apply Selected Tweaks
+        # would compare against the stale state captured at window load, and a tweak
+        # that changed outside this tool (Revert Last Run, a manual edit) would show up
+        # as a "change" to re-send even though the checkbox already reflects it.
+        $script:tweakInitialState[$t.key] = $isOn
+        if ($isOn) { $enabledLabels.Add($t.label) }
+    }
+    if ($enabledLabels.Count -gt 0) {
+        $fixesLogBox.AppendText("Currently enabled ($($enabledLabels.Count) of $($tweaksCatalog.Count)):`r`n")
+        foreach ($label in $enabledLabels) { $fixesLogBox.AppendText("  - $label`r`n") }
+    } else {
+        $fixesLogBox.AppendText("None of this catalog's tweaks are currently enabled.`r`n")
+    }
+    $fixesLogBox.ScrollToEnd()
+    $fixesStatusText.Text = "Scan complete - $($enabledLabels.Count) of $($tweaksCatalog.Count) tweak(s) currently enabled."
 })
 
 $btnApplyDns.Add_Click({
@@ -2320,7 +2353,7 @@ $script:fixErrFile = $null
 $script:fixLogOffset = 0
 $script:fixStartTime = $null
 
-$fixButtons = @($btnFixSystemRepair, $btnFixNetworkReset, $btnFixTimeSync, $btnFixWindowsUpdate, $btnFixWinGet, $btnFixNetFx3, $btnApplyTweaks, $btnApplyDns, $btnRevertLastRun)
+$fixButtons = @($btnFixSystemRepair, $btnFixNetworkReset, $btnFixTimeSync, $btnFixWindowsUpdate, $btnFixWinGet, $btnFixNetFx3, $btnScanTweaks, $btnApplyTweaks, $btnApplyDns, $btnRevertLastRun)
 
 function Start-FixJob {
     param([string[]]$FixArgs, [string]$Label)
