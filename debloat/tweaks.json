@@ -500,6 +500,17 @@
       "entries": [
         {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Start\\Companions\\Microsoft.YourPhone_8wekyb3d8bbwe", "name": "IsEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"}
       ]
+    },
+    {
+      "key": "DefenderHardening",
+      "label": "Defender Hardening (PUA, Network Protection, LSA, SmartScreen)",
+      "tip": "The opposite of a disable-Defender switch: turns ON Potentially Unwanted App blocking and Network Protection (via Set-MpPreference), enables LSA protection (RunAsPPL, blocks credential-dumping tools like Mimikatz from reading LSASS memory), and turns on SmartScreen for apps and files. Automatically skipped if a third-party antivirus is registered in Security Center (root\\SecurityCenter2), since these assume Microsoft Defender is the active engine. Never touches Defender cloud-sample submission or SpyNet settings. Opt-in and reversible - off removes exactly what this tweak added and restores Defender's PUA/Network Protection preferences to what they were before this tool ran.",
+      "scope": "HKLM",
+      "entries": [
+        {"path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa", "name": "RunAsPPL", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System", "name": "EnableSmartScreen", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System", "name": "ShellSmartScreenLevel", "type": "String", "onValue": "Warn", "offValue": "<RemoveEntry>"}
+      ]
     }
   ]
 }

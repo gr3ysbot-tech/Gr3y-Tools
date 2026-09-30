@@ -717,6 +717,7 @@ function Initialize-UndoSnapshot {
         services     = New-Object System.Collections.Generic.List[object]
         dns          = New-Object System.Collections.Generic.List[object]
         power        = $null
+        mpPreference = $null
     }
 }
 
@@ -791,6 +792,22 @@ function Add-UndoPowerEntry {
         standbyTimeoutAC  = $acIndex
         standbyTimeoutDC  = $dcIndex
         hibernateEnabled  = (Test-Path (Join-Path $env:SystemDrive 'hiberfil.sys'))
+    }
+}
+
+function Add-UndoMpPreferenceEntry {
+    # Captures as the raw byte enum values Get-MpPreference returns (0/1/2) rather than
+    # a string name - confirmed live that Set-MpPreference's -PUAProtection/
+    # -EnableNetworkProtection parameters are typed System.Object, so passing the same
+    # byte back on revert round-trips correctly without needing a byte-to-name lookup.
+    Initialize-UndoSnapshot
+    if ($script:undoSnapshot.mpPreference) { return }
+    $pref = Get-MpPreference -ErrorAction SilentlyContinue
+    if ($pref) {
+        $script:undoSnapshot.mpPreference = [ordered]@{
+            puaProtection           = [int]$pref.PUAProtection
+            enableNetworkProtection = [int]$pref.EnableNetworkProtection
+        }
     }
 }
 
@@ -913,6 +930,17 @@ function Invoke-UndoSnapshot {
                 }
             } catch {
                 Write-Log "Could not revert power settings: $($_.Exception.Message)" 'WARN'
+            }
+        }
+    }
+
+    if ($snapshot.mpPreference) {
+        Invoke-Step 'Reverting Defender PUA Protection and Network Protection preferences' {
+            try {
+                Set-MpPreference -PUAProtection $snapshot.mpPreference.puaProtection -ErrorAction Stop
+                Set-MpPreference -EnableNetworkProtection $snapshot.mpPreference.enableNetworkProtection -ErrorAction Stop
+            } catch {
+                Write-Log "Could not revert Defender preferences: $($_.Exception.Message)" 'WARN'
             }
         }
     }
@@ -1191,6 +1219,17 @@ function Set-ClassicContextMenu {
     }
 }
 
+# DefenderHardening's registry entries (RunAsPPL, SmartScreen) go through the normal
+# tweaks.json entries[] loop - only the two Set-MpPreference calls need this dedicated
+# function, since the generic engine only knows how to set/remove registry values.
+function Set-DefenderMpPreferenceHardening {
+    param([string]$Direction)
+    Add-UndoMpPreferenceEntry
+    $value = if ($Direction -eq 'on') { 'Enabled' } else { 'Disabled' }
+    Set-MpPreference -PUAProtection $value -ErrorAction Stop
+    Set-MpPreference -EnableNetworkProtection $value -ErrorAction Stop
+}
+
 # $script:tweakDefs is loaded from tweaks.json above (shared with Gr3ysUtilities.ps1's
 # toggle list and its live-state read). Each entry carries an onValue and offValue (a
 # literal "<RemoveEntry>" offValue means delete the value rather than write one) - the
@@ -1227,6 +1266,18 @@ function Invoke-CustomizeTweaks {
                 continue
             }
         }
+        # DefenderHardening assumes Microsoft Defender is the active AV engine - a
+        # registered third-party AV in Security Center means these Set-MpPreference/LSA/
+        # SmartScreen changes could conflict with (or be silently ignored by) the other
+        # product, so skip entirely rather than apply half-meaningful settings.
+        if ($key -eq 'DefenderHardening' -and $direction -eq 'on') {
+            $thirdPartyAv = @(Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+                Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' })
+            if ($thirdPartyAv.Count -gt 0) {
+                Write-Log "Third-party antivirus registered in Security Center ($($thirdPartyAv.displayName -join ', ')) - skipping Defender Hardening." 'WARN'
+                continue
+            }
+        }
         Invoke-Step "Applying tweak: $($def.label) -> $direction" {
             try {
                 if ($key -eq 'ClassicContextMenu') {
@@ -1244,6 +1295,9 @@ function Invoke-CustomizeTweaks {
                             New-Item -Path $entry.path -Force -ErrorAction SilentlyContinue | Out-Null
                             Set-ItemProperty -Path $entry.path -Name $entry.name -Value $value -Type $entry.type -ErrorAction Stop
                         }
+                    }
+                    if ($key -eq 'DefenderHardening') {
+                        Set-DefenderMpPreferenceHardening -Direction $direction
                     }
                 }
                 Write-Log "Applied: $($def.label) -> $direction"
