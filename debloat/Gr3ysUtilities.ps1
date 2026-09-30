@@ -922,7 +922,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                 <StackPanel Orientation="Horizontal" Margin="0,3,0,3">
                   <CheckBox Name="OptTweakTelemetry" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
                   <TextBlock Text="Reduce telemetry &amp; activity tracking" VerticalAlignment="Center" Margin="8,0,0,0"/>
-                  <TextBlock Style="{StaticResource Hint}" ToolTip="AllowTelemetry=0, disables the DiagTrack service and the Activity Feed."/>
+                  <TextBlock Style="{StaticResource Hint}" ToolTip="AllowTelemetry=0, disables the DiagTrack service and the Activity Feed. CAUTION: breaks Windows Autopatch, Update Compliance and Intune Endpoint Analytics, which all require diagnostic data at Required or higher - skipped automatically (with a log warning) on a machine already MDM-enrolled. Microsoft also documents that Smart App Control turns itself off when optional diagnostic data is off, and can only be turned back on with a Windows reset/reinstall."/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="0,3,0,3">
                   <CheckBox Name="OptTweakHibernation" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
@@ -934,9 +934,10 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                   <TextBlock Text="Prevent sleep (keep machine reachable)" VerticalAlignment="Center" Margin="8,0,0,0"/>
                   <TextBlock Style="{StaticResource Hint}" ToolTip="Sets system sleep to Never on AC and battery so the machine stays reachable. Display timeout is untouched, so the screen still locks."/>
                 </StackPanel>
-                <StackPanel Orientation="Horizontal" Margin="0,3,0,3">
+                <StackPanel Name="PanelTweakDisableSAC" Orientation="Horizontal" Margin="0,3,0,3">
                   <CheckBox Name="OptTweakDisableSAC" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
                   <TextBlock Text="Disable Smart App Control" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                  <TextBlock Name="TextSacState" Style="{StaticResource Hint}" Margin="6,0,0,0" VerticalAlignment="Center"/>
                   <TextBlock Style="{StaticResource Hint}" ToolTip="Smart App Control hard-blocks unsigned/low-reputation installers on a clean Windows 11 22H2+ machine, with no user override - several Install Apps catalog entries will otherwise fail. WARNING: this is one-way on a real machine - once off, it cannot be turned back on without reinstalling Windows. Off by default."/>
                 </StackPanel>
               </StackPanel>
@@ -1177,6 +1178,26 @@ $optTweakDisableSAC.Add_Checked({
         'Confirm: Disable Smart App Control', 'YesNo', 'Warning')
     if ($result -eq 'No') { $optTweakDisableSAC.IsChecked = $false }
 })
+
+# Smart App Control shipped in Windows 11 22H2 (build 22621) - the toggle is meaningless
+# (and its registry check below would just find nothing) on anything older, and on a
+# machine where the policy value is absent for any other reason there's nothing this
+# tweak could actually change. Hide the whole row rather than show a toggle that would
+# silently no-op, and show the live state (0 off / 1 on / 2 evaluation) next to it so a
+# tech can see it's already been turned off (one-way) before trying this tweak at all.
+$panelTweakDisableSAC = $window.FindName('PanelTweakDisableSAC')
+$textSacState = $window.FindName('TextSacState')
+$sacPolicyState = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -Name 'VerifiedAndReputablePolicyState' -ErrorAction SilentlyContinue).VerifiedAndReputablePolicyState
+if ([Environment]::OSVersion.Version.Build -lt 22621 -or $null -eq $sacPolicyState) {
+    $panelTweakDisableSAC.Visibility = 'Collapsed'
+} else {
+    $textSacState.Text = switch ($sacPolicyState) {
+        0 { '(currently: Off)' }
+        1 { '(currently: On)' }
+        2 { '(currently: Evaluation)' }
+        default { "(currently: unknown state $sacPolicyState)" }
+    }
+}
 $optChannel = $window.FindName('OptChannel')
 $btnScan = $window.FindName('BtnScan')
 $btnStart = $window.FindName('BtnStart')

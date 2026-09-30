@@ -622,6 +622,29 @@ function Disable-OemScheduledTasksAndServices {
 
 function Set-TelemetryReduced {
     Invoke-Step 'Reducing telemetry and activity tracking' {
+        # Update Compliance, Intune Endpoint Analytics and Windows Autopatch all require
+        # diagnostic data at Required (or higher) to function - forcing AllowTelemetry=0
+        # on a machine already enrolled in MDM would silently break whatever org tooling
+        # depends on those, which only surfaces later as "why did our compliance
+        # dashboard stop reporting this machine" tickets.
+        #
+        # HKLM:\SOFTWARE\Microsoft\Enrollments holds many unrelated internal Windows
+        # "enrollment" records (push notification channels, device-health/attestation,
+        # etc. - EVERY subkey typically shows EnrollmentState=1 regardless of whether
+        # the device is actually corporate-managed, confirmed by testing against a
+        # machine known via dsregcmd /status to be neither Azure AD nor domain joined,
+        # which still showed 30+ such subkeys). Filtering specifically for
+        # ProviderID -eq 'MS DM Server' - Intune's own registered provider id, and the
+        # thing Autopatch/Update Compliance/Endpoint Analytics actually depend on -
+        # correctly returned "not enrolled" on that same known-unmanaged machine.
+        $enrollmentsKey = 'HKLM:\SOFTWARE\Microsoft\Enrollments'
+        $isIntuneEnrolled = (Test-Path $enrollmentsKey) -and [bool](Get-ChildItem -Path $enrollmentsKey -ErrorAction SilentlyContinue | ForEach-Object {
+            Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue
+        } | Where-Object { $_.ProviderID -eq 'MS DM Server' })
+        if ($isIntuneEnrolled) {
+            Write-Log 'This machine is Intune-enrolled - skipping the telemetry reduction tweak (AllowTelemetry=0 can break Update Compliance / Intune Endpoint Analytics / Windows Autopatch reporting for an enrolled device).' 'WARN'
+            return
+        }
         try {
             New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' -Force -ErrorAction SilentlyContinue | Out-Null
             Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' -Name 'AllowTelemetry' -Value 0 -Type DWord -ErrorAction SilentlyContinue
@@ -756,6 +779,19 @@ function Invoke-CustomizeTweaks {
         if (-not $script:tweakDefs.ContainsKey($key)) { Write-Log "Unknown tweak key: $key" 'WARN'; continue }
         if ($direction -ne 'on' -and $direction -ne 'off') { Write-Log "Unknown tweak direction '$direction' for $key" 'WARN'; continue }
         $def = $script:tweakDefs[$key]
+
+        # S3Sleep forces the machine off Modern Standby and onto S3 (PlatformAoAcOverride=0) -
+        # on firmware that never exposed S3 in the first place (most recent Dell/Lenovo
+        # laptops), this doesn't just no-op, it breaks sleep/wake entirely. powercfg /a
+        # lists every sleep state the firmware actually supports; only apply the "on"
+        # direction when S3 is genuinely one of them.
+        if ($key -eq 'S3Sleep' -and $direction -eq 'on') {
+            $supportedStates = powercfg /a 2>&1 | Out-String
+            if ($supportedStates -notmatch 'Standby \(S3\)') {
+                Write-Log 'This machine''s firmware does not expose S3 sleep (powercfg /a) - skipping the S3 Sleep tweak, since forcing it on Modern-Standby-only hardware breaks sleep/wake.' 'WARN'
+                continue
+            }
+        }
         Invoke-Step "Applying tweak: $($def.label) -> $direction" {
             try {
                 if ($def.needsHKU -and -not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
