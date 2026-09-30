@@ -4,7 +4,8 @@
     Microsoft 365 Apps for business deploy, and a WinUtil-style app install catalog.
 
 .DESCRIPTION
-    Run this on the target laptop from an elevated or non-elevated PowerShell prompt:
+    Run this on the target laptop from an elevated or non-elevated PowerShell prompt -
+    PowerShell 7/pwsh or Windows PowerShell 5.1, either one:
 
         irm get.gr3y.io/debloat | iex
 
@@ -14,6 +15,17 @@
     hash, and aborts before running anything if any file doesn't match. Only elevates
     once it has a verified local copy - if the current session isn't already elevated, it
     relaunches directly into the verified Gr3ysUtilities.ps1 (no second network fetch).
+
+    This download-and-verify step runs identically under PowerShell 7 or Windows
+    PowerShell - only the GUI itself (Gr3ysUtilities.ps1, and the worker script it
+    drives) needs Windows PowerShell 5.1, so only that final launch step is routed
+    through powershell.exe. An earlier version re-ran this entire bootstrap a second
+    time from scratch under a freshly spawned Windows PowerShell session just to reach
+    that same launch step whenever it was started from PowerShell 7 - roughly doubling
+    every network round-trip (the manifest plus all 5 files) for no benefit, and using a
+    fragile piped re-fetch command that could close its window before anything was
+    visible if that second attempt hit any early error. This version fetches and
+    verifies exactly once no matter which shell started it.
 
     Always pulls the current version from GitHub, so there's nothing to keep manually
     copied/updated across client laptops - including edits to apps-catalog.json or
@@ -39,16 +51,6 @@ function Test-Gr3yToolsIsAdmin {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-# Gr3ysUtilities.ps1's WPF/STA startup and the reg.exe load/unload patterns in
-# Deploy-DellOfficeSetup.ps1 are only verified against Windows PowerShell 5.1 - re-exec
-# under powershell.exe rather than run untested under pwsh's PS7 edition.
-if ($PSVersionTable.PSEdition -eq 'Core') {
-    Write-Host 'Running under PowerShell 7 - re-launching under Windows PowerShell (powershell.exe), which this tool targets.' -ForegroundColor Yellow
-    $relaunchCommand = "irm https://raw.githubusercontent.com/gr3ysbot-tech/Gr3y-Tools/main/debloat.ps1 | iex"
-    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-Command', $relaunchCommand)
-    return
-}
-
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # Old download folders from previous runs otherwise sit in %TEMP% forever.
@@ -57,6 +59,9 @@ Get-ChildItem -Path $env:TEMP -Directory -Filter 'Gr3yTools_*' -ErrorAction Sile
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host "Gr3y Support - Dell/Lenovo debloat + Office deploy + app installer" -ForegroundColor Cyan
+if ($PSVersionTable.PSEdition -eq 'Core') {
+    Write-Host "Running under PowerShell 7 - that's fine for this part. Only the GUI itself needs Windows PowerShell 5.1, which is where it launches below." -ForegroundColor Yellow
+}
 Write-Host "Checking latest.json ($Ref)..."
 
 $manifestUrl = "https://raw.githubusercontent.com/gr3ysbot-tech/Gr3y-Tools/$Ref/latest.json"
@@ -113,9 +118,15 @@ if (-not (Test-Gr3yToolsIsAdmin)) {
     # Elevate ONCE, straight into the already-downloaded-and-verified GUI - no second
     # network fetch, no re-running this bootstrap a second time under the elevated
     # session. That used to mean two independent downloads of the same "latest" files,
-    # with no guarantee both fetches saw the same content.
+    # with no guarantee both fetches saw the same content. Always powershell.exe here
+    # (Windows PowerShell 5.1), regardless of which shell is running this bootstrap
+    # script right now - the GUI only runs correctly there.
     Write-Host 'Elevation required - relaunching as Administrator (accept the UAC prompt)...' -ForegroundColor Yellow
-    Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $guiArgs
+    try {
+        Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $guiArgs -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Host "Could not relaunch as Administrator: $($_.Exception.Message)" -ForegroundColor Red
+    }
     return
 }
 
@@ -124,4 +135,8 @@ Write-Host "Starting Gr3y Support..." -ForegroundColor Green
 # CURRENT session has - a plain "& script.ps1" call would inherit whatever policy this
 # session already has (Restricted by default on an unmodified/clean machine - exactly
 # what this tool's target laptops are).
-Start-Process -FilePath 'powershell.exe' -Wait -ArgumentList $guiArgs
+try {
+    Start-Process -FilePath 'powershell.exe' -Wait -ArgumentList $guiArgs -ErrorAction Stop
+} catch {
+    Write-Host "Could not launch Gr3y Support: $($_.Exception.Message)" -ForegroundColor Red
+}
