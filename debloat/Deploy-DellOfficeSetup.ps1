@@ -72,6 +72,14 @@
     (or removes the registry value entirely, where that's what turning it off means).
     Restarts Explorer once at the end if any selected tweak needs it.
 
+.PARAMETER TargetProfile
+    Current, Default, or Both (default). Every HKCU-scoped tweak entry always applies to
+    the current (elevated) user's own hive; Default/Both additionally mirror it into
+    C:\Users\Default\NTUSER.DAT via a temporary reg.exe load, so a user account created
+    later (a fresh Entra join, a new local account) inherits the same settings instead of
+    getting stock Windows defaults. HKLM-scoped tweaks are already machine-wide and are
+    unaffected by this switch.
+
 .PARAMETER DnsPreset
     Sets DNS servers on active physical network adapters (never virtual/VPN adapters) to
     a named preset (Google, Cloudflare, Cloudflare_Malware, Cloudflare_Malware_Adult,
@@ -159,6 +167,8 @@ param(
     [switch]$TweakDisableSmartAppControl,
     [switch]$InstallOemUpdateTool,
     [string]$CustomizeTweaks = '',
+    [ValidateSet('Current', 'Default', 'Both')]
+    [string]$TargetProfile = 'Both',
     [string]$DnsPreset = '',
     [switch]$DnsForce,
     [switch]$FixSystemRepair,
@@ -762,15 +772,66 @@ function Install-OemUpdateTool {
     }
 }
 
+# Every HKCU write in this script normally lands in the elevated tech's own hive, not the
+# client's actual user - who's typically created later (first Entra join, a fresh local
+# account) and just gets stock Windows defaults, with no way to know a tweak was ever
+# intended for them. This loads C:\Users\Default\NTUSER.DAT - the template Windows copies
+# to build every brand-new profile - so $Body's writes get inherited by whoever logs in
+# next, not just the current session. Verified against a real elevated process on
+# 2026-09-30 (load, write, read back, unload all succeeded); $Body's own registry calls
+# should prefer reg.exe add/query over Set-ItemProperty/Get-ItemProperty where practical,
+# since .NET's registry handles are more prone to lingering past this function's own
+# scope and making the final `reg.exe unload` fail with "the process cannot access the
+# file" (harmless if it happens - the hive unloads on the next reboot regardless - but
+# best avoided since it leaves Gr3yDefault mounted for the rest of this session).
+function Invoke-DefaultProfileRegistry {
+    param([scriptblock]$Body)
+    $hiveLoaded = $false
+    try {
+        if (-not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
+            New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS -Scope Script -ErrorAction Stop | Out-Null
+        }
+        $ntUserPath = Join-Path $env:SystemDrive 'Users\Default\NTUSER.DAT'
+        if (-not (Test-Path $ntUserPath)) {
+            Write-Log "Default profile hive not found at $ntUserPath - skipping Default profile registry changes." 'WARN'
+            return
+        }
+        $loadOutput = & reg.exe load 'HKU\Gr3yDefault' $ntUserPath 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Log "Could not load the Default profile hive (reg.exe load exited $LASTEXITCODE): $loadOutput" 'WARN'
+            return
+        }
+        $hiveLoaded = $true
+        $DefaultRoot = 'HKU:\Gr3yDefault'
+        & $Body
+    } finally {
+        if ($hiveLoaded) {
+            [gc]::Collect()
+            [gc]::WaitForPendingFinalizers()
+            Start-Sleep -Milliseconds 300
+            $unloadOutput = & reg.exe unload 'HKU\Gr3yDefault' 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "Could not unload the Default profile hive (reg.exe unload exited $LASTEXITCODE) - this clears on its own at next reboot: $unloadOutput" 'WARN'
+            }
+        }
+    }
+}
+
 # $script:tweakDefs is loaded from tweaks.json above (shared with Gr3ysUtilities.ps1's
 # toggle list and its live-state read). Each entry carries an onValue and offValue (a
 # literal "<RemoveEntry>" offValue means delete the value rather than write one) - the
 # GUI computes which keys actually changed since it loaded and sends "Key=on"/"Key=off"
 # for each, so this is a real reversible apply, not a one-way-only tweak.
 function Invoke-CustomizeTweaks {
-    param([string[]]$Selections)
+    param([string[]]$Selections, [string]$TargetProfile = 'Both')
+
+    $consoleUser = (Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName
+    if ($consoleUser -and $consoleUser -notmatch [regex]::Escape($env:USERNAME)) {
+        Write-Log "The account signed in at the console ($consoleUser) differs from the account this is running as ($env:USERNAME) - Current-user tweaks apply to $env:USERNAME's profile, which may not be who's sitting at this machine." 'WARN'
+    }
 
     $restartExplorer = $false
+    $appliedDefs = New-Object System.Collections.Generic.List[object]
     foreach ($selection in $Selections) {
         $parts = $selection -split '=', 2
         if ($parts.Count -ne 2) { Write-Log "Malformed tweak selection: $selection" 'WARN'; continue }
@@ -812,6 +873,7 @@ function Invoke-CustomizeTweaks {
             }
         }
         if ($def.explorerRestart) { $restartExplorer = $true }
+        $appliedDefs.Add(@{ Def = $def; Direction = $direction })
     }
 
     if ($restartExplorer) {
@@ -819,6 +881,38 @@ function Invoke-CustomizeTweaks {
             Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
             Start-Process explorer.exe
+        }
+        if ($TargetProfile -in @('Default', 'Both')) {
+            Write-Log 'Explorer was restarted for the current session only - a tweak mirrored into the Default profile below takes effect the next time a NEW user signs in for the first time, not on the next Explorer restart.'
+        }
+    }
+
+    if ($TargetProfile -in @('Default', 'Both')) {
+        $hkcuAppliedDefs = @($appliedDefs | Where-Object { $_.Def.scope -eq 'HKCU' })
+        if ($hkcuAppliedDefs.Count -gt 0) {
+            Invoke-Step "Mirroring $($hkcuAppliedDefs.Count) per-user tweak(s) into the Default profile (so a future/new user account inherits them)" {
+                Invoke-DefaultProfileRegistry -Body {
+                    foreach ($applied in $hkcuAppliedDefs) {
+                        $def = $applied.Def
+                        $direction = $applied.Direction
+                        foreach ($entry in ($def.entries | Where-Object { $_.path -like 'HKCU:*' })) {
+                            $value = if ($direction -eq 'on') { $entry.onValue } else { $entry.offValue }
+                            $defaultPath = $entry.path -replace '^HKCU:', $DefaultRoot
+                            try {
+                                if ($value -eq '<RemoveEntry>') {
+                                    Remove-ItemProperty -Path $defaultPath -Name $entry.name -ErrorAction SilentlyContinue
+                                } else {
+                                    New-Item -Path $defaultPath -Force -ErrorAction SilentlyContinue | Out-Null
+                                    Set-ItemProperty -Path $defaultPath -Name $entry.name -Value $value -Type $entry.type -ErrorAction Stop
+                                }
+                                Write-Log "Mirrored to Default profile: $($def.label) -> $direction"
+                            } catch {
+                                Write-Log "Could not mirror '$($def.label)' to the Default profile: $($_.Exception.Message)" 'WARN'
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1261,7 +1355,7 @@ $languageLines
 # MAIN
 # ============================================================================
 
-Write-Log "Starting run. DryRun=$DryRun CreateRestorePoint=$CreateRestorePoint SkipDebloat=$SkipDebloat SkipOfficeRemoval=$SkipOfficeRemoval SkipOfficeInstall=$SkipOfficeInstall"
+Write-Log "Starting run. DryRun=$DryRun CreateRestorePoint=$CreateRestorePoint SkipDebloat=$SkipDebloat SkipOfficeRemoval=$SkipOfficeRemoval SkipOfficeInstall=$SkipOfficeInstall TargetProfile=$TargetProfile"
 
 if ($CreateRestorePoint) { New-PreDeploySystemRestorePoint }
 
@@ -1270,7 +1364,7 @@ if ($TweakDisableHibernation) { Disable-Hibernation }
 if ($TweakPreventSleep) { Set-SleepNever }
 if ($TweakDisableSmartAppControl) { Disable-SmartAppControl }
 if ($InstallOemUpdateTool) { Install-OemUpdateTool }
-if ($CustomizeTweaks) { Invoke-CustomizeTweaks -Selections ($CustomizeTweaks -split ',' | Where-Object { $_ }) }
+if ($CustomizeTweaks) { Invoke-CustomizeTweaks -Selections ($CustomizeTweaks -split ',' | Where-Object { $_ }) -TargetProfile $TargetProfile }
 if ($DnsPreset) { Set-DnsPreset -Preset $DnsPreset -DnsForce:$DnsForce }
 
 if (-not $SkipDebloat) {

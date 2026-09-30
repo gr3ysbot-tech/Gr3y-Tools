@@ -4,6 +4,7 @@
       "key": "BSoDVerbose",
       "label": "BSoD Verbose Mode",
       "tip": "Gives more information when you blue screen.",
+      "scope": "HKLM",
       "explorerRestart": false,
       "entries": [
         {"path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\CrashControl", "name": "DisplayParameters", "type": "DWord", "onValue": "1", "offValue": "0"},
@@ -14,6 +15,7 @@
       "key": "BatteryPercentage",
       "label": "System Tray Battery Percentage",
       "tip": "Shows numeric battery percentage next to the battery icon in the system tray.",
+      "scope": "HKCU",
       "explorerRestart": false,
       "entries": [
         {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", "name": "IsBatteryPercentageEnabled", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
@@ -23,6 +25,7 @@
       "key": "DarkTheme",
       "label": "Dark Theme for Windows",
       "tip": "Dark Mode for the system and applications.",
+      "scope": "HKCU",
       "explorerRestart": true,
       "entries": [
         {"path": "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", "name": "AppsUseLightTheme", "type": "DWord", "onValue": "0", "offValue": "1"},
@@ -33,6 +36,7 @@
       "key": "LongPaths",
       "label": "Enable Long Paths",
       "tip": "Allows file paths longer than 260 characters in Explorer.",
+      "scope": "HKLM",
       "explorerRestart": false,
       "entries": [
         {"path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem", "name": "LongPathsEnabled", "type": "DWord", "onValue": "1", "offValue": "0"}
@@ -42,6 +46,7 @@
       "key": "ShowFileExt",
       "label": "File Explorer File Extensions",
       "tip": "Shows file extensions in Explorer (.exe, .png, etc.)",
+      "scope": "HKCU",
       "explorerRestart": true,
       "entries": [
         {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", "name": "HideFileExt", "type": "DWord", "onValue": "0", "offValue": "1"}
@@ -51,6 +56,7 @@
       "key": "ShowHiddenFiles",
       "label": "File Explorer Hidden Files",
       "tip": "Reveals hidden files in Explorer.",
+      "scope": "HKCU",
       "explorerRestart": true,
       "entries": [
         {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", "name": "Hidden", "type": "DWord", "onValue": "1", "offValue": "0"}
@@ -60,6 +66,7 @@
       "key": "GameMode",
       "label": "Game Mode",
       "tip": "Prioritizes gaming performance by allocating system resources to games.",
+      "scope": "HKCU",
       "explorerRestart": false,
       "entries": [
         {"path": "HKCU:\\Software\\Microsoft\\GameBar", "name": "AllowAutoGameMode", "type": "DWord", "onValue": "1", "offValue": "0"},
@@ -70,6 +77,7 @@
       "key": "DisableLockScreen",
       "label": "Lock Screen - Disable",
       "tip": "Skips the lock screen entirely, goes directly to sign-in on boot and wake.",
+      "scope": "HKLM",
       "explorerRestart": false,
       "entries": [
         {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Personalization", "name": "NoLockScreen", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
@@ -79,6 +87,7 @@
       "key": "LogonAcrylicBlur",
       "label": "Logon Screen Acrylic Blur",
       "tip": "Enables the acrylic blur effect on the login screen background.",
+      "scope": "HKLM",
       "explorerRestart": false,
       "entries": [
         {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System", "name": "DisableAcrylicBackgroundOnLogon", "type": "DWord", "onValue": "0", "offValue": "1"}
@@ -88,6 +97,7 @@
       "key": "LogonVerbose",
       "label": "Logon Verbose Mode",
       "tip": "Shows detailed messages during startup/shutdown.",
+      "scope": "HKLM",
       "explorerRestart": false,
       "entries": [
         {"path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", "name": "VerboseStatus", "type": "DWord", "onValue": "1", "offValue": "0"}
@@ -97,6 +107,7 @@
       "key": "NewOutlook",
       "label": "Microsoft Outlook New Version",
       "tip": "Forces the new Outlook application to be used.",
+      "scope": "HKCU",
       "explorerRestart": false,
       "entries": [
         {"path": "HKCU:\\SOFTWARE\\Microsoft\\Office\\16.0\\Outlook\\Preferences", "name": "UseNewOutlook", "type": "DWord", "onValue": "1", "offValue": "0"},
@@ -109,6 +120,7 @@
       "key": "MouseAcceleration",
       "label": "Mouse Acceleration",
       "tip": "Cursor movement is affected by the speed of physical mouse movements.",
+      "scope": "HKCU",
       "explorerRestart": false,
       "entries": [
         {"path": "HKCU:\\Control Panel\\Mouse", "name": "MouseSpeed", "type": "DWord", "onValue": "1", "offValue": "0"},
@@ -120,6 +132,7 @@
       "key": "NumLockOnStartup",
       "label": "Num Lock on Startup",
       "tip": "Turns Num Lock on when the computer starts.",
+      "scope": "HKCU",
       "explorerRestart": false,
       "needsHKU": true,
       "entries": [
@@ -131,6 +144,7 @@
       "key": "S0SleepNetwork",
       "label": "S0 Sleep Network Connectivity",
       "tip": "Keeps network connectivity during S0 (modern standby) low-power idle.",
+      "scope": "HKCU",
       "explorerRestart": false,
       "entries": [
         {"path": "HKCU:\\SOFTWARE\\Policies\\Microsoft\\Power\\PowerSettings\\f15576e8-98b7-4186-b944-eafa664402d9", "name": "ACSettingIndex", "type": "DWord", "onValue": "1", "offValue": "0"}
@@ -140,6 +154,7 @@
       "key": "S3Sleep",
       "label": "S3 Sleep",
       "tip": "Switches from Modern Standby to S3 Sleep (cuts power to the CPU, keeps RAM refreshed). Only takes effect on hardware whose firmware exposes S3 - see the S3-support check note.",
+      "scope": "HKLM",
       "explorerRestart": false,
       "entries": [
         {"path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Power", "name": "PlatformAoAcOverride", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"}
@@ -149,6 +164,7 @@
       "key": "ScrollbarsAlwaysVisible",
       "label": "Scrollbars Always Visible",
       "tip": "Scrollbars are always visible instead of auto-hiding.",
+      "scope": "HKCU",
       "explorerRestart": false,
       "entries": [
         {"path": "HKCU:\\Control Panel\\Accessibility", "name": "DynamicScrollbars", "type": "DWord", "onValue": "0", "offValue": "1"}
@@ -158,6 +174,7 @@
       "key": "SettingsHomePage",
       "label": "Settings Home Page",
       "tip": "Shows the Home page in the Windows Settings app.",
+      "scope": "HKCU",
       "explorerRestart": false,
       "entries": [
         {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer", "name": "SettingsPageVisibility", "type": "String", "onValue": "show:home", "offValue": "hide:home"}
@@ -167,6 +184,7 @@
       "key": "StartMenuBingSearch",
       "label": "Start Menu Bing Search",
       "tip": "Enables Bing web search results in Windows Search.",
+      "scope": "HKCU",
       "explorerRestart": false,
       "entries": [
         {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Search", "name": "BingSearchEnabled", "type": "DWord", "onValue": "1", "offValue": "0"}
@@ -176,6 +194,7 @@
       "key": "StartMenuRecommendations",
       "label": "Start Menu Recommendations",
       "tip": "Enables the Recommended section in the Start Menu. WARNING: also affects Windows Spotlight on the Lock Screen.",
+      "scope": "HKLM",
       "explorerRestart": true,
       "entries": [
         {"path": "HKLM:\\SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\Start", "name": "HideRecommendedSection", "type": "DWord", "onValue": "0", "offValue": "1"},
@@ -187,6 +206,7 @@
       "key": "StickyKeys",
       "label": "Sticky Keys",
       "tip": "Enables Sticky Keys (activates by pressing Shift 5 times).",
+      "scope": "HKCU",
       "explorerRestart": false,
       "entries": [
         {"path": "HKCU:\\Control Panel\\Accessibility\\StickyKeys", "name": "Flags", "type": "DWord", "onValue": "506", "offValue": "58"}
@@ -196,6 +216,7 @@
       "key": "TaskbarCenteredIcons",
       "label": "Taskbar Centered Icons",
       "tip": "Centers Taskbar icons instead of left-aligning them.",
+      "scope": "HKCU",
       "explorerRestart": true,
       "entries": [
         {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", "name": "TaskbarAl", "type": "DWord", "onValue": "1", "offValue": "0"}
@@ -205,6 +226,7 @@
       "key": "TaskbarSearchIcon",
       "label": "Taskbar Search Icon",
       "tip": "Shows the Search button on the Taskbar.",
+      "scope": "HKCU",
       "explorerRestart": false,
       "entries": [
         {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Search", "name": "SearchboxTaskbarMode", "type": "DWord", "onValue": "1", "offValue": "0"}
@@ -214,6 +236,7 @@
       "key": "TaskbarTaskViewIcon",
       "label": "Taskbar Task View Icon",
       "tip": "Shows the Task View button on the Taskbar.",
+      "scope": "HKCU",
       "explorerRestart": false,
       "entries": [
         {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", "name": "ShowTaskViewButton", "type": "DWord", "onValue": "1", "offValue": "0"}
@@ -223,6 +246,7 @@
       "key": "WindowSnapping",
       "label": "Window Snapping",
       "tip": "Enables the window snapping feature when dragging windows.",
+      "scope": "HKCU",
       "explorerRestart": false,
       "entries": [
         {"path": "HKCU:\\Control Panel\\Desktop", "name": "WindowArrangementActive", "type": "String", "onValue": "1", "offValue": "0"}

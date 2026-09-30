@@ -1075,7 +1075,17 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
 
                 <TextBlock Style="{StaticResource Header}" Text="Customize Preferences" Margin="0,14,0,0"/>
                 <TextBlock Style="{StaticResource Hint}" Text="Each switch reflects the machine's current setting. Toggle what you want and Apply only sends what changed. Explorer restarts once at the end if needed."
-                           TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
+                           TextWrapping="Wrap" Margin="0,0,0,4" Opacity="0.7"/>
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                  <TextBlock Text="Apply to:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                  <ComboBox Name="OptTweakTargetProfile" Width="230" SelectedIndex="2">
+                    <ComboBoxItem Content="Current user only"/>
+                    <ComboBoxItem Content="Default profile only (future users)"/>
+                    <ComboBoxItem Content="Both (recommended)"/>
+                  </ComboBox>
+                  <TextBlock Style="{StaticResource Hint}" Margin="8,0,0,0"
+                             ToolTip="Default profile mirrors per-user tweaks into C:\Users\Default\NTUSER.DAT, so a user account created later (a fresh Entra join, a new local account) inherits them too instead of getting stock Windows defaults. Machine-wide tweaks aren't affected either way - there's only one copy of those."/>
+                </StackPanel>
                 <Grid>
                   <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
@@ -1314,6 +1324,7 @@ foreach ($p in $quickPanels) {
 $tweaksPanelA = $window.FindName('TweaksPanelA')
 $tweaksPanelB = $window.FindName('TweaksPanelB')
 $btnApplyTweaks = $window.FindName('BtnApplyTweaks')
+$optTweakTargetProfile = $window.FindName('OptTweakTargetProfile')
 $dnsPresetCombo = $window.FindName('DnsPresetCombo')
 $btnApplyDns = $window.FindName('BtnApplyDns')
 
@@ -1391,10 +1402,15 @@ $btnApplyTweaks.Add_Click({
         $label = if ($tweakDef) { $tweakDef.label } else { $key }
         $summaryLines.Add("  - $label -> $direction")
     }
-    $confirmMsg = "Apply these $($changed.Count) tweak change(s)?`r`n`r`n" + ($summaryLines -join "`r`n")
+    $targetProfile = switch ($optTweakTargetProfile.SelectedIndex) {
+        0 { 'Current' }
+        1 { 'Default' }
+        default { 'Both' }
+    }
+    $confirmMsg = "Apply these $($changed.Count) tweak change(s)? (Apply to: $($optTweakTargetProfile.SelectedItem.Content))`r`n`r`n" + ($summaryLines -join "`r`n")
     $result = [System.Windows.MessageBox]::Show($confirmMsg, 'Confirm Apply Tweaks', 'YesNo', 'Warning')
     if ($result -ne 'Yes') { return }
-    Start-FixJob -FixArgs @('-CustomizeTweaks', ($selections -join ',')) -Label 'Apply Tweaks'
+    Start-FixJob -FixArgs @('-CustomizeTweaks', ($selections -join ','), '-TargetProfile', $targetProfile) -Label 'Apply Tweaks'
     # Optimistic - assumes the job succeeds, so a second Apply later only sends whatever
     # changes again from here, rather than re-sending everything just applied.
     foreach ($key in $changed) { $script:tweakInitialState[$key] = [bool]$script:tweakCheckBoxes[$key].IsChecked }
