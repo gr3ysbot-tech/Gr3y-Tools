@@ -40,7 +40,6 @@
   },
   "lenovo": {
     "appxPatterns": [
-      "E046963F.LenovoCompanion",
       "E046963F.LenovoNow",
       "E046963F.LenovoWelcome",
       "E046963F.LenovoVoice",
@@ -59,7 +58,7 @@
       "Glance by Mirametrix*"
     ],
     "scheduledTaskFolders": ["\\Lenovo\\"],
-    "scheduledTaskKeepPatterns": ["*Vantage*"],
+    "scheduledTaskKeepPatterns": ["*Vantage*", "*ImController*"],
     "servicePatterns": [
       "*Lenovo Now*",
       "*Lenovo Welcome*",

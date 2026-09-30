@@ -73,10 +73,16 @@
     Restarts Explorer once at the end if any selected tweak needs it.
 
 .PARAMETER DnsPreset
-    Sets DNS servers on all "Up" network adapters to a named preset (Google, Cloudflare,
-    Cloudflare_Malware, Cloudflare_Malware_Adult, Open_DNS, Quad9, AdGuard_Ads_Trackers,
-    AdGuard_Ads_Trackers_Malware_Adult) or back to DHCP. 'Default' (or omitted) makes no change.
-    Registry/IP values sourced from ChrisTitusTech/winutil's config/tweaks.json and config/dns.json.
+    Sets DNS servers on active physical network adapters (never virtual/VPN adapters) to
+    a named preset (Google, Cloudflare, Cloudflare_Malware, Cloudflare_Malware_Adult,
+    Open_DNS, Quad9, AdGuard_Ads_Trackers, AdGuard_Ads_Trackers_Malware_Adult) or back to
+    DHCP. 'Default' (or omitted) makes no change. Refuses on a domain-joined machine
+    unless -DnsForce is also passed, since a public resolver can break domain sign-in and
+    internal name resolution. Registry/IP values sourced from ChrisTitusTech/winutil's
+    config/tweaks.json and config/dns.json.
+
+.PARAMETER DnsForce
+    Applies -DnsPreset even on a domain-joined machine. Off by default - see DnsPreset.
 
 .PARAMETER FixSystemRepair
     Run sfc /scannow then DISM /Online /Cleanup-Image /RestoreHealth. Can take
@@ -154,6 +160,7 @@ param(
     [switch]$InstallOemUpdateTool,
     [string]$CustomizeTweaks = '',
     [string]$DnsPreset = '',
+    [switch]$DnsForce,
     [switch]$FixSystemRepair,
     [switch]$FixNetworkReset,
     [switch]$FixWindowsUpdateReset,
@@ -180,10 +187,19 @@ function Get-SafeFileNamePart {
 $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
 $bios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction SilentlyContinue
 $osInfo = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue
+$csProduct = Get-CimInstance -ClassName Win32_ComputerSystemProduct -ErrorAction SilentlyContinue
 
 $machineHost = $env:COMPUTERNAME
 $machineManufacturer = if ($cs -and $cs.Manufacturer) { $cs.Manufacturer } else { 'UnknownMfr' }
-$machineModel = if ($cs -and $cs.Model) { $cs.Model } else { 'UnknownModel' }
+# On Lenovo, Win32_ComputerSystem.Model is the internal machine-type code (e.g.
+# "21AHCTO1WW"), not the name printed on the box - the marketing/friendly name
+# (e.g. "ThinkPad X1 Carbon Gen 10") is Win32_ComputerSystemProduct.Version instead.
+# Dell (and everyone else) puts the real model name in Win32_ComputerSystem.Model,
+# so only switch sources for Lenovo.
+$machineModel =
+    if ($machineManufacturer -match 'Lenovo' -and $csProduct -and $csProduct.Version) { $csProduct.Version }
+    elseif ($cs -and $cs.Model) { $cs.Model }
+    else { 'UnknownModel' }
 $machineSerial = if ($bios -and $bios.SerialNumber) { $bios.SerialNumber } else { 'UnknownSerial' }
 
 $logIdentifier = "{0}_{1}-{2}_{3}" -f `
@@ -497,9 +513,15 @@ function Disable-OemScheduledTasksAndServices {
     foreach ($folder in $OemTaskFolders) {
         $tasks = Get-ScheduledTask -TaskPath "$folder*" -ErrorAction SilentlyContinue
         foreach ($task in $tasks) {
+            # Match against the full path + name, not just the name - Dell Command
+            # Update's tasks live under \Dell\CommandUpdate\ with task names that don't
+            # necessarily contain "CommandUpdate" themselves, and Lenovo Vantage depends
+            # on the \Lenovo\ImController\ System Interface Foundation tasks, which a
+            # name-only "*Vantage*" pattern never matches.
+            $fullTaskPath = "$($task.TaskPath)$($task.TaskName)"
             $isKept = $false
             foreach ($keep in $OemTaskKeepPatterns) {
-                if ($task.TaskName -like $keep) { $isKept = $true; break }
+                if ($fullTaskPath -like $keep) { $isKept = $true; break }
             }
             if ($isKept -or $task.State -eq 'Disabled') { continue }
             Invoke-Step "Disabling scheduled task: $($task.TaskPath)$($task.TaskName)" {
@@ -607,7 +629,12 @@ function Install-OemUpdateTool {
         # IdeaPad/Yoga/Legion. This only filters the unambiguous consumer names -
         # everything else is attempted and winget's own result is trusted.
         $consumerKeywords = if ($isDell) { @('Inspiron', 'Alienware') } else { @('IdeaPad', 'Yoga', 'Legion') }
-        $looksConsumer = $consumerKeywords | Where-Object { $machineModel -match $_ }
+        # "Yoga" alone would wrongly catch ThinkPad X1 Yoga / L13 Yoga / X13 Yoga, which
+        # are commercial models System Update does support - exclude anything already
+        # named ThinkPad from the Yoga match specifically.
+        $looksConsumer = $consumerKeywords | Where-Object {
+            $machineModel -match $_ -and -not ($_ -eq 'Yoga' -and $machineModel -match '^ThinkPad')
+        }
         if ($looksConsumer) {
             Write-Log "Model '$machineModel' looks like a consumer line ($($looksConsumer -join ', ')) - Dell Command Update/Lenovo System Update only support commercial hardware. Skipping."
             return
@@ -706,19 +733,39 @@ $script:dnsPresets = @{
 }
 
 function Set-DnsPreset {
-    param([string]$Preset)
+    param([string]$Preset, [switch]$DnsForce)
 
     if (-not $Preset -or $Preset -eq 'Default') {
         Write-Log 'DNS preset is Default - no change made.'
         return
     }
 
-    Invoke-Step "Setting DNS to '$Preset' on all active network adapters" {
+    # Forcing a public resolver on a domain-joined machine can break domain sign-in, GPO
+    # and internal name resolution - refuse unless explicitly overridden.
+    $csForDns = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+    if ($csForDns -and $csForDns.PartOfDomain -and -not $DnsForce) {
+        Write-Log "This machine is domain-joined ($($csForDns.Domain)) - changing DNS to '$Preset' could break domain sign-in and internal name resolution. Not applying. Re-run with -DnsForce to override." 'WARN'
+        return
+    }
+
+    Invoke-Step "Setting DNS to '$Preset' on active physical network adapters" {
         try {
-            $adapters = Get-NetAdapter -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' }
-            if (-not $adapters) { Write-Log 'No active network adapters found - nothing to change.' 'WARN'; return }
+            # -Physical, plus an explicit description exclusion, so this never touches
+            # Hyper-V/VMware/WSL virtual adapters or VPN tunnel adapters - forcing a
+            # public resolver onto a VPN adapter breaks split-DNS for internal names.
+            $adapters = Get-NetAdapter -Physical -ErrorAction Stop | Where-Object {
+                $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch 'Virtual|Hyper-V|VPN|WAN Miniport|TAP|WireGuard'
+            }
+            if (-not $adapters) { Write-Log 'No active physical network adapters found - nothing to change.' 'WARN'; return }
 
             foreach ($adapter in $adapters) {
+                # Log the current servers before changing anything, so DHCP isn't the only way back.
+                $previous = Get-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ErrorAction SilentlyContinue |
+                    Where-Object { $_.ServerAddresses }
+                foreach ($prevEntry in $previous) {
+                    Write-Log "  $($adapter.Name) previous $($prevEntry.AddressFamily) servers: $($prevEntry.ServerAddresses -join ', ')"
+                }
+
                 if ($Preset -eq 'DHCP') {
                     Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ResetServerAddresses -ErrorAction Stop
                     & netsh interface ip set dnsservers name="$($adapter.Name)" source=dhcp | Out-Null
@@ -980,7 +1027,7 @@ if ($TweakPreventSleep) { Set-SleepNever }
 if ($TweakDisableSmartAppControl) { Disable-SmartAppControl }
 if ($InstallOemUpdateTool) { Install-OemUpdateTool }
 if ($CustomizeTweaks) { Invoke-CustomizeTweaks -Selections ($CustomizeTweaks -split ',' | Where-Object { $_ }) }
-if ($DnsPreset) { Set-DnsPreset -Preset $DnsPreset }
+if ($DnsPreset) { Set-DnsPreset -Preset $DnsPreset -DnsForce:$DnsForce }
 
 if (-not $SkipDebloat) {
     Remove-OemBloatware

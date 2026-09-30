@@ -93,8 +93,14 @@ function Get-SafeFileNamePart {
 function Get-MachineTag {
     $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
     $bios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction SilentlyContinue
+    $csProduct = Get-CimInstance -ClassName Win32_ComputerSystemProduct -ErrorAction SilentlyContinue
     $mfr = if ($cs -and $cs.Manufacturer) { $cs.Manufacturer } else { 'UnknownMfr' }
-    $model = if ($cs -and $cs.Model) { $cs.Model } else { 'UnknownModel' }
+    # Same Lenovo-specific source as Deploy-DellOfficeSetup.ps1's $machineModel - Model
+    # is a machine-type code on Lenovo, not the name printed on the box.
+    $model =
+        if ($mfr -match 'Lenovo' -and $csProduct -and $csProduct.Version) { $csProduct.Version }
+        elseif ($cs -and $cs.Model) { $cs.Model }
+        else { 'UnknownModel' }
     $serial = if ($bios -and $bios.SerialNumber) { $bios.SerialNumber } else { 'UnknownSerial' }
     return "{0}_{1}-{2}_{3}" -f `
         (Get-SafeFileNamePart $env:COMPUTERNAME), `
@@ -245,9 +251,14 @@ function Get-BloatScanReport {
     foreach ($folder in $taskFoldersToScan) {
         $tasks = Get-ScheduledTask -TaskPath "$folder*" -ErrorAction SilentlyContinue
         foreach ($task in $tasks) {
+            # Match the full path + name - same reasoning as the worker's
+            # Disable-OemScheduledTasksAndServices (a name-only match misses Dell Command
+            # Update / Lenovo ImController tasks that don't carry the keep keyword in
+            # their own TaskName).
+            $fullTaskPathScan = "$($task.TaskPath)$($task.TaskName)"
             $isKept = $false
             foreach ($keep in $taskKeepPatternsToScan) {
-                if ($task.TaskName -like $keep) { $isKept = $true; break }
+                if ($fullTaskPathScan -like $keep) { $isKept = $true; break }
             }
             if (-not $isKept -and $task.State -ne 'Disabled') {
                 $foundTasks.Add("$($task.TaskPath)$($task.TaskName)")
@@ -1247,10 +1258,18 @@ $btnApplyTweaks.Add_Click({
         [System.Windows.MessageBox]::Show('No tweak changes to apply - every switch already matches its current setting.', 'Gr3y Tools', 'OK', 'Information') | Out-Null
         return
     }
-    $selections = $changed | ForEach-Object {
-        $direction = if ($script:tweakCheckBoxes[$_].IsChecked) { 'on' } else { 'off' }
-        "$_=$direction"
+    $selections = New-Object System.Collections.Generic.List[string]
+    $summaryLines = New-Object System.Collections.Generic.List[string]
+    foreach ($key in $changed) {
+        $direction = if ($script:tweakCheckBoxes[$key].IsChecked) { 'on' } else { 'off' }
+        $selections.Add("$key=$direction")
+        $tweakDef = $tweaksCatalog | Where-Object { $_.key -eq $key } | Select-Object -First 1
+        $label = if ($tweakDef) { $tweakDef.label } else { $key }
+        $summaryLines.Add("  - $label -> $direction")
     }
+    $confirmMsg = "Apply these $($changed.Count) tweak change(s)?`r`n`r`n" + ($summaryLines -join "`r`n")
+    $result = [System.Windows.MessageBox]::Show($confirmMsg, 'Confirm Apply Tweaks', 'YesNo', 'Warning')
+    if ($result -ne 'Yes') { return }
     Start-FixJob -FixArgs @('-CustomizeTweaks', ($selections -join ',')) -Label 'Apply Tweaks'
     # Optimistic - assumes the job succeeds, so a second Apply later only sends whatever
     # changes again from here, rather than re-sending everything just applied.
@@ -1541,13 +1560,17 @@ function Start-FixJob {
 
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', """$deployScript""",
                  '-NoReboot', '-SkipDebloat', '-SkipOfficeRemoval', '-SkipOfficeInstall') + $FixArgs
+    # Honor the Debloat + Office tab's Dry run checkbox here too - it previously only
+    # applied to the Start button, so ticking Dry run and then clicking a Config-tab
+    # action (a Fix, Apply Tweaks, Apply DNS) made real changes anyway.
+    if ($optDryRun.IsChecked) { $argList += '-DryRun' }
 
     $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
     $script:fixLogFile = Join-Path $workDir "gui_fix_$stamp.out.log"
     $script:fixErrFile = Join-Path $workDir "gui_fix_$stamp.err.log"
     $script:fixLogOffset = 0
     $fixesLogBox.Text = ''
-    $fixesStatusText.Text = "Running: $Label..."
+    $fixesStatusText.Text = if ($optDryRun.IsChecked) { "Running (DRY RUN - no changes will be made): $Label..." } else { "Running: $Label..." }
     foreach ($b in $fixButtons) { $b.IsEnabled = $false }
     $btnStopFixes.Visibility = 'Visible'
 
