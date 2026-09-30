@@ -1166,6 +1166,28 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                 <Button Name="BtnPanelTimeDate" Content="Time and Date" Width="260" Margin="0,0,10,8"/>
                 <Button Name="BtnPanelFirewall" Content="Windows Defender Firewall" Width="260" Margin="0,0,10,8"/>
                 <Button Name="BtnPanelSystemRestore" Content="Windows Restore" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelWorkplace" Content="Access Work or School" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelActivation" Content="Activation Settings" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelWindowsUpdate" Content="Windows Update Settings" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelBluetooth" Content="Bluetooth Settings" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelDisplay" Content="Display Settings" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelPrintersSettings" Content="Printers Settings" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelNetworkStatus" Content="Network Status" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelDefaultApps" Content="Default Apps" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelDeviceManager" Content="Device Manager" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelDiskManagement" Content="Disk Management" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelServices" Content="Services" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelTaskScheduler" Content="Task Scheduler" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelEventViewer" Content="Event Viewer" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelLocalUsers" Content="Local Users and Groups" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelNetplwiz" Content="User Accounts (netplwiz)" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelOptionalFeatures" Content="Windows Features" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelMsinfo32" Content="System Information" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelDxdiag" Content="DirectX Diagnostic" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelAdvFirewall" Content="Advanced Firewall (wf.msc)" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelActivationWizard" Content="Activation Wizard (phone)" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelDsregStatus" Content="Show Join/MDM Status" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelAdminPowerShell" Content="Admin PowerShell Here" Width="260" Margin="0,0,10,8"/>
               </WrapPanel>
             </StackPanel>
           </ScrollViewer>
@@ -1417,6 +1439,26 @@ $quickPanels = @(
     @{ Btn = $window.FindName('BtnPanelTimeDate');           File = 'control.exe';  Args = 'timedate.cpl' }
     @{ Btn = $window.FindName('BtnPanelFirewall');           File = 'control.exe';  Args = 'firewall.cpl' }
     @{ Btn = $window.FindName('BtnPanelSystemRestore');      File = 'rstrui.exe';   Args = $null }
+    @{ Btn = $window.FindName('BtnPanelWorkplace');          File = 'ms-settings:workplace';      Args = $null }
+    @{ Btn = $window.FindName('BtnPanelActivation');         File = 'ms-settings:activation';     Args = $null }
+    @{ Btn = $window.FindName('BtnPanelWindowsUpdate');      File = 'ms-settings:windowsupdate';  Args = $null }
+    @{ Btn = $window.FindName('BtnPanelBluetooth');          File = 'ms-settings:bluetooth';      Args = $null }
+    @{ Btn = $window.FindName('BtnPanelDisplay');            File = 'ms-settings:display';        Args = $null }
+    @{ Btn = $window.FindName('BtnPanelPrintersSettings');   File = 'ms-settings:printers';       Args = $null }
+    @{ Btn = $window.FindName('BtnPanelNetworkStatus');      File = 'ms-settings:network-status'; Args = $null }
+    @{ Btn = $window.FindName('BtnPanelDefaultApps');        File = 'ms-settings:defaultapps';    Args = $null }
+    @{ Btn = $window.FindName('BtnPanelDeviceManager');      File = 'devmgmt.msc';    Args = $null }
+    @{ Btn = $window.FindName('BtnPanelDiskManagement');     File = 'diskmgmt.msc';   Args = $null }
+    @{ Btn = $window.FindName('BtnPanelServices');           File = 'services.msc';   Args = $null }
+    @{ Btn = $window.FindName('BtnPanelTaskScheduler');      File = 'taskschd.msc';   Args = $null }
+    @{ Btn = $window.FindName('BtnPanelEventViewer');        File = 'eventvwr.msc';   Args = $null }
+    @{ Btn = $window.FindName('BtnPanelLocalUsers');         File = 'lusrmgr.msc';    Args = $null }
+    @{ Btn = $window.FindName('BtnPanelNetplwiz');           File = 'netplwiz.exe';   Args = $null }
+    @{ Btn = $window.FindName('BtnPanelOptionalFeatures');   File = 'optionalfeatures.exe'; Args = $null }
+    @{ Btn = $window.FindName('BtnPanelMsinfo32');           File = 'msinfo32.exe';   Args = $null }
+    @{ Btn = $window.FindName('BtnPanelDxdiag');             File = 'dxdiag.exe';     Args = $null }
+    @{ Btn = $window.FindName('BtnPanelAdvFirewall');        File = 'wf.msc';         Args = $null }
+    @{ Btn = $window.FindName('BtnPanelActivationWizard');   File = 'slui.exe';       Args = '4' }
 )
 foreach ($p in $quickPanels) {
     $panelFile = $p.File
@@ -1430,6 +1472,25 @@ foreach ($p in $quickPanels) {
         }
     }.GetNewClosure())
 }
+
+$btnPanelDsregStatus = $window.FindName('BtnPanelDsregStatus')
+$btnPanelDsregStatus.Add_Click({
+    try {
+        $dsregOutput = & dsregcmd /status 2>&1 | Out-String
+        [System.Windows.MessageBox]::Show($dsregOutput, 'Join / MDM Status (dsregcmd /status)', 'OK', 'Information') | Out-Null
+    } catch {
+        [System.Windows.MessageBox]::Show("Could not run dsregcmd: $($_.Exception.Message)", 'Gr3y Tools', 'OK', 'Error') | Out-Null
+    }
+})
+
+$btnPanelAdminPowerShell = $window.FindName('BtnPanelAdminPowerShell')
+$btnPanelAdminPowerShell.Add_Click({
+    try {
+        Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoExit' -WorkingDirectory $workDir
+    } catch {
+        [System.Windows.MessageBox]::Show("Could not open PowerShell: $($_.Exception.Message)", 'Gr3y Tools', 'OK', 'Error') | Out-Null
+    }
+})
 
 # ============================================================================
 # Provisioning tab (Phase 2 core: client profile, hostname rename, OneDrive KFM,
