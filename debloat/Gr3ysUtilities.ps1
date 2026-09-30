@@ -163,7 +163,7 @@ function Get-LogSummary {
     # that can grow to megabytes during a long-running phase (sfc/DISM, Office install).
     # For live per-tick phase tracking during a run, use Update-PhaseFromTail instead.
     param([string]$LogPath)
-    $result = @{ phase = 'Idle'; completed = $false }
+    $result = @{ phase = 'Idle'; completed = $false; hasWarnings = $false; warningCount = 0 }
     if (-not $LogPath -or -not (Test-Path $LogPath)) { return $result }
     $content = Get-Content -Path $LogPath -Raw -ErrorAction SilentlyContinue
     if (-not $content) { $result.phase = 'Starting...'; return $result }
@@ -173,7 +173,13 @@ function Get-LogSummary {
     # previous phase for the rest of the run.
     $found = [regex]::Matches($content, '--- (Phase \d[a-z]?: .+?) ---')
     if ($found.Count -gt 0) { $phase = $found[$found.Count - 1].Groups[1].Value.Trim() }
-    if ($content -match 'Run complete\.') {
+    $warnMatch = [regex]::Match($content, 'Run complete with (\d+) warning')
+    if ($warnMatch.Success) {
+        $phase = 'All phases complete'
+        $result.completed = $true
+        $result.hasWarnings = $true
+        $result.warningCount = [int]$warnMatch.Groups[1].Value
+    } elseif ($content -match 'Run complete\.') {
         $phase = 'All phases complete'
         $result.completed = $true
     }
@@ -1289,6 +1295,7 @@ $btnApplyDns.Add_Click({
 $greenBrush = $window.Resources['GreenBrush']
 $redBrush = $window.Resources['RedBrush']
 $accentBrush = $window.Resources['AccentBrush']
+$yellowBrush = $window.Resources['YellowBrush']
 $headerBrush = $window.Resources['HeaderBrush']
 
 # winget presence check - Install Apps is entirely winget-backed, and a machine
@@ -1883,12 +1890,20 @@ $timer.Add_Tick({
                 # One-shot full-file read is fine here - this only runs once, right as
                 # the job finishes, not on every tick.
                 $finishedSummary = Get-LogSummary -LogPath $script:deployLogFile
-                if ($finishedSummary.completed) {
+                if ($finishedSummary.completed -and -not $finishedSummary.hasWarnings) {
                     $stateText.Text = 'Done'
                     $statusDot.Fill = $accentBrush
                     $bannerText.Text = 'Run finished successfully. Reboot to finish clearing removed services/drivers.'
                     $bannerBorder.Background = '#0f2a17'
                     $bannerBorder.BorderBrush = $greenBrush
+                    $bannerBorder.Visibility = 'Visible'
+                    if (-not $script:deployIsDryRun) { $btnReboot.Visibility = 'Visible' }
+                } elseif ($finishedSummary.completed -and $finishedSummary.hasWarnings) {
+                    $stateText.Text = 'Done (warnings)'
+                    $statusDot.Fill = $yellowBrush
+                    $bannerText.Text = "Run finished with $($finishedSummary.warningCount) warning(s)/error(s) - check the log above before considering this machine done."
+                    $bannerBorder.Background = '#2a2410'
+                    $bannerBorder.BorderBrush = $yellowBrush
                     $bannerBorder.Visibility = 'Visible'
                     if (-not $script:deployIsDryRun) { $btnReboot.Visibility = 'Visible' }
                 } else {
@@ -1898,6 +1913,13 @@ $timer.Add_Tick({
                     $bannerBorder.Background = '#2a0f0f'
                     $bannerBorder.BorderBrush = $redBrush
                     $bannerBorder.Visibility = 'Visible'
+                }
+                if ($script:deployErrFile -and (Test-Path $script:deployErrFile)) {
+                    $errTail = Get-Content -Path $script:deployErrFile -Raw -ErrorAction SilentlyContinue
+                    if ($errTail) {
+                        $logBox.AppendText("`r`n=== stderr ===`r`n$errTail")
+                        $logBox.ScrollToEnd()
+                    }
                 }
             }
         }

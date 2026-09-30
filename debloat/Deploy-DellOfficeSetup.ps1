@@ -211,8 +211,11 @@ $logIdentifier = "{0}_{1}-{2}_{3}" -f `
 $logPath = Join-Path $workDir "run_$(Get-Date -Format 'yyyyMMdd_HHmmss')_$logIdentifier.log"
 Start-Transcript -Path $logPath -Append | Out-Null
 
+$script:errorCount = 0
+
 function Write-Log {
     param([string]$Message, [string]$Level = 'INFO')
+    if ($Level -eq 'WARN' -or $Level -eq 'ERROR') { $script:errorCount++ }
     $line = "[{0}] [{1}] {2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
     Write-Host $line
 }
@@ -892,76 +895,33 @@ function Invoke-WinGetReinstall {
 # ============================================================================
 
 function Get-OfficeDeploymentTool {
-    # Pulls the live Click-to-Run setup.exe directly from the Office CDN - this is the
-    # same binary the ODT wrapper installs, and avoids tracking a version-specific
-    # download URL for the ODT wrapper itself.
+    # Always re-fetch, rather than caching setup.exe in $workDir forever - an old cached
+    # copy eventually fails against the current CDN with "setup.exe is out of date", and
+    # the file itself is only ~7 MB, so there's no real cost to just always pulling the
+    # current build instead of trying to version-check a cached one.
     $setupPath = Join-Path $workDir 'setup.exe'
-    if (-not (Test-Path $setupPath)) {
-        Write-Log 'Downloading Office Click-to-Run setup.exe from officecdn.microsoft.com'
-        Invoke-WebRequest -Uri 'https://officecdn.microsoft.com/pr/wsus/setup.exe' -OutFile $setupPath -UseBasicParsing
-    }
+    Write-Log 'Downloading Office Click-to-Run setup.exe from officecdn.microsoft.com'
+    Invoke-WebRequest -Uri 'https://officecdn.microsoft.com/pr/wsus/setup.exe' -OutFile $setupPath -UseBasicParsing
     return $setupPath
 }
 
-function Uninstall-ExistingOffice {
-    Write-Log '--- Phase 2: Removing existing Office installation(s) ---'
-
-    $c2rKey = 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration'
-    $hasC2R = Test-Path $c2rKey
-
-    if ($hasC2R) {
-        $setupPath = Get-OfficeDeploymentTool
-        $removeXmlPath = Join-Path $workDir 'remove-all.xml'
-        @'
-<Configuration>
-  <Remove All="TRUE" />
-  <Display Level="None" AcceptEULA="TRUE" />
-</Configuration>
-'@ | Set-Content -Path $removeXmlPath -Encoding UTF8
-
-        Invoke-Step 'Removing existing Click-to-Run Office (all products, all languages)' {
-            Start-Process -FilePath $setupPath -ArgumentList "/configure ""$removeXmlPath""" -Wait
-        }
-    } else {
-        Write-Log 'No Click-to-Run Office installation detected.'
-    }
-
-    # Older MSI-based Office (2016 and earlier, or volume-licensed MSI builds) isn't
-    # managed by the ODT - clear it via its own MSI uninstall.
-    $msiOffice = Get-UninstallEntries | Where-Object {
-        $_.DisplayName -like 'Microsoft Office*' -and $_.UninstallString -match 'msiexec'
-    }
-    foreach ($entry in $msiOffice) {
-        $productCode = $entry.PSChildName
-        Invoke-Step "Removing MSI-based Office product: $($entry.DisplayName)" {
-            Start-Process msiexec.exe -ArgumentList "/x $productCode /qn /norestart" -Wait
-        }
-    }
-
-    if (-not $hasC2R -and -not $msiOffice) {
-        Write-Log 'No existing Office installation found - nothing to remove.'
-    }
-}
-
-# ============================================================================
-# PHASE 3 - Install Microsoft 365 Apps for business (en-us only)
-# ============================================================================
-
-function Install-Microsoft365Business {
-    Write-Log "--- Phase 3: Installing Microsoft 365 Apps for business ($OfficeLanguage, $OfficeChannel channel) ---"
-
-    $setupPath = Get-OfficeDeploymentTool
-    $installXmlPath = Join-Path $workDir 'install.xml'
-
+function New-OfficeInstallXml {
+    param([string]$Path, [string]$SourceDir)
     # Product ID O365BusinessRetail = Microsoft 365 Apps for business.
     # (O365ProPlusRetail is the "for enterprise" SKU - do not swap unless your tenant
     # licenses enterprise plans instead.)
     # Groove = legacy consumer OneDrive sync client, always safe to exclude.
     # Uncomment the Teams/OneDrive ExcludeApp lines if your org deploys those separately
     # (e.g. Teams via a dedicated MSI, OneDrive pinned to a specific build).
+    # SourcePath points /download and /configure at the same local cache, so /configure
+    # installs from what pre-flight already verified downloaded cleanly instead of
+    # re-pulling from the CDN. RemoveMSI clears any old MSI-based Office as part of this
+    # same install pass instead of a separate manual msiexec loop. AUTOACTIVATE is a
+    # volume-licence Property and is silently ignored for O365BusinessRetail - omitted so
+    # the config doesn't imply activation behavior it doesn't actually control.
     @"
 <Configuration>
-  <Add OfficeClientEdition="64" Channel="$OfficeChannel">
+  <Add OfficeClientEdition="64" Channel="$OfficeChannel" SourcePath="$SourceDir">
     <Product ID="O365BusinessRetail">
       <Language ID="$OfficeLanguage" />
       <ExcludeApp ID="Groove" />
@@ -971,12 +931,120 @@ function Install-Microsoft365Business {
   </Add>
   <Updates Enabled="TRUE" Channel="$OfficeChannel" />
   <Display Level="None" AcceptEULA="TRUE" />
-  <Property Name="AUTOACTIVATE" Value="1" />
+  <Logging Level="Standard" Path="C:\ProgramData\DellOfficeDeploy" />
+  <RemoveMSI />
 </Configuration>
-"@ | Set-Content -Path $installXmlPath -Encoding UTF8
+"@ | Set-Content -Path $Path -Encoding UTF8
+}
+
+$script:officePreflightOk = $true
+
+function Invoke-OfficePreflight {
+    param([string]$SetupPath, [string]$InstallXmlPath)
+
+    $drive = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'" -ErrorAction SilentlyContinue
+    $freeGb = if ($drive) { [Math]::Round($drive.FreeSpace / 1GB, 1) } else { $null }
+    if ($null -eq $freeGb -or $freeGb -lt 5) {
+        Write-Log "Only $freeGb GB free on $env:SystemDrive - need at least 5 GB free before touching the existing Office install. Aborting the Office phase before removing anything." 'ERROR'
+        $script:officePreflightOk = $false
+        return
+    }
+    Write-Log "Free space check OK ($freeGb GB free on $env:SystemDrive)."
+
+    Invoke-Step 'Pre-downloading the Microsoft 365 Apps install source (so the existing Office is only removed once the new install source is confirmed good)' {
+        $proc = Start-Process -FilePath $SetupPath -ArgumentList "/download ""$InstallXmlPath""" -PassThru -Wait
+        if ($proc.ExitCode -ne 0) {
+            Write-Log "setup.exe /download exited with code $($proc.ExitCode) - could not stage the install source." 'ERROR'
+            $script:officePreflightOk = $false
+        } else {
+            Write-Log 'Install source downloaded successfully.'
+        }
+    }
+}
+
+function Uninstall-ExistingOffice {
+    param([string]$SetupPath)
+    Write-Log '--- Phase 2: Removing existing Office installation(s) ---'
+
+    $c2rKey = 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration'
+    $hasC2R = Test-Path $c2rKey
+
+    if ($hasC2R) {
+        $config = Get-ItemProperty -Path $c2rKey -ErrorAction SilentlyContinue
+        $products = @()
+        if ($config -and $config.ProductReleaseIds) { $products = @($config.ProductReleaseIds -split ';' | Where-Object { $_ }) }
+        Write-Log "Existing Click-to-Run product(s): $($products -join ', ')"
+
+        $expectedSkuPattern = '^(O365BusinessRetail|O365ProPlusRetail|O365HomePremRetail|HomeStudentRetail|HomeBusinessRetail|PersonalRetail)$'
+        $unexpected = @($products | Where-Object { $_ -notmatch $expectedSkuPattern })
+
+        # Well-known ODT/CDN per-channel base-URL GUIDs (Microsoft's own, published in
+        # the ODT docs) - used only to skip a needless remove+reinstall when the machine
+        # already has exactly the target SKU on the target channel. Anything not
+        # confidently recognized here just falls through to a normal reinstall, which is
+        # always safe either way.
+        $channelGuidMap = @{
+            'MonthlyEnterprise' = '55336b82-a18d-4dd6-b5f6-9e5095c314a6'
+            'Current'           = '492350f6-3a01-4f97-b9c0-c7c6ddf67d60'
+            'SemiAnnual'        = '7ffbc6bf-bc32-4f92-8982-f9dd17fd3114'
+            'SemiAnnualPreview' = 'b8f9b850-328d-4355-9145-c59439a0c4cf'
+        }
+        $targetGuid = $channelGuidMap[$OfficeChannel]
+        $onTargetChannel = $targetGuid -and $config.UpdateChannel -and ($config.UpdateChannel -match [regex]::Escape($targetGuid))
+        $onlyExpectedSku = $products.Count -eq 1 -and $products[0] -eq 'O365BusinessRetail'
+
+        if ($unexpected.Count -gt 0) {
+            Write-Log "Refusing to run remove-all.xml - found product(s) beyond the expected business/consumer SKUs: $($unexpected -join ', '). This usually means a licensed Visio/Project (or similar add-on) is installed, and remove-all.xml would take it out too. Leaving the existing Click-to-Run install in place; Phase 3's install.xml only adds/updates O365BusinessRetail and never removes anything, so it still runs normally." 'ERROR'
+        } elseif ($onlyExpectedSku -and $onTargetChannel) {
+            Write-Log "O365BusinessRetail is already installed on the $OfficeChannel channel - skipping removal, Phase 3 will reconfigure it in place."
+        } else {
+            $removeXmlPath = Join-Path $workDir 'remove-all.xml'
+            @'
+<Configuration>
+  <Remove All="TRUE" />
+  <Display Level="None" AcceptEULA="TRUE" />
+</Configuration>
+'@ | Set-Content -Path $removeXmlPath -Encoding UTF8
+
+            Invoke-Step 'Removing existing Click-to-Run Office (all products, all languages)' {
+                $proc = Start-Process -FilePath $SetupPath -ArgumentList "/configure ""$removeXmlPath""" -PassThru -Wait
+                if ($proc.ExitCode -ne 0) {
+                    Write-Log "setup.exe /configure remove-all.xml exited with code $($proc.ExitCode) - Office removal may not have fully completed." 'ERROR'
+                } else {
+                    Write-Log 'Existing Click-to-Run Office removed.'
+                }
+            }
+        }
+    } else {
+        # Older MSI-based Office (2016 and earlier, or volume-licensed MSI builds) isn't
+        # managed by the ODT - Phase 3's <RemoveMSI /> clears it during install instead
+        # of a separate manual msiexec uninstall here.
+        $msiOffice = @(Get-UninstallEntries | Where-Object {
+            $_.DisplayName -like 'Microsoft Office*' -and $_.UninstallString -match 'msiexec'
+        })
+        if ($msiOffice.Count -gt 0) {
+            Write-Log "No Click-to-Run Office found, but $($msiOffice.Count) MSI-based Office product(s) detected ($($msiOffice.DisplayName -join ', ')) - Phase 3's RemoveMSI will clear these during install."
+        } else {
+            Write-Log 'No existing Office installation found - nothing to remove.'
+        }
+    }
+}
+
+# ============================================================================
+# PHASE 3 - Install Microsoft 365 Apps for business (en-us only)
+# ============================================================================
+
+function Install-Microsoft365Business {
+    param([string]$SetupPath, [string]$InstallXmlPath)
+    Write-Log "--- Phase 3: Installing Microsoft 365 Apps for business ($OfficeLanguage, $OfficeChannel channel) ---"
 
     Invoke-Step "Installing Microsoft 365 Apps for business ($OfficeLanguage)" {
-        Start-Process -FilePath $setupPath -ArgumentList "/configure ""$installXmlPath""" -Wait
+        $proc = Start-Process -FilePath $SetupPath -ArgumentList "/configure ""$InstallXmlPath""" -PassThru -Wait
+        if ($proc.ExitCode -ne 0) {
+            Write-Log "setup.exe /configure install.xml exited with code $($proc.ExitCode) - Office may not be fully installed." 'ERROR'
+        } else {
+            Write-Log 'setup.exe reported success installing Microsoft 365 Apps for business.'
+        }
     }
 
     # The ODT's Display Level="None" only suppresses the INSTALLER's own UI - it has
@@ -996,6 +1064,18 @@ function Install-Microsoft365Business {
         } catch {
             Write-Log "Could not suppress the Default File Types prompt: $($_.Exception.Message)" 'WARN'
         }
+    }
+
+    $c2rKey = 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration'
+    if (Test-Path $c2rKey) {
+        $config = Get-ItemProperty -Path $c2rKey -ErrorAction SilentlyContinue
+        if ($config -and $config.ProductReleaseIds) {
+            Write-Log "Verified: ClickToRun Configuration shows $($config.ProductReleaseIds) installed, version $($config.VersionToReport)."
+        } else {
+            Write-Log 'ClickToRun Configuration key exists but ProductReleaseIds is empty - Office install may not have completed.' 'ERROR'
+        }
+    } else {
+        Write-Log 'ClickToRun Configuration key not found after install - Office does not appear to be installed.' 'ERROR'
     }
 
     Write-Log 'Install complete. Activation happens on first app launch when the user signs in with their Microsoft 365 business account.'
@@ -1065,15 +1145,31 @@ if (-not $SkipDebloat) {
     Remove-OemBloatware
     Disable-OemScheduledTasksAndServices
 }
-if (-not $SkipOfficeRemoval) { Uninstall-ExistingOffice }
-if (-not $SkipOfficeInstall) { Install-Microsoft365Business }
+if (-not $SkipOfficeRemoval -or -not $SkipOfficeInstall) {
+    $officeSetupPath = Get-OfficeDeploymentTool
+    $officeInstallXmlPath = Join-Path $workDir 'install.xml'
+    $officeSourceDir = Join-Path $workDir 'OfficeSource'
+    New-OfficeInstallXml -Path $officeInstallXmlPath -SourceDir $officeSourceDir
+    Invoke-OfficePreflight -SetupPath $officeSetupPath -InstallXmlPath $officeInstallXmlPath
+
+    if ($script:officePreflightOk) {
+        if (-not $SkipOfficeRemoval) { Uninstall-ExistingOffice -SetupPath $officeSetupPath }
+        if (-not $SkipOfficeInstall) { Install-Microsoft365Business -SetupPath $officeSetupPath -InstallXmlPath $officeInstallXmlPath }
+    } else {
+        Write-Log 'Skipping both Office removal and install - pre-flight check failed (see ERROR above).' 'ERROR'
+    }
+}
 
 if ($FixSystemRepair) { Invoke-SystemRepair }
 if ($FixNetworkReset) { Invoke-NetworkReset }
 if ($FixWindowsUpdateReset) { Invoke-WindowsUpdateReset }
 if ($FixWinGetReinstall) { Invoke-WinGetReinstall }
 
-Write-Log "Run complete. Log saved to $logPath"
+if ($script:errorCount -gt 0) {
+    Write-Log "Run complete with $script:errorCount warning(s)/error(s) - check the log above for details. Log saved to $logPath"
+} else {
+    Write-Log "Run complete. Log saved to $logPath"
+}
 
 if (-not $DryRun -and -not $NoReboot) {
     Write-Log 'A reboot is recommended to finish clearing removed services/drivers.'
