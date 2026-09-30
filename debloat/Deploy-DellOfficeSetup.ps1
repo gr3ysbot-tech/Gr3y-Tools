@@ -208,6 +208,8 @@ param(
     [ValidateSet('Current', 'MonthlyEnterprise', 'SemiAnnual', 'SemiAnnualPreview')]
     [string]$OfficeChannel = 'MonthlyEnterprise',
     [string]$OfficeLanguage = 'en-us',
+    [string]$OfficeExcludeApps = '',
+    [switch]$OfficeSharedComputerLicensing,
     [switch]$NoReboot,
     [switch]$TweakReduceTelemetry,
     [switch]$TweakDisableHibernation,
@@ -1454,29 +1456,43 @@ function New-OfficeInstallXml {
     # Product ID O365BusinessRetail = Microsoft 365 Apps for business.
     # (O365ProPlusRetail is the "for enterprise" SKU - do not swap unless your tenant
     # licenses enterprise plans instead.)
-    # Groove = legacy consumer OneDrive sync client, always safe to exclude.
-    # Uncomment the Teams/OneDrive ExcludeApp lines if your org deploys those separately
-    # (e.g. Teams via a dedicated MSI, OneDrive pinned to a specific build).
+    # Groove = legacy consumer OneDrive sync client, always excluded - -OfficeExcludeApps
+    # (wired from the GUI's per-run checkboxes) adds any of Teams/OneDrive/Access/
+    # Publisher/Lync/OneNote on top of that, verified against Microsoft's own ODT
+    # ExcludeApp ID list before allowing them into the XML.
     # SourcePath points /download and /configure at the same local cache, so /configure
     # installs from what pre-flight already verified downloaded cleanly instead of
     # re-pulling from the CDN. RemoveMSI clears any old MSI-based Office as part of this
     # same install pass instead of a separate manual msiexec loop. AUTOACTIVATE is a
     # volume-licence Property and is silently ignored for O365BusinessRetail - omitted so
     # the config doesn't imply activation behavior it doesn't actually control.
+    $allowedExcludeApps = @('Teams', 'OneDrive', 'Access', 'Publisher', 'Lync', 'OneNote')
+    $excludeAppLines = New-Object System.Collections.Generic.List[string]
+    $excludeAppLines.Add('      <ExcludeApp ID="Groove" />')
+    if ($OfficeExcludeApps) {
+        $requestedApps = @($OfficeExcludeApps -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        foreach ($app in $requestedApps) {
+            if ($allowedExcludeApps -contains $app) {
+                $excludeAppLines.Add("      <ExcludeApp ID=""$app"" />")
+            } else {
+                Write-Log "Ignoring unrecognized -OfficeExcludeApps value '$app' - must be one of: $($allowedExcludeApps -join ', ')." 'WARN'
+            }
+        }
+    }
+    $excludeAppXml = $excludeAppLines -join "`r`n"
+    $sharedLicensingXml = if ($OfficeSharedComputerLicensing) { "`r`n  <Property Name=""SharedComputerLicensing"" Value=""1"" />" } else { '' }
     @"
 <Configuration>
   <Add OfficeClientEdition="64" Channel="$OfficeChannel" SourcePath="$SourceDir">
     <Product ID="O365BusinessRetail">
       <Language ID="$OfficeLanguage" />
-      <ExcludeApp ID="Groove" />
-      <!-- <ExcludeApp ID="Teams" /> -->
-      <!-- <ExcludeApp ID="OneDrive" /> -->
+$excludeAppXml
     </Product>
   </Add>
   <Updates Enabled="TRUE" Channel="$OfficeChannel" />
   <Display Level="None" AcceptEULA="TRUE" />
   <Logging Level="Standard" Path="C:\ProgramData\DellOfficeDeploy" />
-  <RemoveMSI />
+  <RemoveMSI />$sharedLicensingXml
 </Configuration>
 "@ | Set-Content -Path $Path -Encoding UTF8
 }
@@ -2324,7 +2340,7 @@ function Set-RegionalPowerLockBaseline {
 # MAIN
 # ============================================================================
 
-Write-Log "Starting run. DryRun=$DryRun CreateRestorePoint=$CreateRestorePoint SkipDebloat=$SkipDebloat SkipOfficeRemoval=$SkipOfficeRemoval SkipOfficeInstall=$SkipOfficeInstall TargetProfile=$TargetProfile Undo=$Undo"
+Write-Log "Starting run. DryRun=$DryRun CreateRestorePoint=$CreateRestorePoint SkipDebloat=$SkipDebloat SkipOfficeRemoval=$SkipOfficeRemoval SkipOfficeInstall=$SkipOfficeInstall OfficeExcludeApps=$OfficeExcludeApps OfficeSharedComputerLicensing=$OfficeSharedComputerLicensing TargetProfile=$TargetProfile Undo=$Undo"
 
 if ($Undo) {
     Invoke-UndoSnapshot -Path $Undo

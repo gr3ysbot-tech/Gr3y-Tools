@@ -937,6 +937,22 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                   </ComboBox>
                   <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}" ToolTip="Update channel for the new install. MonthlyEnterprise is the fleet default."/>
                 </DockPanel>
+                <DockPanel LastChildFill="False" Margin="0,6,0,1">
+                  <TextBlock DockPanel.Dock="Left" Text="Exclude apps:" VerticalAlignment="Center" Margin="2,0,8,0"/>
+                </DockPanel>
+                <WrapPanel Margin="0,0,0,1">
+                  <CheckBox Name="OptExcludeTeams" Content="Teams" Margin="2,0,10,2"/>
+                  <CheckBox Name="OptExcludeOneDrive" Content="OneDrive" Margin="0,0,10,2"/>
+                  <CheckBox Name="OptExcludeAccess" Content="Access" Margin="0,0,10,2"/>
+                  <CheckBox Name="OptExcludePublisher" Content="Publisher" Margin="0,0,10,2"/>
+                  <CheckBox Name="OptExcludeLync" Content="Skype for Business" Margin="0,0,10,2"/>
+                  <CheckBox Name="OptExcludeOneNote" Content="OneNote" Margin="0,0,10,2"/>
+                </WrapPanel>
+                <DockPanel LastChildFill="False" Margin="0,4,0,0">
+                  <CheckBox DockPanel.Dock="Left" Name="OptSharedComputerLicensing" Content="Shared computer activation"/>
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
+                             ToolTip="For a shared/multi-user PC where Office should activate per-device instead of per-signed-in-user (SharedComputerLicensing). Leave unchecked for a normal single-user laptop."/>
+                </DockPanel>
               </StackPanel>
             </Border>
 
@@ -1333,6 +1349,13 @@ $optLenovo = $window.FindName('OptLenovo')
 $optInstallOemUpdate = $window.FindName('OptInstallOemUpdate')
 $optSkipOfficeRemoval = $window.FindName('OptSkipOfficeRemoval')
 $optSkipOfficeInstall = $window.FindName('OptSkipOfficeInstall')
+$optExcludeTeams = $window.FindName('OptExcludeTeams')
+$optExcludeOneDrive = $window.FindName('OptExcludeOneDrive')
+$optExcludeAccess = $window.FindName('OptExcludeAccess')
+$optExcludePublisher = $window.FindName('OptExcludePublisher')
+$optExcludeLync = $window.FindName('OptExcludeLync')
+$optExcludeOneNote = $window.FindName('OptExcludeOneNote')
+$optSharedComputerLicensing = $window.FindName('OptSharedComputerLicensing')
 $optTweakTelemetry = $window.FindName('OptTweakTelemetry')
 $optTweakHibernation = $window.FindName('OptTweakHibernation')
 $optTweakPreventSleep = $window.FindName('OptTweakPreventSleep')
@@ -2088,7 +2111,18 @@ $btnStart.Add_Click({
         if (-not $optSkipDebloat.IsChecked) { $summaryParts.Add('- Remove OEM/McAfee bloatware') }
         if ($optInstallOemUpdate.IsChecked) { $summaryParts.Add('- Install Dell Command Update / Lenovo System Update (if applicable)') }
         if (-not $optSkipOfficeRemoval.IsChecked) { $summaryParts.Add('- Remove any existing Office install') }
-        if (-not $optSkipOfficeInstall.IsChecked) { $summaryParts.Add('- Install Microsoft 365 Apps for business') }
+        if (-not $optSkipOfficeInstall.IsChecked) {
+            $summaryParts.Add('- Install Microsoft 365 Apps for business')
+            $excludeSummary = New-Object System.Collections.Generic.List[string]
+            if ($optExcludeTeams.IsChecked) { $excludeSummary.Add('Teams') }
+            if ($optExcludeOneDrive.IsChecked) { $excludeSummary.Add('OneDrive') }
+            if ($optExcludeAccess.IsChecked) { $excludeSummary.Add('Access') }
+            if ($optExcludePublisher.IsChecked) { $excludeSummary.Add('Publisher') }
+            if ($optExcludeLync.IsChecked) { $excludeSummary.Add('Skype for Business') }
+            if ($optExcludeOneNote.IsChecked) { $excludeSummary.Add('OneNote') }
+            if ($excludeSummary.Count -gt 0) { $summaryParts.Add("  - Excluding: $($excludeSummary -join ', ')") }
+            if ($optSharedComputerLicensing.IsChecked) { $summaryParts.Add('  - Shared computer activation enabled') }
+        }
         if ($optTweakTelemetry.IsChecked) { $summaryParts.Add('- Reduce telemetry') }
         if ($optTweakHibernation.IsChecked) { $summaryParts.Add('- Disable hibernation') }
         if ($optTweakPreventSleep.IsChecked) { $summaryParts.Add('- Prevent sleep') }
@@ -2115,6 +2149,15 @@ $btnStart.Add_Click({
     if ($optTweakDisableSAC.IsChecked) { $argList += '-TweakDisableSmartAppControl' }
     $channel = $optChannel.SelectedItem.Content
     $argList += @('-OfficeChannel', $channel)
+    $excludeApps = New-Object System.Collections.Generic.List[string]
+    if ($optExcludeTeams.IsChecked) { $excludeApps.Add('Teams') }
+    if ($optExcludeOneDrive.IsChecked) { $excludeApps.Add('OneDrive') }
+    if ($optExcludeAccess.IsChecked) { $excludeApps.Add('Access') }
+    if ($optExcludePublisher.IsChecked) { $excludeApps.Add('Publisher') }
+    if ($optExcludeLync.IsChecked) { $excludeApps.Add('Lync') }
+    if ($optExcludeOneNote.IsChecked) { $excludeApps.Add('OneNote') }
+    if ($excludeApps.Count -gt 0) { $argList += @('-OfficeExcludeApps', ($excludeApps -join ',')) }
+    if ($optSharedComputerLicensing.IsChecked) { $argList += '-OfficeSharedComputerLicensing' }
 
     $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
     $script:deployLogFile = Join-Path $workDir "gui_run_$stamp.out.log"
