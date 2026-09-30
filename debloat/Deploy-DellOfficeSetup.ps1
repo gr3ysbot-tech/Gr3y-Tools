@@ -234,12 +234,44 @@ function Invoke-Step {
 
 function New-PreDeploySystemRestorePoint {
     Invoke-Step 'Creating a System Restore point before making any changes' {
+        $freqKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
+        $freqName = 'SystemRestorePointCreationFrequency'
+        $restorePointDescription = 'Gr3y Tools - before debloat/Office deploy'
+        $hadOriginalFreq = $false
+        $originalFreq = $null
+        try {
+            $existing = Get-ItemProperty -Path $freqKey -Name $freqName -ErrorAction SilentlyContinue
+            if ($existing) { $originalFreq = $existing.$freqName; $hadOriginalFreq = $true }
+        } catch {}
+
         try {
             Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
-            Checkpoint-Computer -Description 'Gr3y Tools - before debloat/Office deploy' -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop
-            Write-Log 'System Restore point created.'
+            # Windows silently skips creating a new restore point if one was already made
+            # in the last 24h (the default throttle) - drop the frequency to 0 for this one
+            # call so ours actually gets created, then put the original value back below.
+            New-Item -Path $freqKey -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path $freqKey -Name $freqName -Value 0 -Type DWord -ErrorAction SilentlyContinue
+
+            Checkpoint-Computer -Description $restorePointDescription -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop
+
+            $point = Get-ComputerRestorePoint -ErrorAction SilentlyContinue |
+                Where-Object { $_.Description -eq $restorePointDescription } |
+                Sort-Object SequenceNumber -Descending | Select-Object -First 1
+            if ($point) {
+                Write-Log "System Restore point created (SequenceNumber $($point.SequenceNumber))."
+            } else {
+                Write-Log 'Checkpoint-Computer reported success but no matching restore point was found afterward - verify manually.' 'WARN'
+            }
         } catch {
             Write-Log "Could not create a System Restore point (often blocked by policy, or Windows allows only one per 24h): $($_.Exception.Message)" 'WARN'
+        } finally {
+            try {
+                if ($hadOriginalFreq) {
+                    Set-ItemProperty -Path $freqKey -Name $freqName -Value $originalFreq -Type DWord -ErrorAction SilentlyContinue
+                } else {
+                    Remove-ItemProperty -Path $freqKey -Name $freqName -ErrorAction SilentlyContinue
+                }
+            } catch {}
         }
     }
 }

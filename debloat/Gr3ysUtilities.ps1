@@ -795,7 +795,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                              ToolTip="Preview only: logs everything a real run would do without changing anything."/>
                 </DockPanel>
                 <DockPanel LastChildFill="False" Margin="0,0,0,1">
-                  <CheckBox DockPanel.Dock="Left" Name="OptCreateRestorePoint" Content="Create System Restore point"/>
+                  <CheckBox DockPanel.Dock="Left" Name="OptCreateRestorePoint" Content="Create System Restore point" IsChecked="True"/>
                   <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
                              ToolTip="Creates a System Restore point before any change. Can be blocked by policy; Windows allows one per 24h."/>
                 </DockPanel>
