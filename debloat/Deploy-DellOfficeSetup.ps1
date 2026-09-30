@@ -656,7 +656,7 @@ function Install-OemUpdateTool {
 
         Write-Log "Installing $toolLabel ($wingetId) via winget..."
         try {
-            $wingetOutput = & winget.exe install --id $wingetId -e --source winget --silent --accept-package-agreements --accept-source-agreements 2>&1
+            $wingetOutput = & winget.exe install --id $wingetId -e --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1
             $wingetOutput | ForEach-Object { Write-Log "winget: $_" }
             if ($LASTEXITCODE -eq 0) {
                 Write-Log "$toolLabel installed successfully."

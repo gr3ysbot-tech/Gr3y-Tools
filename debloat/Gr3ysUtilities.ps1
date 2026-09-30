@@ -1497,7 +1497,7 @@ $btnStart.Add_Click({
         if ($result -ne 'Yes') { return }
     }
 
-    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', """$deployScript""", '-NoReboot')
+    $argList = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', """$deployScript""", '-NoReboot')
     if ($optDryRun.IsChecked) { $argList += '-DryRun' }
     if ($optCreateRestorePoint.IsChecked) { $argList += '-CreateRestorePoint' }
     if ($optSkipDebloat.IsChecked) { $argList += '-SkipDebloat' }
@@ -1578,7 +1578,7 @@ function Start-FixJob {
     param([string[]]$FixArgs, [string]$Label)
     if ($script:fixProc -and -not $script:fixProc.HasExited) { return }
 
-    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', """$deployScript""",
+    $argList = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', """$deployScript""",
                  '-NoReboot', '-SkipDebloat', '-SkipOfficeRemoval', '-SkipOfficeInstall') + $FixArgs
     # Honor the Debloat + Office tab's Dry run checkbox here too - it previously only
     # applied to the Start button, so ticking Dry run and then clicking a Config-tab
@@ -1794,7 +1794,7 @@ $btnUpgradeAll.Add_Click({
     $script:currentQueueEntry = $null
     $script:installLogFile = Join-Path $workDir "winget_upgrade_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
     $installLogBox.Text = "=== Upgrading all installed apps ===`r`n"
-    $script:installProc = Start-Process -FilePath 'winget.exe' -ArgumentList @('upgrade', '--all', '--silent', '--accept-package-agreements', '--accept-source-agreements') `
+    $script:installProc = Start-Process -FilePath 'winget.exe' -ArgumentList @('upgrade', '--all', '--silent', '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity') `
         -RedirectStandardOutput $script:installLogFile -RedirectStandardError "$($script:installLogFile).err" -WindowStyle Hidden -PassThru
     $installStatusText.Text = 'Upgrading all installed apps...'
     $btnInstallSelected.IsEnabled = $false
@@ -1833,7 +1833,7 @@ $btnInstallWinGet.Add_Click({
         'Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery | Out-Null; ' +
         'Repair-WinGetPackageManager'
     $script:wingetInstallProc = Start-Process -FilePath 'powershell.exe' `
-        -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $installCmd) `
+        -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', $installCmd) `
         -RedirectStandardOutput $script:wingetInstallLogFile -RedirectStandardError "$($script:wingetInstallLogFile).err" `
         -WindowStyle Hidden -PassThru
 })
