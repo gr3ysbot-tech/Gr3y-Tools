@@ -932,7 +932,43 @@ function Set-TelemetryReduced {
             Stop-Service -Name DiagTrack -Force -ErrorAction SilentlyContinue
             Set-Service -Name DiagTrack -StartupType Disabled -ErrorAction SilentlyContinue
 
-            Write-Log 'Telemetry and activity tracking reduced (AllowTelemetry=0, activity publishing/upload blocked, DiagTrack service disabled - Activity Feed itself left on so clipboard history keeps working).'
+            # Expanded set (3.3) - every path below pulled from Win11Debloat's actual
+            # Disable_Telemetry.reg (fetched the real file rather than expand the plan's
+            # abbreviated key-name shorthand by hand), applied to the current user only -
+            # deliberately not mirrored to the Default profile the way 1.1's tweaks.json
+            # tweaks are: AllowTelemetry=0 (already set above, HKLM) already covers a new
+            # profile machine-wide, and these HKCU entries are more about quieting nags/
+            # prompts for whoever's using the machine right now than something a not-yet-
+            # created future user needs guaranteed.
+            $telemetryHkcuEntries = @(
+                @{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo'; Name = 'Enabled'; Value = 0 }
+                @{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Privacy'; Name = 'TailoredExperiencesWithDiagnosticDataEnabled'; Value = 0 }
+                @{ Path = 'HKCU:\Software\Microsoft\Speech_OneCore\Settings\OnlineSpeechPrivacy'; Name = 'HasAccepted'; Value = 0 }
+                @{ Path = 'HKCU:\Software\Microsoft\Input\TIPC'; Name = 'Enabled'; Value = 0 }
+                @{ Path = 'HKCU:\Software\Microsoft\InputPersonalization'; Name = 'RestrictImplicitInkCollection'; Value = 1 }
+                @{ Path = 'HKCU:\Software\Microsoft\InputPersonalization'; Name = 'RestrictImplicitTextCollection'; Value = 1 }
+                @{ Path = 'HKCU:\Software\Microsoft\InputPersonalization\TrainedDataStore'; Name = 'HarvestContacts'; Value = 0 }
+                @{ Path = 'HKCU:\Software\Microsoft\Personalization\Settings'; Name = 'AcceptedPrivacyPolicy'; Value = 0 }
+                @{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'Start_TrackProgs'; Value = 0 }
+                @{ Path = 'HKCU:\SOFTWARE\Microsoft\Siuf\Rules'; Name = 'NumberOfSIUFInPeriod'; Value = 0 }
+            )
+            foreach ($entry in $telemetryHkcuEntries) {
+                New-Item -Path $entry.Path -Force -ErrorAction SilentlyContinue | Out-Null
+                Set-ItemProperty -Path $entry.Path -Name $entry.Name -Value $entry.Value -Type DWord -ErrorAction SilentlyContinue
+            }
+
+            New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'DiagnosticData' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'PersonalizationReportingEnabled' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+
+            # POWERSHELL_TELEMETRY_OPTOUT is a machine-wide environment variable, not a
+            # normal setting - it's backed by this same registry key underneath, so
+            # setting it here keeps this one function purely registry-based instead of
+            # also calling [Environment]::SetEnvironmentVariable for one value.
+            $envKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+            Set-ItemProperty -Path $envKey -Name 'POWERSHELL_TELEMETRY_OPTOUT' -Value '1' -Type String -ErrorAction SilentlyContinue
+
+            Write-Log 'Telemetry and activity tracking reduced (AllowTelemetry=0, activity publishing/upload blocked, DiagTrack service disabled, advertising ID/speech/ink/contacts/feedback-nag privacy settings applied, Edge diagnostic data/personalization off, PowerShell telemetry opted out - Activity Feed itself left on so clipboard history keeps working).'
         } catch {
             Write-Log "Could not fully apply the telemetry tweak: $($_.Exception.Message)" 'WARN'
         }
