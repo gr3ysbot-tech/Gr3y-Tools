@@ -961,6 +961,25 @@ function Install-Microsoft365Business {
         Start-Process -FilePath $setupPath -ArgumentList "/configure ""$installXmlPath""" -Wait
     }
 
+    # The ODT's Display Level="None" only suppresses the INSTALLER's own UI - it has
+    # no effect on the separate "Default File Types" prompt (Office Open XML vs
+    # OpenDocument) that Word/Excel/PowerPoint show on their own first launch.
+    # ShownFileFmtPrompt is also a real ADMX-backed Group Policy value (officecustom
+    # DisableFileFmtPrompt16, key Software\Microsoft\Office\16.0\Common\General) -
+    # writing it under HKLM\SOFTWARE\Policies instead of the plain per-user HKCU path
+    # applies it machine-wide, to every user (current and future), with a single
+    # ordinary HKLM write instead of per-profile registry hive juggling.
+    Invoke-Step "Suppressing the Office first-run 'Default File Types' prompt" {
+        try {
+            $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Office\16.0\Common\General'
+            New-Item -Path $path -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path $path -Name 'ShownFileFmtPrompt' -Value 1 -Type DWord -ErrorAction Stop
+            Write-Log 'Default File Types prompt suppressed machine-wide (HKLM Policies ShownFileFmtPrompt=1) - Office keeps its built-in Open XML default without ever asking.'
+        } catch {
+            Write-Log "Could not suppress the Default File Types prompt: $($_.Exception.Message)" 'WARN'
+        }
+    }
+
     Write-Log 'Install complete. Activation happens on first app launch when the user signs in with their Microsoft 365 business account.'
 }
 
