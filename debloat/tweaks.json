@@ -347,6 +347,39 @@
         {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU", "name": "AUOptions", "type": "DWord", "onValue": "3", "offValue": "<RemoveEntry>"},
         {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU", "name": "NoAutoRebootWithLoggedOnUsers", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
       ]
+    },
+    {
+      "key": "CopilotRecallAiOff",
+      "label": "Disable Copilot, Recall & AI Features",
+      "tip": "Turns off Windows Copilot, Recall, Click to Do, Notepad/Paint AI tools, and Edge's AI/Copilot integrations. Opt-in and reversible (turning it back off just removes these policies) - leave off for clients with an M365 Copilot licence who want it. Every value verified against Win11Debloat's real Disable_Copilot.reg, Disable_AI_Recall.reg, Disable_Click_to_Do.reg, Disable_AI_Service_Auto_Start.reg, Disable_Notepad_AI_Features.reg, Disable_Paint_AI_Features.reg and Disable_Edge_AI_Features.reg.",
+      "scope": "HKCU",
+      "explorerRestart": true,
+      "entries": [
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", "name": "ShowCopilotButton", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKCU:\\Software\\Policies\\Microsoft\\Windows\\WindowsCopilot", "name": "TurnOffWindowsCopilot", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsCopilot", "name": "TurnOffWindowsCopilot", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKCU:\\Software\\Policies\\Microsoft\\Windows\\WindowsAI", "name": "DisableAIDataAnalysis", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsAI", "name": "DisableAIDataAnalysis", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsAI", "name": "AllowRecallEnablement", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsAI", "name": "TurnOffSavingSnapshots", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKCU:\\Software\\Policies\\Microsoft\\Windows\\WindowsAI", "name": "DisableClickToDo", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsAI", "name": "DisableClickToDo", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\WSAIFabricSvc", "name": "Start", "type": "DWord", "onValue": "3", "offValue": "2"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\WindowsNotepad", "name": "DisableAIFeatures", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Paint", "name": "DisableCocreator", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Paint", "name": "DisableGenerativeFill", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Paint", "name": "DisableImageCreator", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Paint", "name": "DisableGenerativeErase", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Paint", "name": "DisableRemoveBackground", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "CopilotCDPPageContext", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "CopilotPageContext", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "HubsSidebarEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "EdgeEntraCopilotPageContext", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "EdgeHistoryAISearchEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "ComposeInlineEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "NewTabPageBingChatEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "GenAILocalFoundationalModelSettings", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
+      ]
     }
   ]
 }
