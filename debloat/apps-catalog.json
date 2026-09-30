@@ -9,7 +9,6 @@
     {"name": "Tor Browser", "category": "Browsers", "wingetId": "TorProject.TorBrowser"},
 
     {"name": "Autoruns", "category": "Microsoft Tools", "wingetId": "Microsoft.Sysinternals.Autoruns"},
-    {"name": "DISMTools", "category": "Microsoft Tools", "wingetId": "CodingWondersSoftware.DISMTools.Stable"},
     {"name": ".NET Desktop Runtime 6", "category": "Microsoft Tools", "wingetId": "Microsoft.DotNet.DesktopRuntime.6"},
     {"name": ".NET Desktop Runtime 8", "category": "Microsoft Tools", "wingetId": "Microsoft.DotNet.DesktopRuntime.8"},
     {"name": ".NET Desktop Runtime 9", "category": "Microsoft Tools", "wingetId": "Microsoft.DotNet.DesktopRuntime.9"},
