@@ -66,8 +66,12 @@ jobs:
               $path = Join-Path 'debloat' $name
               $filesObj[$name] = (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToUpper()
           }
+          # ASCII, not UTF8 - Windows PowerShell 5.1's -Encoding UTF8 writes a BOM, and the
+          # JSON content here (version numbers, hex hashes, a commit SHA) is pure ASCII
+          # anyway, so there's no reason to risk it. Confirmed the real v1.0.0 release
+          # shipped a BOM'd latest.json from this exact line before this fix.
           $manifest = [ordered]@{ version = $version; commit = $commit; files = $filesObj }
-          ($manifest | ConvertTo-Json -Depth 4) | Set-Content -Path 'latest.json' -Encoding UTF8
+          ($manifest | ConvertTo-Json -Depth 4) | Set-Content -Path 'latest.json' -Encoding ASCII -NoNewline
 
           # Release zip - the debloat\ folder as shipped, matching what debloat.ps1 pulls
           # file-by-file from the pinned commit (this zip is a convenience for anyone who
@@ -111,7 +115,7 @@ jobs:
           git checkout main
           git pull origin main
 
-          Set-Content -Path 'latest.json' -Value $latestJsonContent -NoNewline -Encoding UTF8
+          Set-Content -Path 'latest.json' -Value $latestJsonContent -NoNewline -Encoding ASCII
           git add latest.json
           $status = git status --porcelain
           if ($status) {
