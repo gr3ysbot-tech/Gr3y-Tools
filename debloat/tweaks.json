@@ -380,6 +380,29 @@
         {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "NewTabPageBingChatEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
         {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "GenAILocalFoundationalModelSettings", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
       ]
+    },
+    {
+      "key": "EdgeFirstRunNagOff",
+      "label": "Disable Edge First-Run and Nag Prompts",
+      "tip": "Suppresses Edge's first-run splash/setup screens, new-tab sponsored content, shopping/rewards/wallet prompts, default-browser and Insider promo nags, and the desktop-shortcut Edge Update creates on install. Never removes or blocks Edge itself. Opt-in and reversible. Every value verified against Microsoft's own Edge/Edge Update policy reference docs and Win11Debloat's real Disable_Edge_Ads_And_Suggestions.reg (HideFirstRunExperience is intentionally 1 here, not the 0 in that file - Microsoft's docs confirm 1 is what actually hides the first-run experience, which is this tweak's whole point).",
+      "scope": "HKLM",
+      "entries": [
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "HideFirstRunExperience", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "ShowRecommendationsEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "DefaultBrowserSettingsCampaignEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "EdgeShoppingAssistantEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "ShowMicrosoftRewards", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "UserFeedbackAllowed", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "MicrosoftEdgeInsiderPromotionEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "WalletDonationEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "ConfigureDoNotTrack", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "NewTabPageContentEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "NewTabPageHideDefaultTopSites", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "SpotlightExperiencesAndRecommendationsEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "ShowAcrobatSubscriptionButton", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "TabServicesEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\EdgeUpdate", "name": "CreateDesktopShortcutDefault", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"}
+      ]
     }
   ]
 }
