@@ -388,6 +388,13 @@ function Invoke-ThrottledSteps {
         } catch {
             Write-Log "Failed: $($item.Description) - $($_.Exception.Message)" 'WARN'
         } finally {
+            # -ErrorAction SilentlyContinue inside an Action still records a non-terminating
+            # error to this runspace's own error stream - it just stops it from throwing or
+            # printing. Without checking Streams.Error here, a step that silently failed
+            # (e.g. DISM refusing to de-provision a package) got logged as if it succeeded.
+            foreach ($err in $item.PowerShell.Streams.Error) {
+                Write-Log "$($item.Description) reported an error: $($err.ToString())" 'WARN'
+            }
             $item.PowerShell.Dispose()
         }
     }
@@ -432,14 +439,21 @@ function Remove-OemBloatware {
     # AppX removals are cheap and independent of each other, so a few run at once
     # in a bounded pool instead of one at a time - real time drops without the
     # machine-choking effect an unbounded parallel pass would cause.
-    $appxRemoveAction = { param($FullName) Remove-AppxPackage -Package $FullName -AllUsers -ErrorAction SilentlyContinue }
-    $appxDeprovisionAction = { param($PackageName) Remove-AppxProvisionedPackage -Online -PackageName $PackageName -ErrorAction SilentlyContinue | Out-Null }
+    # No -ErrorAction SilentlyContinue here - inside a separate [powershell] runspace
+    # instance, SilentlyContinue/Ignore stop the error from ever reaching that
+    # instance's own Streams.Error collection, which is what Invoke-ThrottledSteps reads
+    # to log a WARN afterward. Leaving ErrorAction at its default lets a failed
+    # removal/de-provision show up there without throwing (non-terminating by default)
+    # and without printing to a console no one's attached to.
+    $appxRemoveAction = { param($FullName) Remove-AppxPackage -Package $FullName -AllUsers }
+    $appxDeprovisionAction = { param($PackageName) Remove-AppxProvisionedPackage -Online -PackageName $PackageName | Out-Null }
 
-    $appxSteps = New-Object System.Collections.Generic.List[hashtable]
+    $appxRemoveSteps = New-Object System.Collections.Generic.List[hashtable]
+    $appxDeprovisionSteps = New-Object System.Collections.Generic.List[hashtable]
     foreach ($pattern in $OemBloatAppxPatterns) {
         $installed = $allInstalledAppx | Where-Object { $_.Name -like $pattern }
         foreach ($pkg in $installed) {
-            $appxSteps.Add(@{
+            $appxRemoveSteps.Add(@{
                 Description = "Removing AppX package: $($pkg.PackageFullName)"
                 Action = $appxRemoveAction
                 Args = @{ FullName = $pkg.PackageFullName }
@@ -447,17 +461,36 @@ function Remove-OemBloatware {
         }
         $provisioned = $allProvisionedAppx | Where-Object { $_.DisplayName -like $pattern }
         foreach ($pkg in $provisioned) {
-            $appxSteps.Add(@{
+            $appxDeprovisionSteps.Add(@{
                 Description = "De-provisioning AppX package: $($pkg.DisplayName)"
                 Action = $appxDeprovisionAction
                 Args = @{ PackageName = $pkg.PackageName }
             })
         }
     }
-    if ($appxSteps.Count -gt 0) {
-        Write-Log "Removing $($appxSteps.Count) AppX package/provisioning entries (up to 3 at a time)..."
+    if ($appxRemoveSteps.Count -gt 0) {
+        Write-Log "Removing $($appxRemoveSteps.Count) AppX package(s) (up to 3 at a time)..."
     }
-    Invoke-ThrottledSteps -Steps $appxSteps -MaxConcurrency 3
+    Invoke-ThrottledSteps -Steps $appxRemoveSteps -MaxConcurrency 3
+
+    # De-provisioning goes through DISM's online image API, which is not thread-safe for
+    # concurrent in-process calls the way Remove-AppxPackage is - running these 3-wide
+    # like the removals above silently corrupted/dropped some calls. MaxConcurrency 1
+    # keeps them on the same Invoke-ThrottledSteps/Streams.Error plumbing but strictly serial.
+    if ($appxDeprovisionSteps.Count -gt 0) {
+        Write-Log "De-provisioning $($appxDeprovisionSteps.Count) AppX package(s) (serially - DISM's online API isn't safe to call concurrently)..."
+    }
+    Invoke-ThrottledSteps -Steps $appxDeprovisionSteps -MaxConcurrency 1
+
+    if ($appxDeprovisionSteps.Count -gt 0 -and -not $DryRun) {
+        $stillProvisioned = Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
+        foreach ($pattern in $OemBloatAppxPatterns) {
+            $remaining = $stillProvisioned | Where-Object { $_.DisplayName -like $pattern }
+            foreach ($pkg in $remaining) {
+                Write-Log "Still provisioned after de-provisioning pass: $($pkg.DisplayName) - may need a manual Remove-AppxProvisionedPackage or a reboot." 'WARN'
+            }
+        }
+    }
 
     # --- Win32 programs, via their own registry uninstall string ---
     # (Previously also tried winget first on every match, but the registry uninstall
