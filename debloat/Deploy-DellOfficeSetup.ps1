@@ -56,6 +56,15 @@
     (Smart App Control cannot be turned back on without reinstalling Windows),
     so only enable it where that tradeoff is acceptable.
 
+.PARAMETER InstallOemUpdateTool
+    Installs the OEM's own driver/BIOS/firmware update utility if this machine is
+    genuinely Dell or Lenovo, it looks like a supported commercial model (not a
+    consumer line - Inspiron/Alienware, IdeaPad/Yoga/Legion), and it isn't already
+    installed: Dell Command | Update (winget id Dell.CommandUpdate) or Lenovo System
+    Update (winget id Lenovo.SystemUpdate). Neither vendor publishes an exhaustive
+    supported-model list, so a winget install failure on a genuine commercial machine
+    is logged as a warning, not treated as a hard error.
+
 .PARAMETER CustomizeTweaks
     Comma-separated keys of Windows preference tweaks to apply (see $script:tweakDefs for the
     full key list). One-directional: checking a tweak applies its "on" registry value; there is
@@ -140,6 +149,7 @@ param(
     [switch]$TweakDisableHibernation,
     [switch]$TweakPreventSleep,
     [switch]$TweakDisableSmartAppControl,
+    [switch]$InstallOemUpdateTool,
     [string]$CustomizeTweaks = '',
     [string]$DnsPreset = '',
     [switch]$FixSystemRepair,
@@ -514,6 +524,63 @@ function Disable-SmartAppControl {
             Write-Log 'Smart App Control disabled. Takes full effect after the next reboot. This cannot be turned back on without reinstalling Windows.'
         } catch {
             Write-Log "Could not disable Smart App Control: $($_.Exception.Message)" 'WARN'
+        }
+    }
+}
+
+function Install-OemUpdateTool {
+    Invoke-Step 'Checking for the OEM update tool (Dell Command Update / Lenovo System Update)' {
+        if (-not (Get-Command 'winget.exe' -ErrorAction SilentlyContinue)) {
+            Write-Log 'winget not found - cannot install the OEM update tool. Run the Install winget fix first.' 'WARN'
+            return
+        }
+
+        $isDell = $machineManufacturer -match 'Dell'
+        $isLenovo = $machineManufacturer -match 'Lenovo'
+        if (-not $isDell -and -not $isLenovo) {
+            Write-Log "Manufacturer '$machineManufacturer' is neither Dell nor Lenovo - nothing to install."
+            return
+        }
+
+        # Neither vendor publishes an exhaustive supported-model list, but both
+        # explicitly exclude their consumer lines - Dell Command Update is Dell
+        # commercial hardware only (Latitude/OptiPlex/Precision/business XPS-Vostro,
+        # not Inspiron/Alienware); Lenovo System Update is Think* only, not
+        # IdeaPad/Yoga/Legion. This only filters the unambiguous consumer names -
+        # everything else is attempted and winget's own result is trusted.
+        $consumerKeywords = if ($isDell) { @('Inspiron', 'Alienware') } else { @('IdeaPad', 'Yoga', 'Legion') }
+        $looksConsumer = $consumerKeywords | Where-Object { $machineModel -match $_ }
+        if ($looksConsumer) {
+            Write-Log "Model '$machineModel' looks like a consumer line ($($looksConsumer -join ', ')) - Dell Command Update/Lenovo System Update only support commercial hardware. Skipping."
+            return
+        }
+
+        $wingetId = if ($isDell) { 'Dell.CommandUpdate' } else { 'Lenovo.SystemUpdate' }
+        $toolLabel = if ($isDell) { 'Dell Command | Update' } else { 'Lenovo System Update' }
+        $displayNames = if ($isDell) { @('Dell Command | Update', 'Dell Command | Update for Windows Universal') } else { @('Lenovo System Update') }
+
+        $uninstallEntries = Get-ItemProperty -Path @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        ) -ErrorAction SilentlyContinue
+        $alreadyInstalled = $uninstallEntries | Where-Object { $_.DisplayName -in $displayNames } | Select-Object -First 1
+        if ($alreadyInstalled) {
+            Write-Log "$toolLabel is already installed ($($alreadyInstalled.DisplayName) $($alreadyInstalled.DisplayVersion)) - skipping."
+            return
+        }
+
+        Write-Log "Installing $toolLabel ($wingetId) via winget..."
+        try {
+            $wingetOutput = & winget.exe install --id $wingetId -e --source winget --silent --accept-package-agreements --accept-source-agreements 2>&1
+            $wingetOutput | ForEach-Object { Write-Log "winget: $_" }
+            if ($LASTEXITCODE -eq 0) {
+                Write-Log "$toolLabel installed successfully."
+            } else {
+                $vendorName = if ($isDell) { 'Dell' } else { 'Lenovo' }
+                Write-Log "$toolLabel install exited with code $LASTEXITCODE - $vendorName doesn't publish an exhaustive supported-model list, so this can happen on a genuine but unsupported commercial model." 'WARN'
+            }
+        } catch {
+            Write-Log "Could not install ${toolLabel}: $($_.Exception.Message)" 'WARN'
         }
     }
 }
@@ -953,6 +1020,7 @@ if ($TweakReduceTelemetry) { Set-TelemetryReduced }
 if ($TweakDisableHibernation) { Disable-Hibernation }
 if ($TweakPreventSleep) { Set-SleepNever }
 if ($TweakDisableSmartAppControl) { Disable-SmartAppControl }
+if ($InstallOemUpdateTool) { Install-OemUpdateTool }
 if ($CustomizeTweaks) { Invoke-CustomizeTweaks -Keys ($CustomizeTweaks -split ',' | Where-Object { $_ }) }
 if ($DnsPreset) { Set-DnsPreset -Preset $DnsPreset }
 

@@ -778,6 +778,11 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
                   <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
                              ToolTip="Checks the Lenovo bloat patterns (Lenovo Now, Welcome, Glance, ...). Lenovo Vantage is kept."/>
                 </DockPanel>
+                <DockPanel LastChildFill="False" Margin="0,0,0,1">
+                  <CheckBox DockPanel.Dock="Left" Name="OptInstallOemUpdate" Content="Install Dell Command Update / Lenovo System Update" IsChecked="True"/>
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
+                             ToolTip="Auto-detects Dell vs Lenovo and installs the matching OEM driver/BIOS update tool via winget, only if this looks like commercial hardware (not Inspiron/Alienware/IdeaPad/Yoga/Legion) and it isn't already installed. No-ops on non-Dell/Lenovo machines."/>
+                </DockPanel>
                 <TextBlock Style="{StaticResource Header}" Text="Office" Margin="0,10,0,6"/>
                 <DockPanel LastChildFill="False" Margin="0,0,0,1">
                   <CheckBox DockPanel.Dock="Left" Name="OptSkipOfficeRemoval" Content="Skip removing existing Office"/>
@@ -1038,6 +1043,7 @@ $optCreateRestorePoint = $window.FindName('OptCreateRestorePoint')
 $optSkipDebloat = $window.FindName('OptSkipDebloat')
 $optDell = $window.FindName('OptDell')
 $optLenovo = $window.FindName('OptLenovo')
+$optInstallOemUpdate = $window.FindName('OptInstallOemUpdate')
 $optSkipOfficeRemoval = $window.FindName('OptSkipOfficeRemoval')
 $optSkipOfficeInstall = $window.FindName('OptSkipOfficeInstall')
 $optTweakTelemetry = $window.FindName('OptTweakTelemetry')
@@ -1417,6 +1423,7 @@ $btnStart.Add_Click({
     if ($optSkipDebloat.IsChecked) { $argList += '-SkipDebloat' }
     if ($optDell.IsChecked) { $argList += '-Dell' }
     if ($optLenovo.IsChecked) { $argList += '-Lenovo' }
+    if ($optInstallOemUpdate.IsChecked) { $argList += '-InstallOemUpdateTool' }
     if ($optSkipOfficeRemoval.IsChecked) { $argList += '-SkipOfficeRemoval' }
     if ($optSkipOfficeInstall.IsChecked) { $argList += '-SkipOfficeInstall' }
     if ($optTweakTelemetry.IsChecked) { $argList += '-TweakReduceTelemetry' }
