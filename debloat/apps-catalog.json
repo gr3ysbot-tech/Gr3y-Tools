@@ -52,6 +52,7 @@
     {"name": "MiniTool Partition Wizard", "category": "Utilities", "wingetId": "MiniTool.PartitionWizard.Free", "url": "https://www.partitionwizard.com/free-partition-manager.html"},
     {"name": "MSEdgeRedirect", "category": "Utilities", "wingetId": "rcmaehl.MSEdgeRedirect", "url": "https://github.com/rcmaehl/MSEdgeRedirect"},
     {"name": "NanaZip", "category": "Utilities", "wingetId": "M2Team.NanaZip", "url": "https://github.com/M2Team/NanaZip"},
+    {"name": "Nmap", "category": "Utilities", "wingetId": "Insecure.Nmap", "url": "https://nmap.org/"},
     {"name": "NVCleanstall", "category": "Utilities", "wingetId": "TechPowerUp.NVCleanstall", "url": "https://www.techpowerup.com/download/techpowerup-nvcleanstall/"},
     {"name": "OFGB (Oh Frick Go Back)", "category": "Utilities", "wingetId": "xM4ddy.OFGB", "url": "https://github.com/xM4ddy/OFGB"},
     {"name": "OpenRGB", "category": "Utilities", "wingetId": "OpenRGB.OpenRGB", "url": "https://openrgb.org/"},
