@@ -913,7 +913,6 @@ function Set-TelemetryReduced {
         }
         try {
             Add-UndoRegistryEntry -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' -Name 'AllowTelemetry' -Type 'DWord'
-            Add-UndoRegistryEntry -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name 'EnableActivityFeed' -Type 'DWord'
             Add-UndoRegistryEntry -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name 'PublishUserActivities' -Type 'DWord'
             Add-UndoRegistryEntry -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name 'UploadUserActivities' -Type 'DWord'
             Add-UndoServiceEntry -Name 'DiagTrack'
@@ -922,14 +921,18 @@ function Set-TelemetryReduced {
             Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' -Name 'AllowTelemetry' -Value 0 -Type DWord -ErrorAction SilentlyContinue
 
             New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Force -ErrorAction SilentlyContinue | Out-Null
-            Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name 'EnableActivityFeed' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+            # EnableActivityFeed is deliberately left alone (WinUtil's own explicit
+            # rationale, flagged as an owner-identified gap): turning it off breaks
+            # clipboard history, which most people expect to keep working. Blocking
+            # Publish/UploadUserActivities alone already stops activity data leaving the
+            # machine, without losing that local functionality.
             Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name 'PublishUserActivities' -Value 0 -Type DWord -ErrorAction SilentlyContinue
             Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name 'UploadUserActivities' -Value 0 -Type DWord -ErrorAction SilentlyContinue
 
             Stop-Service -Name DiagTrack -Force -ErrorAction SilentlyContinue
             Set-Service -Name DiagTrack -StartupType Disabled -ErrorAction SilentlyContinue
 
-            Write-Log 'Telemetry and activity tracking reduced (AllowTelemetry=0, Activity Feed disabled, DiagTrack service disabled).'
+            Write-Log 'Telemetry and activity tracking reduced (AllowTelemetry=0, activity publishing/upload blocked, DiagTrack service disabled - Activity Feed itself left on so clipboard history keeps working).'
         } catch {
             Write-Log "Could not fully apply the telemetry tweak: $($_.Exception.Message)" 'WARN'
         }

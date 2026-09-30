@@ -946,7 +946,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                 <StackPanel Orientation="Horizontal" Margin="0,3,0,3">
                   <CheckBox Name="OptTweakTelemetry" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
                   <TextBlock Text="Reduce telemetry &amp; activity tracking" VerticalAlignment="Center" Margin="8,0,0,0"/>
-                  <TextBlock Style="{StaticResource Hint}" ToolTip="AllowTelemetry=0, disables the DiagTrack service and the Activity Feed. CAUTION: breaks Windows Autopatch, Update Compliance and Intune Endpoint Analytics, which all require diagnostic data at Required or higher - skipped automatically (with a log warning) on a machine already MDM-enrolled. Microsoft also documents that Smart App Control turns itself off when optional diagnostic data is off, and can only be turned back on with a Windows reset/reinstall."/>
+                  <TextBlock Style="{StaticResource Hint}" ToolTip="AllowTelemetry=0, disables the DiagTrack service, blocks activity publish/upload (Activity Feed itself is left on so clipboard history keeps working). CAUTION: breaks Windows Autopatch, Update Compliance and Intune Endpoint Analytics, which all require diagnostic data at Required or higher - skipped automatically (with a log warning) on a machine already MDM-enrolled. Microsoft also documents that Smart App Control turns itself off when optional diagnostic data is off, and can only be turned back on with a Windows reset/reinstall."/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="0,3,0,3">
                   <CheckBox Name="OptTweakHibernation" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>

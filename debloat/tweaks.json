@@ -251,6 +251,102 @@
       "entries": [
         {"path": "HKCU:\\Control Panel\\Desktop", "name": "WindowArrangementActive", "type": "String", "onValue": "1", "offValue": "0"}
       ]
+    },
+    {
+      "key": "ConsumerFeaturesOff",
+      "label": "Disable Consumer Features & Suggestions",
+      "tip": "Turns off Start Menu/lock screen ads, app suggestions and consumer account prompts. The DisableWindowsConsumerFeatures policy only applies on Enterprise/Education editions - the rest works on any edition. Verified against Win11Debloat's Disable_Windows_Suggestions.reg before use.",
+      "scope": "HKCU",
+      "explorerRestart": true,
+      "entries": [
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent", "name": "DisableWindowsConsumerFeatures", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent", "name": "DisableConsumerAccountStateContent", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", "name": "SilentInstalledAppsEnabled", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", "name": "SystemPaneSuggestionsEnabled", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", "name": "SoftLandingEnabled", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", "name": "SubscribedContent-310093Enabled", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", "name": "SubscribedContent-338388Enabled", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", "name": "SubscribedContent-338389Enabled", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", "name": "SubscribedContent-338393Enabled", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", "name": "SubscribedContent-353694Enabled", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", "name": "SubscribedContent-353696Enabled", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", "name": "SubscribedContent-353698Enabled", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", "name": "Start_IrisRecommendations", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", "name": "ShowSyncProviderNotifications", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", "name": "Start_AccountNotifications", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\UserProfileEngagement", "name": "ScoobeSysemSettingEnabled", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\SystemSettings\\AccountNotifications", "name": "EnableAccountNotifications", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\Windows.SystemToast.Suggested", "name": "Enabled", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\Windows.SystemToast.BackupReminder", "name": "Enabled", "type": "DWord", "onValue": "0", "offValue": "1"},
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Mobility", "name": "OptedIn", "type": "DWord", "onValue": "0", "offValue": "1"}
+      ]
+    },
+    {
+      "key": "DeviceMetadataOff",
+      "label": "Block Device Metadata Downloads",
+      "tip": "Stops Windows fetching device metadata/companion apps from the network - this is why Dell Peripheral Manager, Logitech Options and similar reinstall themselves the first time a dock/peripheral is plugged in.",
+      "scope": "HKLM",
+      "explorerRestart": false,
+      "entries": [
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Device Metadata", "name": "PreventDeviceMetadataFromNetwork", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
+      ]
+    },
+    {
+      "key": "WpbtOff",
+      "label": "Disable Windows Platform Binary Table Execution",
+      "tip": "WPBT lets OEM firmware inject an executable at every boot (how some anti-theft/recovery tools like Absolute/Computrace work). Off by default - leave off for clients actively using Absolute/Computrace, since this would break it.",
+      "scope": "HKLM",
+      "explorerRestart": false,
+      "entries": [
+        {"path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager", "name": "DisableWpbtExecution", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
+      ]
+    },
+    {
+      "key": "DeliveryOptimizationLanOnly",
+      "label": "Delivery Optimization: LAN Only",
+      "tip": "Restricts Windows Update peer-to-peer downloads to the local network only (DODownloadMode=1), instead of the default which can pull from or serve to other PCs over the internet.",
+      "scope": "HKLM",
+      "explorerRestart": false,
+      "entries": [
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DeliveryOptimization", "name": "DODownloadMode", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
+      ]
+    },
+    {
+      "key": "TaskbarEndTask",
+      "label": "Taskbar Right-Click End Task",
+      "tip": "Adds an \"End Task\" option to the right-click menu on taskbar icons - a quick way to force-close a hung app without opening Task Manager.",
+      "scope": "HKCU",
+      "explorerRestart": true,
+      "entries": [
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\\TaskbarDeveloperSettings", "name": "TaskbarEndTask", "type": "DWord", "onValue": "1", "offValue": "0"}
+      ]
+    },
+    {
+      "key": "StartMenuClassicLayout",
+      "label": "Start Menu: Previous Layout",
+      "tip": "Reverts to the Start Menu layout used before Windows 11's newer redesign. Uses an internal, undocumented Windows feature-flag override (not an officially supported setting) - a future Windows update could change or stop honoring this.",
+      "scope": "HKLM",
+      "explorerRestart": true,
+      "entries": [
+        {"path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FeatureManagement\\Overrides\\8\\3036241548", "name": "EnabledState", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
+      ]
+    },
+    {
+      "key": "BusinessWindowsUpdatePreset",
+      "label": "Business Windows Update Policy",
+      "tip": "Defers feature updates 365 days and quality updates 4 days, excludes drivers from quality updates (so Dell Command Update / Lenovo System Update own driver delivery instead), and prevents auto-reboot while a user is signed in. Turning this off removes exactly these values, restoring Windows' own update defaults.",
+      "scope": "HKLM",
+      "explorerRestart": false,
+      "entries": [
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate", "name": "ExcludeWUDriversInQualityUpdate", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate", "name": "DeferFeatureUpdates", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate", "name": "DeferFeatureUpdatesPeriodInDays", "type": "DWord", "onValue": "365", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate", "name": "DeferQualityUpdates", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate", "name": "DeferQualityUpdatesPeriodInDays", "type": "DWord", "onValue": "4", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DriverSearching", "name": "DontSearchWindowsUpdate", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU", "name": "AUOptions", "type": "DWord", "onValue": "3", "offValue": "<RemoveEntry>"},
+        {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU", "name": "NoAutoRebootWithLoggedOnUsers", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
+      ]
     }
   ]
 }
