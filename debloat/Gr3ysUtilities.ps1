@@ -1310,6 +1310,12 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
               <Button Name="BtnGenerateHandoff" Content="Generate Validation Report + Handoff Package" Width="320" HorizontalAlignment="Left"/>
 
               <Separator Margin="0,10,0,10"/>
+              <TextBlock Style="{StaticResource Header}" Text="Post-Provisioning Cleanup"/>
+              <TextBlock Style="{StaticResource Hint}" Text="Clears temp folders, the Windows Update download cache, the ODT install source cache, and runs Disk Cleanup (/VERYLOWDISK) plus a component-store cleanup. Does NOT run /ResetBase, so existing updates can still be uninstalled afterward. Run this last, once everything else on this machine is done."
+                         TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
+              <Button Name="BtnPostProvisioningCleanup" Content="Run Cleanup" Width="180" HorizontalAlignment="Left"/>
+
+              <Separator Margin="0,10,0,10"/>
               <TextBlock Name="ProvisioningStatusText" Text="Idle" Opacity="0.8" Margin="0,0,0,4"/>
               <TextBox Name="ProvisioningLogBox" Style="{StaticResource LogBox}" Height="160" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontSize="11"/>
             </StackPanel>
@@ -1549,6 +1555,7 @@ $btnApplyOemUpdates = $window.FindName('BtnApplyOemUpdates')
 $btnRunWindowsUpdate = $window.FindName('BtnRunWindowsUpdate')
 $textWindowsUpdateResume = $window.FindName('TextWindowsUpdateResume')
 $btnGenerateHandoff = $window.FindName('BtnGenerateHandoff')
+$btnPostProvisioningCleanup = $window.FindName('BtnPostProvisioningCleanup')
 $provisioningStatusText = $window.FindName('ProvisioningStatusText')
 $provisioningLogBox = $window.FindName('ProvisioningLogBox')
 
@@ -1689,7 +1696,7 @@ $script:provisionErrFile = $null
 $script:provisionLogOffset = 0
 $script:provisionStartTime = $null
 
-$provisionButtons = @($btnRenameComputer, $btnApplyOneDriveKfm, $btnApplyRegionalBaseline, $btnApplyOemUpdates, $btnRunWindowsUpdate, $btnGenerateHandoff)
+$provisionButtons = @($btnRenameComputer, $btnApplyOneDriveKfm, $btnApplyRegionalBaseline, $btnApplyOemUpdates, $btnRunWindowsUpdate, $btnGenerateHandoff, $btnPostProvisioningCleanup)
 
 function Start-ProvisionJob {
     param([string[]]$ProvisionArgs, [string]$Label)
@@ -1772,6 +1779,13 @@ $btnGenerateHandoff.Add_Click({
     $provisionArgs = @('-GenerateHandoff')
     if ($textClientCode.Text) { $provisionArgs += @('-ClientCode', $textClientCode.Text) }
     Start-ProvisionJob -ProvisionArgs $provisionArgs -Label 'Generate Validation Report + Handoff Package'
+})
+
+$btnPostProvisioningCleanup.Add_Click({
+    $result = [System.Windows.MessageBox]::Show('Clears temp folders, the Windows Update download cache, and the ODT install source cache, and runs Disk Cleanup and a component-store cleanup. Run this last, once everything else on this machine is done. Continue?', 'Confirm Post-Provisioning Cleanup', 'YesNo', 'Warning')
+    if ($result -eq 'Yes') {
+        Start-ProvisionJob -ProvisionArgs @('-PostProvisioningCleanup') -Label 'Post-Provisioning Cleanup'
+    }
 })
 
 # Customize Preferences - built from tweaks.json (shared with Deploy-DellOfficeSetup.ps1,

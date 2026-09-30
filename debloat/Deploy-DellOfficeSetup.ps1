@@ -236,6 +236,7 @@ param(
     [switch]$RunWindowsUpdate,
     [switch]$Resume,
     [switch]$GenerateHandoff,
+    [switch]$PostProvisioningCleanup,
     [string]$ClientCode = '',
     [switch]$ApplyOneDriveKfm,
     [string]$EntraTenantId = '',
@@ -2468,6 +2469,57 @@ tr:nth-child(even) { background: #f4f4f4; }
     }
 }
 
+function Invoke-PostProvisioningCleanup {
+    # Standalone from Fixes' Invoke-WindowsUpdateReset (which does a heavier reset of
+    # wuauserv/bits/cryptsvc/msiserver for a STUCK update) - this only needs wuauserv
+    # stopped long enough to clear the Download subfolder of files it may have locked.
+    Write-Log '--- Post-provisioning cleanup ---'
+
+    Invoke-Step 'Clearing temp folders' {
+        Get-ChildItem -Path $env:TEMP -Force -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        Get-ChildItem -Path (Join-Path $env:SystemRoot 'Temp') -Force -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    Invoke-Step 'Clearing the Windows Update download cache (SoftwareDistribution\Download)' {
+        Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
+        $downloadPath = Join-Path $env:SystemRoot 'SoftwareDistribution\Download'
+        Get-ChildItem -Path $downloadPath -Force -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        Start-Service -Name wuauserv -ErrorAction SilentlyContinue
+    }
+
+    Invoke-Step 'Clearing the ODT install source cache' {
+        # Computed fresh rather than reusing $officeSourceDir - Start-ProvisionJob always
+        # bundles -SkipOfficeRemoval -SkipOfficeInstall, so that variable is never set on
+        # the code path that reaches this function via the GUI's Provisioning tab.
+        $officeSourceCache = Join-Path $workDir 'OfficeSource'
+        if (Test-Path $officeSourceCache) {
+            Remove-Item -Path $officeSourceCache -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    Invoke-Step 'Running Disk Cleanup (cleanmgr /VERYLOWDISK)' {
+        # /VERYLOWDISK runs with Disk Cleanup's default item set, no prompts, no prior
+        # /SAGESET profile needed - unlike /SAGERUN:n, which requires one.
+        $proc = Start-Process -FilePath 'cleanmgr.exe' -ArgumentList '/VERYLOWDISK' -PassThru -Wait
+        Write-Log "cleanmgr exited with code $($proc.ExitCode)."
+    }
+
+    Invoke-Step 'Running DISM component store cleanup (StartComponentCleanup, no ResetBase)' {
+        # Deliberately NOT /ResetBase - that permanently removes the ability to uninstall
+        # any currently-installed update, which StartComponentCleanup alone does not do.
+        $dismOutput = & DISM /Online /Cleanup-Image /StartComponentCleanup 2>&1
+        $dismExit = $LASTEXITCODE
+        $finalStatus = $dismOutput | Where-Object { $_ -and $_.Trim() -and $_ -notmatch '^\s*\[?=*\s*\d+\.?\d*%' } | Select-Object -Last 3
+        foreach ($line in $finalStatus) { Write-Log "DISM: $line" }
+        if ($dismExit -ne 0) { Write-Log "DISM StartComponentCleanup exited with code $dismExit." 'WARN' }
+    }
+
+    Write-Log 'Post-provisioning cleanup complete.'
+}
+
 function Set-RegionalPowerLockBaseline {
     param([string]$TimeZoneId, [string]$GeoId, [string]$CultureName, [string]$PowerPlanName, [int]$LockTimeoutSec)
     Invoke-Step 'Applying regional, power and lock baseline' {
@@ -2573,6 +2625,7 @@ if ($RenameComputer) { Rename-ComputerFromPattern -Pattern $HostnamePattern }
 if ($ApplyOemUpdates) { Invoke-OemDriverUpdates }
 if ($RunWindowsUpdate) { Invoke-WindowsUpdateToCompletion -Resume:$Resume }
 if ($GenerateHandoff) { New-ValidationHandoffPackage -ClientCode $ClientCode }
+if ($PostProvisioningCleanup) { Invoke-PostProvisioningCleanup }
 if ($ApplyOneDriveKfm) { Set-OneDriveKfm -TenantId $EntraTenantId -Desktop $KfmDesktop -Documents $KfmDocuments -Pictures $KfmPictures }
 if ($ApplyRegionalBaseline) { Set-RegionalPowerLockBaseline -TimeZoneId $TimeZoneId -GeoId $GeoId -CultureName $CultureName -PowerPlanName $PowerPlanName -LockTimeoutSec $LockTimeoutSec }
 
