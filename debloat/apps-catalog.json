@@ -39,6 +39,7 @@
 
     {"name": "1Password", "category": "Utilities", "wingetId": "AgileBits.1Password", "url": "https://1password.com/downloads/windows"},
     {"name": "7-Zip", "category": "Utilities", "wingetId": "7zip.7zip", "url": "https://7-zip.org/download.html"},
+    {"name": "Adobe Creative Cloud", "category": "Utilities", "wingetId": "Adobe.CreativeCloud", "url": "https://creativecloud.adobe.com/"},
     {"name": "AnyDesk", "category": "Utilities", "wingetId": "AnyDesk.AnyDesk", "url": "https://anydesk.com/"},
     {"name": "AutoHotkey", "category": "Utilities", "wingetId": "AutoHotkey.AutoHotkey", "url": "https://www.autohotkey.com/"},
     {"name": "Bitwarden", "category": "Utilities", "wingetId": "Bitwarden.Bitwarden", "url": "https://bitwarden.com/"},
