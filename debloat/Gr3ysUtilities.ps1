@@ -1659,10 +1659,17 @@ $btnApplyRegionalBaseline.Add_Click({
     Start-ProvisionJob -ProvisionArgs $provisionArgs -Label 'Apply Regional/Power/Lock Baseline'
 })
 
-# OEM driver/BIOS updates (2.1), Windows Update to completion (2.2) and the validation/
-# handoff package (2.10) are still being built - placeholders so these buttons are
-# honest about not doing anything yet, instead of silently no-op'ing on click.
-$btnApplyOemUpdates.Add_Click({ [System.Windows.MessageBox]::Show('OEM driver/BIOS updates: not yet available in this build.', 'Gr3y Tools', 'OK', 'Information') | Out-Null })
+$btnApplyOemUpdates.Add_Click({
+    $result = [System.Windows.MessageBox]::Show(
+        "Apply Dell/Lenovo driver and BIOS updates now?`r`n`r`nRequires AC power (this machine's own battery status is checked before starting). Suspends BitLocker for one reboot first if it's on. No automatic reboot - watch for a REBOOT REQUIRED message when it finishes.",
+        'Confirm OEM Updates', 'YesNo', 'Warning')
+    if ($result -ne 'Yes') { return }
+    Start-ProvisionJob -ProvisionArgs @('-ApplyOemUpdates') -Label 'Apply OEM Driver/BIOS Updates'
+})
+
+# Windows Update to completion (2.2) and the validation/handoff package (2.10) are still
+# being built - placeholders so these buttons are honest about not doing anything yet,
+# instead of silently no-op'ing on click.
 $btnRunWindowsUpdate.Add_Click({ [System.Windows.MessageBox]::Show('Windows Update to completion: not yet available in this build.', 'Gr3y Tools', 'OK', 'Information') | Out-Null })
 $btnGenerateHandoff.Add_Click({ [System.Windows.MessageBox]::Show('Validation report / handoff package: not yet available in this build.', 'Gr3y Tools', 'OK', 'Information') | Out-Null })
 

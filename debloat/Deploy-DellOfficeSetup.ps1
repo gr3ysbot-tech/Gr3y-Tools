@@ -84,6 +84,11 @@
     with the BIOS serial number, result trimmed to 15 NetBIOS-safe characters). No
     immediate restart. Refuses if the machine is already Entra joined - rename first.
 
+.PARAMETER ApplyOemUpdates
+    Applies Dell Command Update / Lenovo System Update driver+BIOS updates (silent, no
+    automatic reboot). Requires AC power; suspends BitLocker for one reboot first if it's
+    on. No-ops on non-Dell/Lenovo hardware.
+
 .PARAMETER ApplyOneDriveKfm
     Configures silent OneDrive sign-in and Known Folder Move (Desktop/Documents/Pictures
     per -KfmDesktop/-KfmDocuments/-KfmPictures) instead of removing OneDrive. Requires
@@ -202,6 +207,7 @@ param(
     [string]$Commit = '',
     [switch]$RenameComputer,
     [string]$HostnamePattern = '',
+    [switch]$ApplyOemUpdates,
     [switch]$ApplyOneDriveKfm,
     [string]$EntraTenantId = '',
     [switch]$KfmDesktop,
@@ -975,7 +981,12 @@ function Install-OemUpdateTool {
             return
         }
 
-        $wingetId = if ($isDell) { 'Dell.CommandUpdate' } else { 'Lenovo.SystemUpdate' }
+        # Dell publishes Command Update as two separate winget packages - Universal
+        # (Dell.CommandUpdate.Universal) and Classic (Dell.CommandUpdate, the older Win32
+        # build). Try Universal first, fall back to Classic if that install fails or isn't
+        # offered for this model - confirmed both package ids exist separately via a real
+        # winget search before writing this, rather than assuming.
+        $wingetIds = if ($isDell) { @('Dell.CommandUpdate.Universal', 'Dell.CommandUpdate') } else { @('Lenovo.SystemUpdate') }
         $toolLabel = if ($isDell) { 'Dell Command | Update' } else { 'Lenovo System Update' }
         $displayNames = if ($isDell) { @('Dell Command | Update', 'Dell Command | Update for Windows Universal') } else { @('Lenovo System Update') }
 
@@ -989,18 +1000,26 @@ function Install-OemUpdateTool {
             return
         }
 
-        Write-Log "Installing $toolLabel ($wingetId) via winget..."
-        try {
-            $wingetOutput = & winget.exe install --id $wingetId -e --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1
-            $wingetOutput | ForEach-Object { Write-Log "winget: $_" }
-            if ($LASTEXITCODE -eq 0) {
-                Write-Log "$toolLabel installed successfully."
-            } else {
-                $vendorName = if ($isDell) { 'Dell' } else { 'Lenovo' }
-                Write-Log "$toolLabel install exited with code $LASTEXITCODE - $vendorName doesn't publish an exhaustive supported-model list, so this can happen on a genuine but unsupported commercial model." 'WARN'
+        $installed = $false
+        foreach ($wingetId in $wingetIds) {
+            Write-Log "Installing $toolLabel ($wingetId) via winget..."
+            try {
+                $wingetOutput = & winget.exe install --id $wingetId -e --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1
+                $wingetOutput | ForEach-Object { Write-Log "winget: $_" }
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Log "$toolLabel ($wingetId) installed successfully."
+                    $installed = $true
+                    break
+                } else {
+                    Write-Log "$wingetId install exited with code $LASTEXITCODE." 'WARN'
+                }
+            } catch {
+                Write-Log "Could not install ${wingetId}: $($_.Exception.Message)" 'WARN'
             }
-        } catch {
-            Write-Log "Could not install ${toolLabel}: $($_.Exception.Message)" 'WARN'
+        }
+        if (-not $installed) {
+            $vendorName = if ($isDell) { 'Dell' } else { 'Lenovo' }
+            Write-Log "$toolLabel could not be installed via any of: $($wingetIds -join ', '). $vendorName doesn't publish an exhaustive supported-model list, so this can happen on a genuine but unsupported commercial model." 'WARN'
         }
     }
 }
@@ -1655,6 +1674,140 @@ function Set-OneDriveKfm {
     }
 }
 
+function Get-DcuExitCodeMeaning {
+    param([int]$ExitCode)
+    switch ($ExitCode) {
+        0   { 'OK.' }
+        1   { 'Reboot required to complete the operation.' }
+        3   { 'Not a Dell system.' }
+        5   { 'A reboot was already pending from a previous operation.' }
+        7   { 'Unsupported model.' }
+        500 { 'No updates found.' }
+        501 { 'Scan error.' }
+        default { "Unrecognized exit code $ExitCode." }
+    }
+}
+
+function Invoke-DellCommandUpdateApply {
+    # Dell Command Update (Classic or Universal) both install their CLI to a
+    # "Dell\CommandUpdate" folder, just under a different Program Files root depending on
+    # build - check both rather than assume one.
+    $candidatePaths = @(
+        (Join-Path $env:ProgramFiles 'Dell\CommandUpdate\dcu-cli.exe')
+        (Join-Path ${env:ProgramFiles(x86)} 'Dell\CommandUpdate\dcu-cli.exe')
+    )
+    $dcuPath = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $dcuPath) {
+        Write-Log "dcu-cli.exe not found at any of: $($candidatePaths -join ', ') - install Dell Command Update first (the OEM update tool option)." 'WARN'
+        return
+    }
+
+    $reportDir = Join-Path $workDir 'dcu'
+    New-Item -ItemType Directory -Path $reportDir -Force -ErrorAction SilentlyContinue | Out-Null
+    $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    $reportPath = Join-Path $reportDir "scan_$stamp.xml"
+    $applyLogPath = Join-Path $reportDir "apply_$stamp.log"
+
+    Write-Log 'Configuring Dell Command Update (silent, no user consent prompt)...'
+    & $dcuPath /configure -silent -autoSuspendBitLocker=enable -userConsent=disable 2>&1 | ForEach-Object { Write-Log "dcu-cli: $_" }
+
+    Write-Log 'Scanning for Dell updates...'
+    & $dcuPath /scan -silent "-report=$reportPath" 2>&1 | ForEach-Object { Write-Log "dcu-cli: $_" }
+    $scanExit = $LASTEXITCODE
+    Write-Log "Scan exit code $scanExit - $(Get-DcuExitCodeMeaning -ExitCode $scanExit)"
+    if ($scanExit -eq 500) {
+        Write-Log 'No Dell updates found - already current.'
+        return
+    }
+    if ($scanExit -notin @(0, 1, 5)) {
+        Write-Log "Scan did not complete cleanly (exit $scanExit) - not attempting to apply updates." 'WARN'
+        return
+    }
+
+    Write-Log 'Applying Dell updates (no automatic reboot)...'
+    & $dcuPath /applyUpdates -silent -reboot=disable "-outputLog=$applyLogPath" 2>&1 | ForEach-Object { Write-Log "dcu-cli: $_" }
+    $applyExit = $LASTEXITCODE
+    Write-Log "Apply exit code $applyExit - $(Get-DcuExitCodeMeaning -ExitCode $applyExit)"
+    if ($applyExit -in @(1, 5)) {
+        # Exit 1/5 is Dell's documented "succeeded, needs a reboot" result, not a failure -
+        # plain INFO, not WARN, so a normal/expected outcome doesn't get flagged as an error
+        # and paint the GUI's completion banner yellow for no real reason.
+        Write-Log 'REBOOT REQUIRED to finish applying Dell updates - use the Reboot button (Debloat + Office tab) or reboot manually.'
+    } elseif ($applyExit -ne 0) {
+        Write-Log "Apply did not report success (exit $applyExit) - check $applyLogPath for detail." 'WARN'
+    }
+}
+
+function Invoke-LenovoSystemUpdateApply {
+    $tvsuPath = Join-Path ${env:ProgramFiles(x86)} 'Lenovo\System Update\tvsu.exe'
+    if (-not (Test-Path $tvsuPath)) {
+        Write-Log "tvsu.exe not found at $tvsuPath - install Lenovo System Update first (the OEM update tool option)." 'WARN'
+        return
+    }
+
+    try {
+        $policyPath = 'HKLM:\Software\Policies\Lenovo\System Update\UserSettings\General'
+        New-Item -Path $policyPath -Force -ErrorAction SilentlyContinue | Out-Null
+        Set-ItemProperty -Path $policyPath -Name 'AdminCommandLine' -Value '-search A -action INSTALL -includerebootpackages 0,3 -noicon -nolicense -noreboot -exporttowmi' -Type String -ErrorAction Stop
+    } catch {
+        Write-Log "Could not configure Lenovo System Update's command line policy: $($_.Exception.Message)" 'WARN'
+        return
+    }
+
+    Write-Log 'Running Lenovo System Update (search + install, no automatic reboot)...'
+    & $tvsuPath /CM 2>&1 | ForEach-Object { Write-Log "tvsu: $_" }
+    Write-Log "tvsu.exe exited with code $LASTEXITCODE"
+
+    try {
+        $results = Get-CimInstance -Namespace 'root\Lenovo' -ClassName 'Lenovo_Updates' -ErrorAction Stop
+        if ($results) {
+            foreach ($r in $results) { Write-Log "Lenovo update result: $($r | Select-Object * | Out-String)" }
+        } else {
+            Write-Log 'No results in root\Lenovo\Lenovo_Updates (WMI) - check the log above for what tvsu.exe itself reported.'
+        }
+    } catch {
+        Write-Log "Could not read Lenovo update results from WMI (root\Lenovo\Lenovo_Updates): $($_.Exception.Message)" 'WARN'
+    }
+    Write-Log 'If any installed package needed a reboot, Lenovo System Update needs one to finish - reboot via the Reboot button (Debloat + Office tab) or manually, then re-run this to confirm nothing remains.'
+}
+
+function Invoke-OemDriverUpdates {
+    Invoke-Step 'Applying OEM driver/BIOS updates' {
+        # BIOS packages write firmware - a battery-powered flash that loses power mid-write
+        # can brick the board. BatteryStatus 1/4/5 (verified via Microsoft's own documented
+        # values) are the "definitely on battery" states (Battery Power/Low/Critical); no
+        # battery instance at all means a desktop, always fine; everything else (AC,
+        # Charging, Fully Charged, etc.) is treated as plugged in.
+        $battery = Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($battery -and $battery.BatteryStatus -in @(1, 4, 5)) {
+            Write-Log "This machine appears to be running on battery power (BatteryStatus=$($battery.BatteryStatus)) - OEM driver/BIOS updates require AC power. Plug in and retry." 'WARN'
+            return
+        }
+
+        $isDell = $machineManufacturer -match 'Dell'
+        $isLenovo = $machineManufacturer -match 'Lenovo'
+        if (-not $isDell -and -not $isLenovo) {
+            Write-Log "Manufacturer '$machineManufacturer' is neither Dell nor Lenovo - nothing to update."
+            return
+        }
+
+        # Suspend BitLocker for one reboot before a firmware update - a BIOS/driver change
+        # can trip the TPM's measured-boot state and force a 48-character recovery-key
+        # prompt on next boot otherwise.
+        try {
+            $bitlockerVolume = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
+            if ($bitlockerVolume.ProtectionStatus -eq 'On') {
+                Suspend-BitLocker -MountPoint $env:SystemDrive -RebootCount 1 -ErrorAction Stop
+                Write-Log 'BitLocker suspended for one reboot before applying updates.'
+            }
+        } catch {
+            Write-Log "Could not check/suspend BitLocker (may mean it isn't enabled, or the BitLocker module isn't available on this edition): $($_.Exception.Message)"
+        }
+
+        if ($isDell) { Invoke-DellCommandUpdateApply } else { Invoke-LenovoSystemUpdateApply }
+    }
+}
+
 function Set-RegionalPowerLockBaseline {
     param([string]$TimeZoneId, [string]$GeoId, [string]$CultureName, [string]$PowerPlanName, [int]$LockTimeoutSec)
     Invoke-Step 'Applying regional, power and lock baseline' {
@@ -1755,6 +1908,7 @@ if ($FixWindowsUpdateReset) { Invoke-WindowsUpdateReset }
 if ($FixWinGetReinstall) { Invoke-WinGetReinstall }
 
 if ($RenameComputer) { Rename-ComputerFromPattern -Pattern $HostnamePattern }
+if ($ApplyOemUpdates) { Invoke-OemDriverUpdates }
 if ($ApplyOneDriveKfm) { Set-OneDriveKfm -TenantId $EntraTenantId -Desktop $KfmDesktop -Documents $KfmDocuments -Pictures $KfmPictures }
 if ($ApplyRegionalBaseline) { Set-RegionalPowerLockBaseline -TimeZoneId $TimeZoneId -GeoId $GeoId -CultureName $CultureName -PowerPlanName $PowerPlanName -LockTimeoutSec $LockTimeoutSec }
 
