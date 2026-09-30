@@ -862,13 +862,59 @@ function Set-DnsPreset {
 # ============================================================================
 
 function Invoke-SystemRepair {
-    Write-Log '--- Fix: Running System File Repair (sfc + DISM) - this can take 10-20+ minutes ---'
+    Write-Log '--- Fix: Running System File Repair (chkdsk scan + sfc + DISM) - this can take 10-20+ minutes ---'
+
+    Invoke-Step 'Running chkdsk /scan /perf (online, read-only scan of the system drive)' {
+        $chkdskOutput = & chkdsk $env:SystemDrive /scan /perf 2>&1
+        $chkdskExit = $LASTEXITCODE
+        $chkdskOutput | Where-Object { $_ -and $_.Trim() } | Select-Object -Last 10 | ForEach-Object { Write-Log "chkdsk: $_" }
+        # /scan is read-only (no dismount, no reboot) - exit codes 1 and 2 just mean it
+        # found something to report, not that this step itself failed.
+        switch ($chkdskExit) {
+            0 { Write-Log 'chkdsk: no errors found.' }
+            1 { Write-Log 'chkdsk: errors were found (informational for an online /scan pass - re-run with /spotfix or a full offline chkdsk to correct them).' }
+            2 { Write-Log 'chkdsk: further scanning is required (informational for an online /scan pass).' }
+            default { Write-Log "chkdsk exited with code $chkdskExit." 'WARN' }
+        }
+    }
+
     Invoke-Step 'Running sfc /scannow' {
-        sfc /scannow 2>&1 | ForEach-Object { Write-Log "sfc: $_" }
+        # sfc writes UTF-16LE to a redirected pipe. Capturing it while
+        # [Console]::OutputEncoding is temporarily Unicode decodes it into normal .NET
+        # strings - but logging must happen AFTER restoring the encoding, not while
+        # still inside this block: Write-Log's own Write-Host calls also respect
+        # [Console]::OutputEncoding, so logging sfc's lines while still set to Unicode
+        # would write THOSE bytes as UTF-16LE too, corrupting this run's otherwise-UTF8
+        # log file right alongside them (confirmed both failure and fix with a
+        # cmd /u stand-in before shipping this).
+        $originalEncoding = [Console]::OutputEncoding
+        $sfcOutput = $null
+        try {
+            [Console]::OutputEncoding = [Text.Encoding]::Unicode
+            $sfcOutput = sfc /scannow 2>&1
+        } finally {
+            [Console]::OutputEncoding = $originalEncoding
+        }
+        foreach ($line in $sfcOutput) { Write-Log "sfc: $line" }
     }
+
     Invoke-Step 'Running DISM /Online /Cleanup-Image /RestoreHealth' {
-        DISM /Online /Cleanup-Image /RestoreHealth 2>&1 | ForEach-Object { Write-Log "DISM: $_" }
+        # DISM's own live progress percentage becomes hundreds of near-duplicate lines
+        # once piped (no way to overwrite a line in a redirected stream) - /LogPath keeps
+        # the full detail in its own file, and only the last few non-progress-bar lines
+        # (plus the exit code) go into this run's log.
+        $dismLogPath = Join-Path $workDir 'dism_restorehealth.log'
+        $dismOutput = & DISM /Online /Cleanup-Image /RestoreHealth "/LogPath:$dismLogPath" 2>&1
+        $dismExit = $LASTEXITCODE
+        $finalStatus = $dismOutput | Where-Object { $_ -and $_.Trim() -and $_ -notmatch '^\s*\[?=*\s*\d+\.?\d*%' } | Select-Object -Last 3
+        foreach ($line in $finalStatus) { Write-Log "DISM: $line" }
+        if ($dismExit -eq 0) {
+            Write-Log "DISM completed successfully. Full log: $dismLogPath"
+        } else {
+            Write-Log "DISM exited with code $dismExit - see $dismLogPath for full detail." 'WARN'
+        }
     }
+
     Write-Log 'System file repair complete.'
 }
 
@@ -885,6 +931,11 @@ function Invoke-WindowsUpdateReset {
     $services = @('wuauserv', 'bits', 'cryptsvc', 'msiserver')
     Invoke-Step "Stopping services: $($services -join ', ')" {
         foreach ($svc in $services) { Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Seconds 2
+        $wuauserv = Get-Service -Name 'wuauserv' -ErrorAction SilentlyContinue
+        if ($wuauserv -and $wuauserv.Status -ne 'Stopped') {
+            Write-Log "wuauserv is still $($wuauserv.Status), not Stopped - the rename below may fail while it still holds the folder open." 'WARN'
+        }
     }
     $softwareDistribution = Join-Path $env:WINDIR 'SoftwareDistribution'
     $catroot2 = Join-Path $env:WINDIR 'System32\catroot2'
@@ -892,14 +943,25 @@ function Invoke-WindowsUpdateReset {
         if (Test-Path $softwareDistribution) {
             Remove-Item -Path "$softwareDistribution.bak" -Recurse -Force -ErrorAction SilentlyContinue
             Rename-Item -Path $softwareDistribution -NewName 'SoftwareDistribution.bak' -Force -ErrorAction SilentlyContinue
+            if (Test-Path $softwareDistribution) {
+                Write-Log 'SoftwareDistribution still exists after attempting to rename it - Windows Update will keep using the old cache.' 'WARN'
+            } else {
+                Write-Log 'SoftwareDistribution renamed successfully.'
+            }
         }
         if (Test-Path $catroot2) {
             Remove-Item -Path "$catroot2.bak" -Recurse -Force -ErrorAction SilentlyContinue
             Rename-Item -Path $catroot2 -NewName 'catroot2.bak' -Force -ErrorAction SilentlyContinue
+            if (Test-Path $catroot2) {
+                Write-Log 'catroot2 still exists after attempting to rename it.' 'WARN'
+            }
         }
     }
     Invoke-Step "Restarting services: $($services -join ', ')" {
         foreach ($svc in $services) { Start-Service -Name $svc -ErrorAction SilentlyContinue }
+    }
+    Invoke-Step 'Cleaning up SoftwareDistribution.bak' {
+        Remove-Item -Path "$softwareDistribution.bak" -Recurse -Force -ErrorAction SilentlyContinue
     }
     Write-Log 'Windows Update reset complete.'
 }
