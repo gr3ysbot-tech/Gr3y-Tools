@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Gr3y Tools - one-line launcher for Gr3y Support: Dell/Lenovo debloat,
-    Microsoft 365 Apps for business deploy, and a WinUtil-style app install catalog.
+    Microsoft 365 Apps for business deploy, and a categorized app install catalog.
 
 .DESCRIPTION
     Run this on the target laptop from an elevated or non-elevated PowerShell prompt -

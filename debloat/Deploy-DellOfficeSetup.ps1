@@ -134,8 +134,8 @@
     Open_DNS, Quad9, AdGuard_Ads_Trackers, AdGuard_Ads_Trackers_Malware_Adult) or back to
     DHCP. 'Default' (or omitted) makes no change. Refuses on a domain-joined machine
     unless -DnsForce is also passed, since a public resolver can break domain sign-in and
-    internal name resolution. Registry/IP values sourced from ChrisTitusTech/winutil's
-    config/tweaks.json and config/dns.json.
+    internal name resolution. Resolver IPs and DoH templates are each provider's own
+    well-known public addresses.
 
 .PARAMETER DnsForce
     Applies -DnsPreset even on a domain-joined machine. Off by default - see DnsPreset.
@@ -1023,11 +1023,10 @@ function Set-TelemetryReduced {
             Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' -Name 'AllowTelemetry' -Value 0 -Type DWord -ErrorAction SilentlyContinue
 
             New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Force -ErrorAction SilentlyContinue | Out-Null
-            # EnableActivityFeed is deliberately left alone (WinUtil's own explicit
-            # rationale, flagged as an owner-identified gap): turning it off breaks
-            # clipboard history, which most people expect to keep working. Blocking
-            # Publish/UploadUserActivities alone already stops activity data leaving the
-            # machine, without losing that local functionality.
+            # EnableActivityFeed is deliberately left alone (owner-identified gap):
+            # turning it off breaks clipboard history, which most people expect to keep
+            # working. Blocking Publish/UploadUserActivities alone already stops
+            # activity data leaving the machine, without losing that local functionality.
             Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name 'PublishUserActivities' -Value 0 -Type DWord -ErrorAction SilentlyContinue
             Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name 'UploadUserActivities' -Value 0 -Type DWord -ErrorAction SilentlyContinue
 
@@ -1412,9 +1411,8 @@ function Invoke-CustomizeTweaks {
     }
 }
 
-# IP addresses sourced verbatim from ChrisTitusTech/winutil's config/dns.json (main branch).
-# DNS-over-HTTPS registration is intentionally not configured here - only the plain
-# resolver IPv4/IPv6 addresses are set, which is what "change the DNS" means day to day.
+# Each provider's own well-known public resolver addresses and DoH templates. DoH
+# registration itself happens in Set-DnsPreset below, via Add-DnsClientDohServerAddress.
 $script:dnsPresets = @{
     'Google'                             = @{ V4 = @('8.8.8.8', '8.8.4.4'); V6 = @('2001:4860:4860::8888', '2001:4860:4860::8844'); DohTemplate = 'https://dns.google/dns-query' }
     'Cloudflare'                         = @{ V4 = @('1.1.1.1', '1.0.0.1'); V6 = @('2606:4700:4700::1111', '2606:4700:4700::1001'); DohTemplate = 'https://cloudflare-dns.com/dns-query' }

@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
     Gr3y Support - native Windows GUI for Dell/Lenovo debloat, Microsoft 365 Apps
-    for business deploy, and a WinUtil-style app install catalog.
+    for business deploy, and a categorized app install catalog.
 
 .DESCRIPTION
-    Four tabs:
+    Five tabs:
       1. Debloat + Office - same engine as Deploy-DellOfficeSetup.ps1 (must sit next to
          this script), driven through checkboxes instead of a command line, with live
          log streaming and a CPU-activity heartbeat across the whole process tree.
@@ -14,10 +14,17 @@
          package. Edit that JSON file to add/remove/rename entries - no code changes
          needed.
       3. Config - one-click Fixes (System Repair, Network Reset, Windows Update Reset,
-         winget re-registration), Customize Preferences (reversible per-tweak toggles
-         driven by tweaks.json, must also sit next to this script), and DNS presets.
+         Time Resync, .NET Framework 3.5 Enable, winget re-registration), Customize
+         Preferences (reversible per-tweak toggles driven by tweaks.json, must also sit
+         next to this script, with a Scan Current State button to refresh live), DNS
+         presets, and Revert Last Run.
       4. Panels - direct shortcuts to built-in Windows applets (Computer Management,
-         Control Panel, Programs and Features, Windows Firewall, and the like).
+         Control Panel, Programs and Features, Windows Firewall, and the like), plus a
+         read-only BitLocker status scan and recovery key fetch.
+      5. Provisioning - client profile save/load, hostname rename, OneDrive Known
+         Folder Move, regional/power/lock baseline, OEM driver/BIOS updates, Windows
+         Update to completion, validation report and handoff package generation, and
+         post-provisioning cleanup.
 
     Launch via the repo's debloat.ps1 bootstrap (self-elevates, downloads all five
     files fresh, then runs this), or directly if already elevated:

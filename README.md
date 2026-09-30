@@ -6,10 +6,10 @@ no keeping a USB kit in sync across every laptop.
 
 ## Gr3y Support - Debloat + Office Deploy + App Installer + Provisioning
 
-A native Windows GUI (WPF, no browser involved) styled after ChrisTitusTech's
-WinUtil: a custom dark window chrome with the tabs, a search box, and window
-controls built into the title bar itself, and a dense two-column layout instead
-of a typical "settings app" look. Five tabs:
+A native Windows GUI (WPF, no browser involved): a custom dark window chrome
+with the tabs, a search box, and window controls built into the title bar
+itself, and a dense two-column layout instead of a typical "settings app"
+look. Five tabs:
 
 - **Debloat + Office** - removes Dell/Lenovo OEM bloatware, McAfee trialware, and
   the Windows 11 built-in consumer Teams/Chat AppX package (not the real work/
@@ -24,7 +24,7 @@ of a typical "settings app" look. Five tabs:
   also saved locally at `C:\ProgramData\DellOfficeDeploy\`, named with the
   machine's hostname/manufacturer/model/serial tag so they're identifiable later
   across many different client laptops).
-- **Install Apps** - a WinUtil-style categorized app catalog (Browsers, Microsoft
+- **Install Apps** - a categorized app catalog (Browsers, Microsoft
   Tools, Documents, Communications, Utilities, Non-Silent Installs) backed by
   winget, with search, category filters, select-all/clear (with a confirmation
   when selecting across every category at once), and install/uninstall/
