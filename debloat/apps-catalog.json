@@ -14,8 +14,6 @@
     {"name": ".NET Desktop Runtime 8", "category": "Microsoft Tools", "wingetId": "Microsoft.DotNet.DesktopRuntime.8"},
     {"name": ".NET Desktop Runtime 9", "category": "Microsoft Tools", "wingetId": "Microsoft.DotNet.DesktopRuntime.9"},
     {"name": ".NET Desktop Runtime 10", "category": "Microsoft Tools", "wingetId": "Microsoft.DotNet.DesktopRuntime.10"},
-    {"name": "NTLite", "category": "Microsoft Tools", "wingetId": "Nlitesoft.NTLite"},
-    {"name": "NuGet", "category": "Microsoft Tools", "wingetId": "Microsoft.NuGet"},
     {"name": "OneDrive", "category": "Microsoft Tools", "wingetId": "Microsoft.OneDrive"},
     {"name": "Microsoft Teams (work/school)", "category": "Microsoft Tools", "wingetId": "Microsoft.Teams"},
     {"name": "PowerShell", "category": "Microsoft Tools", "wingetId": "Microsoft.PowerShell"},
