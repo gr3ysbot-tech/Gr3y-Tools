@@ -840,6 +840,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
         <Button Name="NavInstall" Style="{StaticResource NavButton}" Content="Install Apps" WindowChrome.IsHitTestVisibleInChrome="True"/>
         <Button Name="NavFixes" Style="{StaticResource NavButton}" Content="Config" WindowChrome.IsHitTestVisibleInChrome="True"/>
         <Button Name="NavPanels" Style="{StaticResource NavButton}" Content="Panels" WindowChrome.IsHitTestVisibleInChrome="True"/>
+        <Button Name="NavProvisioning" Style="{StaticResource NavButton}" Content="Provisioning" WindowChrome.IsHitTestVisibleInChrome="True"/>
         <Border Name="SacStatusBorder" BorderThickness="1" BorderBrush="{StaticResource MutedBrush}" CornerRadius="3"
                 Padding="6,2" Margin="14,0,0,0" VerticalAlignment="Center" Visibility="Collapsed">
           <TextBlock Name="SacStatusText" Text="Smart App Control: -" FontSize="11" Foreground="{StaticResource MutedBrush}"/>
@@ -1468,6 +1469,7 @@ $navDebloat = $window.FindName('NavDebloat')
 $navInstall = $window.FindName('NavInstall')
 $navFixes = $window.FindName('NavFixes')
 $navPanels = $window.FindName('NavPanels')
+$navProvisioning = $window.FindName('NavProvisioning')
 $searchHint = $window.FindName('SearchHint')
 $btnOpenLogs = $window.FindName('BtnOpenLogs')
 $btnWinMin = $window.FindName('BtnWinMin')
@@ -2134,11 +2136,13 @@ function Set-ActiveTab {
     $navInstall.Tag = if ($Index -eq 1) { 'selected' } else { '' }
     $navFixes.Tag = if ($Index -eq 2) { 'selected' } else { '' }
     $navPanels.Tag = if ($Index -eq 3) { 'selected' } else { '' }
+    $navProvisioning.Tag = if ($Index -eq 4) { 'selected' } else { '' }
 }
 $navDebloat.Add_Click({ Set-ActiveTab -Index 0 })
 $navInstall.Add_Click({ Set-ActiveTab -Index 1 })
 $navFixes.Add_Click({ Set-ActiveTab -Index 2 })
 $navPanels.Add_Click({ Set-ActiveTab -Index 3 })
+$navProvisioning.Add_Click({ Set-ActiveTab -Index 4 })
 
 $btnWinMin.Add_Click({ $window.WindowState = 'Minimized' })
 $btnWinMax.Add_Click({
