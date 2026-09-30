@@ -1477,6 +1477,26 @@ $btnScan.Add_Click({
 })
 
 $btnStart.Add_Click({
+    # Re-entrancy guard - $btnStart only gets disabled on the next 1.2s timer tick, so
+    # without this a fast double-click launched two workers racing on OEM/Office removal
+    # and both writing to gui_run_<same-second-stamp>.out.log.
+    if ($script:deployProc -and -not $script:deployProc.HasExited) { return }
+
+    if (-not $optDryRun.IsChecked) {
+        $summaryParts = New-Object System.Collections.Generic.List[string]
+        if (-not $optSkipDebloat.IsChecked) { $summaryParts.Add('- Remove OEM/McAfee bloatware') }
+        if ($optInstallOemUpdate.IsChecked) { $summaryParts.Add('- Install Dell Command Update / Lenovo System Update (if applicable)') }
+        if (-not $optSkipOfficeRemoval.IsChecked) { $summaryParts.Add('- Remove any existing Office install') }
+        if (-not $optSkipOfficeInstall.IsChecked) { $summaryParts.Add('- Install Microsoft 365 Apps for business') }
+        if ($optTweakTelemetry.IsChecked) { $summaryParts.Add('- Reduce telemetry') }
+        if ($optTweakHibernation.IsChecked) { $summaryParts.Add('- Disable hibernation') }
+        if ($optTweakPreventSleep.IsChecked) { $summaryParts.Add('- Prevent sleep') }
+        if ($optTweakDisableSAC.IsChecked) { $summaryParts.Add('- Disable Smart App Control (one-way on a real machine)') }
+        $summaryText = if ($summaryParts.Count -gt 0) { $summaryParts -join "`r`n" } else { '(no phases selected - this run would do nothing)' }
+        $result = [System.Windows.MessageBox]::Show("Start this run on THIS machine?`r`n`r`n$summaryText", 'Confirm Start', 'YesNo', 'Warning')
+        if ($result -ne 'Yes') { return }
+    }
+
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', """$deployScript""", '-NoReboot')
     if ($optDryRun.IsChecked) { $argList += '-DryRun' }
     if ($optCreateRestorePoint.IsChecked) { $argList += '-CreateRestorePoint' }
@@ -1708,6 +1728,10 @@ $btnUninstallSelected.Add_Click({ Start-AppQueue -Mode 'uninstall' })
 $btnCheckInstalled.Add_Click({ Start-AppQueue -Mode 'check' })
 
 $btnUpgradeAll.Add_Click({
+    # Same double-launch hole as Start had - a fast double-click before the next timer
+    # tick disables the button would otherwise orphan the first winget upgrade process.
+    if ($script:installProc -and -not $script:installProc.HasExited) { return }
+
     # Distinct mode (not reusing 'install'/'check') so the per-entry completion
     # handling below never mistakes this one-off run for a queued check result.
     $script:installMode = 'upgrade'
