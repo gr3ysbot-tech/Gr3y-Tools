@@ -100,6 +100,16 @@
     continue a Windows Update pass loop that needed a reboot. Not meant to be passed by
     hand under normal use.
 
+.PARAMETER GenerateHandoff
+    Runs read-only validation checks (activation, Defender/AV, firewall, join state,
+    Secure Boot, pending reboot, free disk, last Windows Update success, OEM update tool
+    presence) and writes a handoff package (inventory.json, validation.txt, the full log,
+    and an auto-opening report.html) to
+    C:\ProgramData\DellOfficeDeploy\handoff\<ClientCode>_<hostname>_<serial>\.
+
+.PARAMETER ClientCode
+    Short client identifier used in the handoff package folder name and inventory.json.
+
 .PARAMETER ApplyOneDriveKfm
     Configures silent OneDrive sign-in and Known Folder Move (Desktop/Documents/Pictures
     per -KfmDesktop/-KfmDocuments/-KfmPictures) instead of removing OneDrive. Requires
@@ -221,6 +231,8 @@ param(
     [switch]$ApplyOemUpdates,
     [switch]$RunWindowsUpdate,
     [switch]$Resume,
+    [switch]$GenerateHandoff,
+    [string]$ClientCode = '',
     [switch]$ApplyOneDriveKfm,
     [string]$EntraTenantId = '',
     [switch]$KfmDesktop,
@@ -2029,6 +2041,194 @@ function Invoke-WindowsUpdateToCompletion {
     }
 }
 
+function Get-ValidationChecks {
+    # Read-only checks - returns {Check; Status (OK/ATTENTION/INFO/UNKNOWN); Detail}
+    $checks = New-Object System.Collections.Generic.List[object]
+
+    try {
+        $licProduct = Get-CimInstance -ClassName SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL AND ApplicationId='55c92734-d682-4d71-983e-d6ec3f16059f'" -ErrorAction Stop | Select-Object -First 1
+        $licensed = $licProduct -and $licProduct.LicenseStatus -eq 1
+        if (-not $licensed) {
+            try { & cscript.exe //nologo "$env:SystemRoot\System32\slmgr.vbs" /ato 2>&1 | Out-Null } catch {}
+            Start-Sleep -Seconds 2
+            $licProduct = Get-CimInstance -ClassName SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL AND ApplicationId='55c92734-d682-4d71-983e-d6ec3f16059f'" -ErrorAction SilentlyContinue | Select-Object -First 1
+            $licensed = $licProduct -and $licProduct.LicenseStatus -eq 1
+        }
+        $checks.Add([PSCustomObject]@{ Check = 'Windows Activation'; Status = if ($licensed) { 'OK' } else { 'ATTENTION' }; Detail = "LicenseStatus=$($licProduct.LicenseStatus)" })
+    } catch {
+        $checks.Add([PSCustomObject]@{ Check = 'Windows Activation'; Status = 'UNKNOWN'; Detail = $_.Exception.Message })
+    }
+
+    try {
+        $defender = Get-MpComputerStatus -ErrorAction Stop
+        $sigAge = (Get-Date) - $defender.AntivirusSignatureLastUpdated
+        $checks.Add([PSCustomObject]@{ Check = 'Defender Real-Time Protection'; Status = if ($defender.RealTimeProtectionEnabled) { 'OK' } else { 'ATTENTION' }; Detail = "TamperProtected=$($defender.IsTamperProtected)" })
+        $checks.Add([PSCustomObject]@{ Check = 'Defender Signature Age'; Status = if ($sigAge.TotalDays -lt 7) { 'OK' } else { 'ATTENTION' }; Detail = "$([int]$sigAge.TotalDays) day(s) old" })
+    } catch {
+        # Get-MpComputerStatus fails outright when a third-party AV owns the Security
+        # Center - check root\SecurityCenter2 for that instead of just reporting failure.
+        try {
+            $avProducts = Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction Stop
+            $names = ($avProducts | Select-Object -ExpandProperty displayName) -join ', '
+            $checks.Add([PSCustomObject]@{ Check = 'Antivirus'; Status = if ($names) { 'OK' } else { 'ATTENTION' }; Detail = if ($names) { "Third-party: $names" } else { 'No AV product registered' } })
+        } catch {
+            $checks.Add([PSCustomObject]@{ Check = 'Antivirus'; Status = 'UNKNOWN'; Detail = $_.Exception.Message })
+        }
+    }
+
+    try {
+        $fwProfiles = Get-NetFirewallProfile -ErrorAction Stop
+        $allEnabled = -not ($fwProfiles | Where-Object { -not $_.Enabled })
+        $checks.Add([PSCustomObject]@{ Check = 'Firewall (all profiles)'; Status = if ($allEnabled) { 'OK' } else { 'ATTENTION' }; Detail = ($fwProfiles | ForEach-Object { "$($_.Name)=$($_.Enabled)" }) -join ', ' })
+    } catch {
+        $checks.Add([PSCustomObject]@{ Check = 'Firewall'; Status = 'UNKNOWN'; Detail = $_.Exception.Message })
+    }
+
+    try {
+        $dsregOutput = & dsregcmd /status 2>&1 | Out-String
+        $azureJoined = [regex]::Match($dsregOutput, 'AzureAdJoined\s*:\s*(\S+)').Groups[1].Value
+        $domainJoined = [regex]::Match($dsregOutput, 'DomainJoined\s*:\s*(\S+)').Groups[1].Value
+        $checks.Add([PSCustomObject]@{ Check = 'Device Join State'; Status = 'INFO'; Detail = "AzureAdJoined=$azureJoined, DomainJoined=$domainJoined" })
+    } catch {
+        $checks.Add([PSCustomObject]@{ Check = 'Device Join State'; Status = 'UNKNOWN'; Detail = $_.Exception.Message })
+    }
+
+    try {
+        $secureBoot = Confirm-SecureBootUEFI -ErrorAction Stop
+        $checks.Add([PSCustomObject]@{ Check = 'Secure Boot'; Status = if ($secureBoot) { 'OK' } else { 'ATTENTION' }; Detail = "Enabled=$secureBoot" })
+    } catch {
+        $checks.Add([PSCustomObject]@{ Check = 'Secure Boot'; Status = 'UNKNOWN'; Detail = 'Not UEFI, or could not be checked' })
+    }
+
+    $pendingReboot = $false
+    $pendingReasons = New-Object System.Collections.Generic.List[string]
+    if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') { $pendingReboot = $true; $pendingReasons.Add('CBS') }
+    if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') { $pendingReboot = $true; $pendingReasons.Add('WindowsUpdate') }
+    if (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -Name 'PendingFileRenameOperations' -ErrorAction SilentlyContinue) { $pendingReboot = $true; $pendingReasons.Add('PendingFileRename') }
+    $checks.Add([PSCustomObject]@{ Check = 'Pending Reboot'; Status = if ($pendingReboot) { 'ATTENTION' } else { 'OK' }; Detail = if ($pendingReboot) { $pendingReasons -join ', ' } else { 'None detected' } })
+
+    $sysDrive = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'" -ErrorAction SilentlyContinue
+    $freeGb = if ($sysDrive) { [Math]::Round($sysDrive.FreeSpace / 1GB, 1) } else { $null }
+    $checks.Add([PSCustomObject]@{ Check = 'Free Disk Space'; Status = if ($freeGb -and $freeGb -ge 20) { 'OK' } else { 'ATTENTION' }; Detail = "$freeGb GB free on $env:SystemDrive" })
+
+    try {
+        $wuSession = New-Object -ComObject Microsoft.Update.Session
+        $wuSearcher = $wuSession.CreateUpdateSearcher()
+        $historyCount = $wuSearcher.GetTotalHistoryCount()
+        $lastSuccess = $null
+        if ($historyCount -gt 0) {
+            $entries = $wuSearcher.QueryHistory(0, [Math]::Min($historyCount, 20))
+            $lastSuccess = $entries | Where-Object { $_.ResultCode -eq 2 } | Sort-Object Date -Descending | Select-Object -First 1
+        }
+        $checks.Add([PSCustomObject]@{ Check = 'Last Windows Update Success'; Status = if ($lastSuccess) { 'OK' } else { 'UNKNOWN' }; Detail = if ($lastSuccess) { "$($lastSuccess.Title) on $($lastSuccess.Date)" } else { 'No successful update found in recent history' } })
+    } catch {
+        $checks.Add([PSCustomObject]@{ Check = 'Last Windows Update Success'; Status = 'UNKNOWN'; Detail = $_.Exception.Message })
+    }
+
+    $isDell = $machineManufacturer -match 'Dell'
+    $isLenovo = $machineManufacturer -match 'Lenovo'
+    if ($isDell -or $isLenovo) {
+        $displayNames = if ($isDell) { @('Dell Command | Update', 'Dell Command | Update for Windows Universal') } else { @('Lenovo System Update') }
+        $oemToolPresent = Get-UninstallEntries | Where-Object { $_.DisplayName -in $displayNames } | Select-Object -First 1
+        $checks.Add([PSCustomObject]@{ Check = 'OEM Update Tool'; Status = if ($oemToolPresent) { 'OK' } else { 'ATTENTION' }; Detail = if ($oemToolPresent) { "$($oemToolPresent.DisplayName) installed" } else { 'Not installed' } })
+    }
+
+    return $checks
+}
+
+function Get-MachineInventory {
+    $bios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction SilentlyContinue
+    $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+    $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue
+    $tpm = Get-Tpm -ErrorAction SilentlyContinue
+    $ramGb = if ($cs) { [Math]::Round($cs.TotalPhysicalMemory / 1GB, 1) } else { $null }
+    $disks = @(Get-CimInstance -ClassName Win32_DiskDrive -ErrorAction SilentlyContinue | ForEach-Object {
+        [PSCustomObject]@{ Model = $_.Model; SizeGB = [Math]::Round($_.Size / 1GB, 1); InterfaceType = $_.InterfaceType }
+    })
+    $macs = @(Get-CimInstance -ClassName Win32_NetworkAdapter -Filter 'PhysicalAdapter=True AND MACAddress IS NOT NULL' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty MACAddress)
+    $ubr = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name 'UBR' -ErrorAction SilentlyContinue).UBR
+    $installDate = if ($os -and $os.InstallDate) { $os.InstallDate.ToString('yyyy-MM-dd') } else { $null }
+
+    $c2rKey = 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration'
+    $officeInfo = if (Test-Path $c2rKey) {
+        $c2r = Get-ItemProperty -Path $c2rKey -ErrorAction SilentlyContinue
+        [PSCustomObject]@{ ProductReleaseIds = $c2r.ProductReleaseIds; Version = $c2r.VersionToReport; UpdateChannel = $c2r.UpdateChannel }
+    } else { $null }
+
+    $installedPrograms = @(Get-UninstallEntries | Select-Object DisplayName, DisplayVersion, Publisher | Sort-Object DisplayName)
+
+    [ordered]@{
+        capturedAt        = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
+        toolVersion        = $Version
+        toolCommit         = $Commit
+        hostname           = $env:COMPUTERNAME
+        serial             = $machineSerial
+        manufacturer       = $machineManufacturer
+        model              = $machineModel
+        biosVersion        = $bios.SMBIOSBIOSVersion
+        tpmPresent         = if ($tpm) { $tpm.TpmPresent } else { $null }
+        tpmReady           = if ($tpm) { $tpm.TpmReady } else { $null }
+        tpmSpecVersion     = if ($tpm) { $tpm.ManufacturerVersion } else { $null }
+        windowsEdition     = $os.Caption
+        windowsBuild       = $os.BuildNumber
+        windowsUbr         = $ubr
+        windowsInstalled   = $installDate
+        ramGb              = $ramGb
+        disks              = $disks
+        macAddresses       = $macs
+        office             = $officeInfo
+        installedPrograms  = $installedPrograms
+    }
+}
+
+function New-ValidationHandoffPackage {
+    param([string]$ClientCode)
+    Invoke-Step 'Generating validation report and handoff package' {
+        $checks = Get-ValidationChecks
+        $inventory = Get-MachineInventory
+
+        $rawFolderName = "$(if ($ClientCode) { "${ClientCode}_" })$($env:COMPUTERNAME)_$machineSerial"
+        $folderName = $rawFolderName -replace '[\\/:*?"<>|]', '_'
+        $handoffDir = Join-Path $workDir "handoff\$folderName"
+        New-Item -ItemType Directory -Path $handoffDir -Force -ErrorAction SilentlyContinue | Out-Null
+
+        $inventory | ConvertTo-Json -Depth 6 | Set-Content -Path (Join-Path $handoffDir 'inventory.json') -Encoding UTF8
+
+        $validationLines = New-Object System.Collections.Generic.List[string]
+        $validationLines.Add("Validation report for $env:COMPUTERNAME - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+        $validationLines.Add('')
+        foreach ($c in $checks) { $validationLines.Add("[$($c.Status)] $($c.Check): $($c.Detail)") }
+        ($validationLines -join "`r`n") | Set-Content -Path (Join-Path $handoffDir 'validation.txt') -Encoding UTF8
+
+        Copy-Item -Path $logPath -Destination (Join-Path $handoffDir (Split-Path -Leaf $logPath)) -Force -ErrorAction SilentlyContinue
+
+        $attentionCount = @($checks | Where-Object { $_.Status -eq 'ATTENTION' }).Count
+        $htmlChecks = $checks | Select-Object Check, Status, Detail | ConvertTo-Html -Fragment -PreContent '<h2>Validation Checks</h2>'
+        $htmlSummary = [PSCustomObject]@{
+            Hostname = $inventory.hostname; Serial = $inventory.serial; Manufacturer = $inventory.manufacturer; Model = $inventory.model
+            BIOS = $inventory.biosVersion; Windows = "$($inventory.windowsEdition) build $($inventory.windowsBuild).$($inventory.windowsUbr)"
+            'RAM (GB)' = $inventory.ramGb; 'Tool Version' = $inventory.toolVersion
+        } | ConvertTo-Html -Fragment -PreContent '<h2>Machine Summary</h2>'
+        $css = @'
+<style>
+body { font-family: "Segoe UI", Arial, sans-serif; margin: 24px; color: #222; }
+table { border-collapse: collapse; width: 100%; margin-bottom: 24px; }
+th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }
+th { background: #232629; color: #fff; }
+tr:nth-child(even) { background: #f4f4f4; }
+</style>
+'@
+        $bodyHtml = "<h1>Handoff Report - $env:COMPUTERNAME</h1><p>Generated $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | $attentionCount item(s) need attention</p>$htmlSummary$htmlChecks"
+        $reportPath = Join-Path $handoffDir 'report.html'
+        (ConvertTo-Html -Head $css -Title "Handoff Report - $env:COMPUTERNAME" -Body $bodyHtml) | Set-Content -Path $reportPath -Encoding UTF8
+
+        Write-Log "Handoff package written to $handoffDir ($attentionCount item(s) need attention)."
+        if (-not $DryRun) {
+            try { Start-Process -FilePath $reportPath } catch { Write-Log "Could not auto-open the report: $($_.Exception.Message)" 'WARN' }
+        }
+    }
+}
+
 function Set-RegionalPowerLockBaseline {
     param([string]$TimeZoneId, [string]$GeoId, [string]$CultureName, [string]$PowerPlanName, [int]$LockTimeoutSec)
     Invoke-Step 'Applying regional, power and lock baseline' {
@@ -2131,6 +2331,7 @@ if ($FixWinGetReinstall) { Invoke-WinGetReinstall }
 if ($RenameComputer) { Rename-ComputerFromPattern -Pattern $HostnamePattern }
 if ($ApplyOemUpdates) { Invoke-OemDriverUpdates }
 if ($RunWindowsUpdate) { Invoke-WindowsUpdateToCompletion -Resume:$Resume }
+if ($GenerateHandoff) { New-ValidationHandoffPackage -ClientCode $ClientCode }
 if ($ApplyOneDriveKfm) { Set-OneDriveKfm -TenantId $EntraTenantId -Desktop $KfmDesktop -Documents $KfmDocuments -Pictures $KfmPictures }
 if ($ApplyRegionalBaseline) { Set-RegionalPowerLockBaseline -TimeZoneId $TimeZoneId -GeoId $GeoId -CultureName $CultureName -PowerPlanName $PowerPlanName -LockTimeoutSec $LockTimeoutSec }
 

@@ -1678,9 +1678,11 @@ $btnRunWindowsUpdate.Add_Click({
     Start-ProvisionJob -ProvisionArgs @('-RunWindowsUpdate') -Label 'Patch to Current'
 })
 
-# Validation/handoff package (2.10) is still being built - a placeholder so the button is
-# honest about not doing anything yet, instead of silently no-op'ing on click.
-$btnGenerateHandoff.Add_Click({ [System.Windows.MessageBox]::Show('Validation report / handoff package: not yet available in this build.', 'Gr3y Tools', 'OK', 'Information') | Out-Null })
+$btnGenerateHandoff.Add_Click({
+    $provisionArgs = @('-GenerateHandoff')
+    if ($textClientCode.Text) { $provisionArgs += @('-ClientCode', $textClientCode.Text) }
+    Start-ProvisionJob -ProvisionArgs $provisionArgs -Label 'Generate Validation Report + Handoff Package'
+})
 
 # Customize Preferences - built from tweaks.json (shared with Deploy-DellOfficeSetup.ps1,
 # which applies from the same file). Each switch reflects the LIVE current registry state
