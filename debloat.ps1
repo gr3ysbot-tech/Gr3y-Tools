@@ -32,8 +32,12 @@ $bootstrapUrl = "$repoRawBase/debloat.ps1"
 if (-not (Test-Gr3yToolsIsAdmin)) {
     Write-Host 'Elevation required - relaunching as Administrator (accept the UAC prompt)...' -ForegroundColor Yellow
     $relaunchCommand = "irm $bootstrapUrl | iex"
+    # No -NoExit - this elevated console re-runs the whole bootstrap (including the
+    # blocking -Wait on the GUI further below) and then has nothing left to do; -NoExit
+    # left an empty "Windows PowerShell" window sitting open indefinitely after the GUI
+    # closed, for every single run.
     Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @(
-        '-NoProfile', '-NoExit', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', $relaunchCommand
+        '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', $relaunchCommand
     )
     return
 }
@@ -63,6 +67,12 @@ Write-Host "Starting Gr3y Support..." -ForegroundColor Green
 # already has (Restricted by default on an unmodified/clean machine - exactly
 # what this tool's target laptops are).
 $guiPath = Join-Path $installDir 'Gr3ysUtilities.ps1'
+# -WindowStyle Hidden hides only this console host - the WPF window Gr3ysUtilities.ps1
+# goes on to show is a separate native window, unaffected by its own console's
+# visibility. Without this, techs saw an empty "Windows PowerShell" console sitting
+# behind the GUI for the whole session; fatal errors during GUI startup already go to a
+# MessageBox (see Gr3ysUtilities.ps1's own XamlReader.Load try/catch), so nothing that
+# would need this console to be visible is lost by hiding it.
 Start-Process -FilePath 'powershell.exe' -Wait -ArgumentList @(
-    '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', """$guiPath"""
+    '-NoProfile', '-STA', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', """$guiPath"""
 )

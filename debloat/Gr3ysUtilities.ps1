@@ -41,7 +41,11 @@ $needsElevation = -not (Test-IsAdmin)
 $needsSTA = [System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA'
 
 if ($needsElevation -or $needsSTA) {
-    $relaunchArgs = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', """$PSCommandPath""")
+    # -WindowStyle Hidden hides only the console host this relaunched process would
+    # otherwise sit behind - the WPF window it goes on to show is a separate native
+    # window and isn't affected by its own console's visibility. Without this, techs saw
+    # an empty "Windows PowerShell" console sitting behind the GUI for the whole session.
+    $relaunchArgs = @('-NoProfile', '-STA', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', """$PSCommandPath""")
     if ($needsElevation) {
         Start-Process -FilePath 'powershell.exe' -ArgumentList $relaunchArgs -Verb RunAs
     } else {
