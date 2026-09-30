@@ -110,28 +110,72 @@ function Get-MachineTag {
 }
 
 function Get-DescendantProcessIds {
+    # Returns {ProcessId; CreationDate} objects, not bare ints - CreationDate lets a
+    # caller that's about to Stop-Process confirm the PID still refers to the same
+    # process it scanned a moment ago, not a different process that reused the PID
+    # in between. The visited set is what actually matters for correctness though:
+    # ParentProcessId is just whatever value was recorded at that process's creation -
+    # if its original parent has since exited and Windows reused that PID for something
+    # else entirely, a plain unguarded BFS can re-enqueue the same id forever.
     param([int]$RootId)
-    $all = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Select-Object ProcessId, ParentProcessId
-    $result = New-Object System.Collections.Generic.List[int]
+    $all = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Select-Object ProcessId, ParentProcessId, CreationDate
+    $byId = @{}
+    foreach ($p in $all) { $byId[[int]$p.ProcessId] = $p }
+    $result = New-Object System.Collections.Generic.List[object]
+    $visited = New-Object 'System.Collections.Generic.HashSet[int]'
     $queue = New-Object System.Collections.Generic.Queue[int]
     $queue.Enqueue($RootId)
+    [void]$visited.Add($RootId)
     while ($queue.Count -gt 0) {
         $current = $queue.Dequeue()
-        $result.Add($current)
+        $creationDate = if ($byId.ContainsKey($current)) { $byId[$current].CreationDate } else { $null }
+        $result.Add([PSCustomObject]@{ ProcessId = $current; CreationDate = $creationDate })
         foreach ($p in ($all | Where-Object { $_.ParentProcessId -eq $current })) {
-            $queue.Enqueue([int]$p.ProcessId)
+            $childId = [int]$p.ProcessId
+            if ($visited.Add($childId)) {
+                $queue.Enqueue($childId)
+            }
         }
     }
     return $result
 }
 
-function Get-TreeCpuSeconds {
-    param([int]$RootId)
-    $ids = Get-DescendantProcessIds -RootId $RootId
-    $total = 0.0
-    foreach ($id in $ids) {
+function Stop-ProcessTreeSafely {
+    # Re-checks each PID's CreationDate immediately before killing it - the scan and the
+    # kill aren't atomic, and a short-lived descendant can exit and have its PID reused
+    # by something unrelated in the gap between them. Without this, Stop could kill a
+    # completely different process that just happened to land on a recently-freed PID.
+    param([System.Collections.Generic.List[object]]$Descendants)
+    foreach ($d in $Descendants) {
         try {
-            $p = Get-Process -Id $id -ErrorAction Stop
+            $stillThere = Get-CimInstance Win32_Process -Filter "ProcessId=$($d.ProcessId)" -ErrorAction SilentlyContinue
+            if ($stillThere -and $stillThere.CreationDate -eq $d.CreationDate) {
+                Stop-Process -Id $d.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
+    }
+}
+
+$script:deployDescendantCache = $null
+$script:deployDescendantCacheRootId = $null
+$script:deployDescendantCacheTime = [DateTime]::MinValue
+
+function Get-TreeCpuSeconds {
+    # Walking the whole system process table (inside Get-DescendantProcessIds) is the
+    # expensive part - caching the descendant list for ~10s instead of redoing it every
+    # 1.2s timer tick cuts that cost by roughly 8x while Get-Process (cheap) still runs
+    # fresh every tick for up-to-date CPU numbers.
+    param([int]$RootId)
+    $stale = ($script:deployDescendantCacheRootId -ne $RootId) -or (((Get-Date) - $script:deployDescendantCacheTime).TotalSeconds -ge 10)
+    if ($stale) {
+        $script:deployDescendantCache = Get-DescendantProcessIds -RootId $RootId
+        $script:deployDescendantCacheRootId = $RootId
+        $script:deployDescendantCacheTime = Get-Date
+    }
+    $total = 0.0
+    foreach ($d in $script:deployDescendantCache) {
+        try {
+            $p = Get-Process -Id $d.ProcessId -ErrorAction Stop
             $total += $p.TotalProcessorTime.TotalSeconds
         } catch {}
     }
@@ -208,16 +252,35 @@ function Get-UninstallEntries {
         Where-Object { $_.DisplayName }
 }
 
-function Get-BloatScanReport {
-    # Read-only inspection using the exact same patterns Deploy-DellOfficeSetup.ps1
-    # acts on (both load from bloat-patterns.json) - nothing here changes the system,
-    # it only reports what a real run would touch. Respects the Dell/Lenovo toggles
-    # the same way the real run does, so the scan matches what Start would actually do.
+# Read-only inspection using the exact same patterns Deploy-DellOfficeSetup.ps1 acts on
+# (both load from bloat-patterns.json) - nothing here changes the system, it only reports
+# what a real run would touch. Respects the Dell/Lenovo toggles the same way the real run
+# does, so the scan matches what Start would actually do.
+#
+# Runs in a background runspace (see $btnScan.Add_Click below) instead of directly on the
+# UI thread - AppX/scheduled-task/registry/service enumeration together take 5-20s on a
+# real laptop, during which the window would otherwise go Not Responding. A separate
+# runspace shares none of this script's variables or function definitions, so everything
+# this needs (bloat patterns, the Dell/Lenovo toggle state, even the tiny
+# Get-UninstallEntries helper) has to come in as parameters/be redefined inline rather
+# than closed over or called by name.
+$script:bloatScanAction = {
+    param($BloatPatterns, [bool]$IncludeDell, [bool]$IncludeLenovo)
+
+    function Get-UninstallEntriesLocal {
+        $paths = @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        )
+        Get-ItemProperty -Path $paths -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName }
+    }
+
     $lines = New-Object System.Collections.Generic.List[string]
 
     $oemsToScan = @()
-    if ($optDell.IsChecked) { $oemsToScan += 'dell' }
-    if ($optLenovo.IsChecked) { $oemsToScan += 'lenovo' }
+    if ($IncludeDell) { $oemsToScan += 'dell' }
+    if ($IncludeLenovo) { $oemsToScan += 'lenovo' }
     if ($oemsToScan.Count -eq 0) { $oemsToScan = @('dell', 'lenovo') }
 
     $appxPatternsToScan = New-Object System.Collections.Generic.List[string]
@@ -225,10 +288,10 @@ function Get-BloatScanReport {
     $taskFoldersToScan = New-Object System.Collections.Generic.List[string]
     $taskKeepPatternsToScan = New-Object System.Collections.Generic.List[string]
     $servicePatternsToScan = New-Object System.Collections.Generic.List[string]
-    foreach ($p in $bloatPatterns.generic.appxPatterns) { $appxPatternsToScan.Add($p) }
-    foreach ($p in $bloatPatterns.generic.win32Patterns) { $win32PatternsToScan.Add($p) }
+    foreach ($p in $BloatPatterns.generic.appxPatterns) { $appxPatternsToScan.Add($p) }
+    foreach ($p in $BloatPatterns.generic.win32Patterns) { $win32PatternsToScan.Add($p) }
     foreach ($oemName in $oemsToScan) {
-        $section = $bloatPatterns.$oemName
+        $section = $BloatPatterns.$oemName
         if (-not $section) { continue }
         foreach ($p in $section.appxPatterns) { $appxPatternsToScan.Add($p) }
         foreach ($p in $section.win32Patterns) { $win32PatternsToScan.Add($p) }
@@ -245,7 +308,7 @@ function Get-BloatScanReport {
         }
     }
 
-    $entries = Get-UninstallEntries
+    $entries = Get-UninstallEntriesLocal
     $foundWin32 = New-Object System.Collections.Generic.List[string]
     foreach ($pattern in $win32PatternsToScan) {
         foreach ($match in ($entries | Where-Object { $_.DisplayName -like $pattern })) {
@@ -1466,21 +1529,22 @@ $script:deployIsDryRun = $false
 $script:deployHasFinishedBannerShown = $true
 $script:deployPhase = 'Idle'
 
+$script:scanPS = $null
+$script:scanHandle = $null
+
 $btnScan.Add_Click({
+    if ($script:scanPS) { return }
     $btnScan.IsEnabled = $false
     $stateText.Text = 'Scanning...'
     $bannerBorder.Visibility = 'Collapsed'
     $logBox.Text = ''
-    $window.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
-    try {
-        $report = Get-BloatScanReport
-        $logBox.Text = $report
-    } catch {
-        $logBox.Text = "Scan failed: $($_.Exception.Message)"
-    } finally {
-        $stateText.Text = 'Idle'
-        $btnScan.IsEnabled = $true
-    }
+
+    $script:scanPS = [powershell]::Create()
+    [void]$script:scanPS.AddScript($script:bloatScanAction.ToString())
+    [void]$script:scanPS.AddArgument($bloatPatterns)
+    [void]$script:scanPS.AddArgument([bool]$optDell.IsChecked)
+    [void]$script:scanPS.AddArgument([bool]$optLenovo.IsChecked)
+    $script:scanHandle = $script:scanPS.BeginInvoke()
 })
 
 $btnStart.Add_Click({
@@ -1543,7 +1607,7 @@ $btnStop.Add_Click({
     $result = [System.Windows.MessageBox]::Show('Stop the running job? Anything mid-uninstall/install may be left partially applied.', 'Confirm Stop', 'YesNo', 'Warning')
     if ($result -eq 'Yes' -and $script:deployProc -and -not $script:deployProc.HasExited) {
         $ids = Get-DescendantProcessIds -RootId $script:deployProc.Id
-        foreach ($id in $ids) { try { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue } catch {} }
+        Stop-ProcessTreeSafely -Descendants $ids
     }
 })
 
@@ -1625,7 +1689,7 @@ $btnStopFixes.Add_Click({
     $result = [System.Windows.MessageBox]::Show('Stop the running fix? Interrupting sfc/DISM mid-scan is safe (just leaves the check unverified) - a network/Windows Update reset should finish quickly on its own instead.', 'Confirm Stop', 'YesNo', 'Warning')
     if ($result -eq 'Yes' -and $script:fixProc -and -not $script:fixProc.HasExited) {
         $ids = Get-DescendantProcessIds -RootId $script:fixProc.Id
-        foreach ($id in $ids) { try { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue } catch {} }
+        Stop-ProcessTreeSafely -Descendants $ids
     }
 })
 
@@ -1642,6 +1706,9 @@ $script:installDone = 0
 $script:installFailedCount = 0
 $script:installFailedNames = New-Object System.Collections.Generic.List[string]
 $script:currentQueueEntry = $null
+$script:directDownloadPS = $null
+$script:directDownloadHandle = $null
+$script:directDownloadPath = $null
 
 # winget right-pads every column to the widest value it holds in that particular run, so
 # there's no fixed offset to hardcode - the header row's own character positions are the
@@ -1669,6 +1736,24 @@ function Get-WingetListedIds {
         if ($id) { [void]$ids.Add($id) }
     }
     return $ids
+}
+
+function Complete-InstallQueueItem {
+    # Shared "what happens after one queue item finishes" logic - used by both the
+    # winget-backed completion path and the direct-download completion path below, so
+    # the final "Done: n ok, m failed" summary and button re-enabling only live in one
+    # place.
+    if ($script:installQueue -and $script:installQueue.Count -gt 0) {
+        Start-NextInQueue
+    } else {
+        $okCount = $script:installTotal - $script:installFailedCount
+        $installStatusText.Text = "Done: $okCount ok, $($script:installFailedCount) failed"
+        $btnInstallSelected.IsEnabled = $true
+        $btnUninstallSelected.IsEnabled = $true
+        $btnUpgradeAll.IsEnabled = $true
+        $btnCheckInstalled.IsEnabled = $true
+        $btnStopInstall.Visibility = 'Collapsed'
+    }
 }
 
 function Start-NextInQueue {
@@ -1699,21 +1784,29 @@ function Start-NextInQueue {
         $installLogBox.AppendText("=== $actionWord`: $($entry.Name) (direct download, no winget package) ===`r`n")
         if ($script:installMode -ne 'install') {
             $installLogBox.AppendText("Not available via winget - manage $($entry.Name) manually (Programs and Features).`r`n")
-        } else {
-            try {
-                $downloadPath = Join-Path $workDir (Split-Path -Leaf $entry.DownloadUrl)
-                $installLogBox.AppendText("Downloading $($entry.DownloadUrl)...`r`n")
-                $installLogBox.ScrollToEnd()
-                Invoke-WebRequest -Uri $entry.DownloadUrl -OutFile $downloadPath -UseBasicParsing
-                $installLogBox.AppendText("Downloaded. Launching installer - this app's free edition doesn't support silent install, so finish its setup wizard manually.`r`n")
-                Start-Process -FilePath $downloadPath
-            } catch {
-                $installLogBox.AppendText("Download/launch failed: $($_.Exception.Message)`r`n")
-            }
+            $installLogBox.ScrollToEnd()
+            $script:installDone++
+            Complete-InstallQueueItem
+            return
         }
+
+        # Invoke-WebRequest runs in a background runspace, not inline here - this used to
+        # block the UI thread for as long as the download took, same class of problem as
+        # the Scan feature above. The queue continues once the timer tick sees the
+        # background download finish (see the $script:directDownloadPS poll below),
+        # instead of recursing into Start-NextInQueue immediately.
+        $downloadPath = Join-Path $workDir (Split-Path -Leaf $entry.DownloadUrl)
+        $installLogBox.AppendText("Downloading $($entry.DownloadUrl)...`r`n")
         $installLogBox.ScrollToEnd()
-        $script:installDone++
-        Start-NextInQueue
+        $script:directDownloadPath = $downloadPath
+        $script:directDownloadPS = [powershell]::Create()
+        [void]$script:directDownloadPS.AddScript({
+            param($Url, $OutFile)
+            Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing
+        })
+        [void]$script:directDownloadPS.AddArgument($entry.DownloadUrl)
+        [void]$script:directDownloadPS.AddArgument($downloadPath)
+        $script:directDownloadHandle = $script:directDownloadPS.BeginInvoke()
         return
     }
 
@@ -1989,18 +2082,32 @@ $timer.Add_Tick({
                 }
 
                 $script:installProc = $null
-                if ($script:installQueue -and $script:installQueue.Count -gt 0) {
-                    Start-NextInQueue
-                } else {
-                    $okCount = $script:installTotal - $script:installFailedCount
-                    $installStatusText.Text = "Done: $okCount ok, $($script:installFailedCount) failed"
-                    $btnInstallSelected.IsEnabled = $true
-                    $btnUninstallSelected.IsEnabled = $true
-                    $btnUpgradeAll.IsEnabled = $true
-                    $btnCheckInstalled.IsEnabled = $true
-                    $btnStopInstall.Visibility = 'Collapsed'
+                Complete-InstallQueueItem
+            }
+        }
+    }
+
+    if ($script:directDownloadPS -and $script:directDownloadHandle.IsCompleted) {
+        try {
+            $script:directDownloadPS.EndInvoke($script:directDownloadHandle)
+            if ($script:directDownloadPS.Streams.Error.Count -eq 0) {
+                $installLogBox.AppendText("Downloaded. Launching installer - this app's free edition doesn't support silent install, so finish its setup wizard manually.`r`n")
+                Start-Process -FilePath $script:directDownloadPath
+            } else {
+                foreach ($err in $script:directDownloadPS.Streams.Error) {
+                    $installLogBox.AppendText("Download failed: $($err.ToString())`r`n")
                 }
             }
+        } catch {
+            $installLogBox.AppendText("Download/launch failed: $($_.Exception.Message)`r`n")
+        } finally {
+            $installLogBox.ScrollToEnd()
+            $script:directDownloadPS.Dispose()
+            $script:directDownloadPS = $null
+            $script:directDownloadHandle = $null
+            $script:directDownloadPath = $null
+            $script:installDone++
+            Complete-InstallQueueItem
         }
     }
 
@@ -2039,6 +2146,24 @@ $timer.Add_Tick({
                     if ($errTail) { $installLogBox.AppendText("=== winget install errors ===`r`n$errTail`r`n"); $installLogBox.ScrollToEnd() }
                 }
             }
+        }
+    }
+
+    if ($script:scanPS -and $script:scanHandle.IsCompleted) {
+        try {
+            $reportLines = $script:scanPS.EndInvoke($script:scanHandle)
+            $logBox.Text = ($reportLines -join "`r`n")
+        } catch {
+            $logBox.Text = "Scan failed: $($_.Exception.Message)"
+        } finally {
+            foreach ($err in $script:scanPS.Streams.Error) {
+                $logBox.AppendText("`r`nScan warning: $($err.ToString())")
+            }
+            $script:scanPS.Dispose()
+            $script:scanPS = $null
+            $script:scanHandle = $null
+            $stateText.Text = 'Idle'
+            $btnScan.IsEnabled = $true
         }
     }
 
