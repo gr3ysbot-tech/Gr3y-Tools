@@ -1632,8 +1632,37 @@ $script:installLogFile = $null
 $script:installMode = $null
 $script:installTotal = 0
 $script:installDone = 0
-$script:installFoundCount = 0
+$script:installFailedCount = 0
+$script:installFailedNames = New-Object System.Collections.Generic.List[string]
 $script:currentQueueEntry = $null
+
+# winget right-pads every column to the widest value it holds in that particular run, so
+# there's no fixed offset to hardcode - the header row's own character positions are the
+# only reliable way to slice the Id column back out of a `winget list` table.
+function Get-WingetListedIds {
+    param([string]$Path)
+    $ids = New-Object 'System.Collections.Generic.HashSet[string]'
+    if (-not $Path -or -not (Test-Path $Path)) { return $ids }
+    $lines = Get-Content -Path $Path -ErrorAction SilentlyContinue
+    $headerIndex = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^Name\s+Id\s+Version') { $headerIndex = $i; break }
+    }
+    if ($headerIndex -lt 0 -or $headerIndex + 1 -ge $lines.Count) { return $ids }
+    $header = $lines[$headerIndex]
+    $idCol = $header.IndexOf('Id')
+    $versionCol = $header.IndexOf('Version')
+    if ($idCol -lt 0 -or $versionCol -lt 0 -or $versionCol -le $idCol) { return $ids }
+    for ($i = $headerIndex + 2; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        if (-not $line -or $line.Length -le $idCol) { continue }
+        if ($line -match '^\d+ package') { continue }
+        $endCol = [Math]::Min($versionCol, $line.Length)
+        $id = $line.Substring($idCol, $endCol - $idCol).Trim()
+        if ($id) { [void]$ids.Add($id) }
+    }
+    return $ids
+}
 
 function Start-NextInQueue {
     if ($script:installQueue.Count -eq 0) {
@@ -1652,7 +1681,6 @@ function Start-NextInQueue {
     $actionWord = switch ($script:installMode) {
         'install' { 'Installing' }
         'uninstall' { 'Uninstalling' }
-        'check' { 'Checking' }
     }
     $installStatusText.Text = "$actionWord $($entry.Name)... ($($script:installDone + 1)/$($script:installTotal))"
 
@@ -1687,33 +1715,31 @@ function Start-NextInQueue {
 
     $script:installLogFile = Join-Path $workDir "winget_$($script:installMode)_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').log"
     $wingetArgs = switch ($script:installMode) {
-        'install' { @('install', '--id', $entry.WingetId, '-e', '--source', 'winget', '--silent', '--accept-package-agreements', '--accept-source-agreements') }
-        'uninstall' { @('uninstall', '--id', $entry.WingetId, '-e', '--source', 'winget', '--silent') }
-        'check' { @('list', '--id', $entry.WingetId, '-e', '--source', 'winget', '--accept-source-agreements') }
+        'install' { @('install', '--id', $entry.WingetId, '-e', '--source', 'winget', '--silent', '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity') }
+        'uninstall' { @('uninstall', '--id', $entry.WingetId, '-e', '--source', 'winget', '--silent', '--accept-source-agreements', '--disable-interactivity') }
     }
 
     $script:installProc = Start-Process -FilePath 'winget.exe' -ArgumentList $wingetArgs `
         -RedirectStandardOutput $script:installLogFile -RedirectStandardError "$($script:installLogFile).err" `
         -WindowStyle Hidden -PassThru
+    # Force .NET to retain a real process handle now, before this winget can exit - read
+    # ExitCode later without this and it's unreliable (throws or reads stale), since the
+    # CLR only caches the handle needed to retrieve it if something touches Handle early.
+    $script:installProc.Handle | Out-Null
     $script:installDone++
 }
 
 function Start-AppQueue {
     param([string]$Mode)
-    # 'check' scans the whole catalog regardless of what's ticked - detecting install
-    # status is meant to answer "what's already here", not act on a selection.
-    # .ToArray(), not @(...) - wrapping a List[object] directly in @() throws
-    # "Argument types do not match" (a real PowerShell quirk, reproduced on both
-    # 5.1 and 7); piping through Where-Object below sidesteps it, but the 'check'
-    # branch has nothing to pipe through, so it needs the explicit .ToArray().
-    $selected = if ($Mode -eq 'check') { $script:appEntries.ToArray() } else { @($script:appEntries | Where-Object { $_.CheckBox.IsChecked }) }
+    $selected = @($script:appEntries | Where-Object { $_.CheckBox.IsChecked })
     if ($selected.Count -eq 0) { return }
     $script:installQueue = New-Object System.Collections.Generic.Queue[object]
     foreach ($entry in $selected) { $script:installQueue.Enqueue($entry) }
     $script:installMode = $Mode
     $script:installTotal = $selected.Count
     $script:installDone = 0
-    $script:installFoundCount = 0
+    $script:installFailedCount = 0
+    $script:installFailedNames.Clear()
     $installLogBox.Text = ''
     $btnInstallSelected.IsEnabled = $false
     $btnUninstallSelected.IsEnabled = $false
@@ -1723,9 +1749,39 @@ function Start-AppQueue {
     Start-NextInQueue
 }
 
+# Detecting "what's already installed" answers a different question than
+# install/uninstall - it scans the whole catalog regardless of what's ticked, in one
+# consolidated `winget list` call (see 0.10: this used to be 63 separate per-app winget
+# processes/log files), so it's its own function rather than a Start-AppQueue mode.
+function Start-InstalledCheck {
+    if ($script:installProc -and -not $script:installProc.HasExited) { return }
+    $installLogBox.Text = ''
+    $installStatusText.Text = 'Checking installed apps...'
+    $btnInstallSelected.IsEnabled = $false
+    $btnUninstallSelected.IsEnabled = $false
+    $btnUpgradeAll.IsEnabled = $false
+    $btnCheckInstalled.IsEnabled = $false
+    $btnStopInstall.Visibility = 'Visible'
+    $script:installMode = 'check'
+    $script:currentQueueEntry = $null
+    $script:installLogFile = Join-Path $workDir "winget_list_all_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+    $script:installProc = Start-Process -FilePath 'winget.exe' `
+        -ArgumentList @('list', '--source', 'winget', '--accept-source-agreements', '--disable-interactivity') `
+        -RedirectStandardOutput $script:installLogFile -RedirectStandardError "$($script:installLogFile).err" `
+        -WindowStyle Hidden -PassThru
+    $script:installProc.Handle | Out-Null
+}
+
 $btnInstallSelected.Add_Click({ Start-AppQueue -Mode 'install' })
-$btnUninstallSelected.Add_Click({ Start-AppQueue -Mode 'uninstall' })
-$btnCheckInstalled.Add_Click({ Start-AppQueue -Mode 'check' })
+$btnUninstallSelected.Add_Click({
+    $selected = @($script:appEntries | Where-Object { $_.CheckBox.IsChecked })
+    if ($selected.Count -eq 0) { return }
+    $names = ($selected | ForEach-Object { "- $($_.Name)" }) -join "`r`n"
+    $result = [System.Windows.MessageBox]::Show("Uninstall these $($selected.Count) app(s)?`r`n`r`n$names", 'Confirm Uninstall', 'YesNo', 'Warning')
+    if ($result -ne 'Yes') { return }
+    Start-AppQueue -Mode 'uninstall'
+})
+$btnCheckInstalled.Add_Click({ Start-InstalledCheck })
 
 $btnUpgradeAll.Add_Click({
     # Same double-launch hole as Start had - a fast double-click before the next timer
@@ -1855,43 +1911,73 @@ $timer.Add_Tick({
             $running = -not $script:installProc.HasExited
         } catch {}
         if (-not $running) {
-            $tail = $null
-            if ($script:installLogFile -and (Test-Path $script:installLogFile)) {
-                $tail = Get-Content -Path $script:installLogFile -Raw -ErrorAction SilentlyContinue
-                if ($tail) { $installLogBox.AppendText($tail); $installLogBox.AppendText("`r`n"); $installLogBox.ScrollToEnd() }
-            }
-
-            # 'check' mode: mark this entry's checkbox installed/not based on winget's
-            # own "No installed package found" text, not the process exit code - exit
-            # codes from Start-Process have proven unreliable to read back in testing.
-            if ($script:installMode -eq 'check' -and $script:currentQueueEntry -and $tail) {
-                $cb = $script:currentQueueEntry.CheckBox
-                if ($tail -notmatch 'No installed package found') {
-                    $cb.Foreground = $greenBrush
-                    $cb.Content = "$($script:currentQueueEntry.Name) (installed)"
-                    $cb.IsChecked = $true
-                    $script:installFoundCount++
-                } else {
-                    $cb.ClearValue([System.Windows.Controls.Control]::ForegroundProperty)
-                    $cb.Content = $script:currentQueueEntry.Name
-                    $cb.IsChecked = $false
+            if ($script:installMode -eq 'check') {
+                # One consolidated `winget list` covering the whole catalog - colour/relabel
+                # only, never auto-tick a box, so a fresh laptop's Edge/OneDrive/PowerShell/
+                # Windows Terminal/VC++ redists/.NET runtimes don't end up pre-selected for
+                # Uninstall Selected.
+                $installedIds = Get-WingetListedIds -Path $script:installLogFile
+                $foundCount = 0
+                foreach ($entry in $script:appEntries) {
+                    if (-not $entry.WingetId) { continue }
+                    if ($installedIds.Contains($entry.WingetId)) {
+                        $entry.CheckBox.Foreground = $greenBrush
+                        $entry.CheckBox.Content = "$($entry.Name) (installed)"
+                        $foundCount++
+                    } else {
+                        $entry.CheckBox.ClearValue([System.Windows.Controls.Control]::ForegroundProperty)
+                        $entry.CheckBox.Content = $entry.Name
+                    }
                 }
-            }
-
-            $script:installProc = $null
-            if ($script:installQueue -and $script:installQueue.Count -gt 0) {
-                Start-NextInQueue
-            } else {
-                $installStatusText.Text = if ($script:installMode -eq 'check') {
-                    "Done - $($script:installFoundCount) of $($script:installTotal) already installed (selected below - use Uninstall Selected to remove them)"
-                } else {
-                    'Idle'
-                }
+                $installStatusText.Text = "Done - $foundCount of $($script:appEntries.Count) already installed (colour-coded above - tick the ones you want and use Uninstall Selected to remove them)"
+                $script:installProc = $null
                 $btnInstallSelected.IsEnabled = $true
                 $btnUninstallSelected.IsEnabled = $true
                 $btnUpgradeAll.IsEnabled = $true
                 $btnCheckInstalled.IsEnabled = $true
                 $btnStopInstall.Visibility = 'Collapsed'
+            } elseif ($script:installMode -eq 'upgrade') {
+                $tail = $null
+                if ($script:installLogFile -and (Test-Path $script:installLogFile)) {
+                    $tail = Get-Content -Path $script:installLogFile -Raw -ErrorAction SilentlyContinue
+                    if ($tail) { $installLogBox.AppendText($tail); $installLogBox.ScrollToEnd() }
+                }
+                $installStatusText.Text = 'Done upgrading installed apps.'
+                $script:installProc = $null
+                $btnInstallSelected.IsEnabled = $true
+                $btnUninstallSelected.IsEnabled = $true
+                $btnUpgradeAll.IsEnabled = $true
+                $btnCheckInstalled.IsEnabled = $true
+                $btnStopInstall.Visibility = 'Collapsed'
+            } else {
+                # install / uninstall: queue-driven, one winget process per selected app.
+                $tail = $null
+                if ($script:installLogFile -and (Test-Path $script:installLogFile)) {
+                    $tail = Get-Content -Path $script:installLogFile -Raw -ErrorAction SilentlyContinue
+                    if ($tail) { $installLogBox.AppendText($tail); $installLogBox.AppendText("`r`n"); $installLogBox.ScrollToEnd() }
+                }
+
+                $exitCode = $null
+                try { $exitCode = $script:installProc.ExitCode } catch {}
+                if ($script:currentQueueEntry -and $exitCode -ne 0) {
+                    $script:installFailedCount++
+                    $script:installFailedNames.Add($script:currentQueueEntry.Name)
+                    $script:currentQueueEntry.CheckBox.Foreground = $redBrush
+                    $script:currentQueueEntry.CheckBox.Content = "$($script:currentQueueEntry.Name) (failed)"
+                }
+
+                $script:installProc = $null
+                if ($script:installQueue -and $script:installQueue.Count -gt 0) {
+                    Start-NextInQueue
+                } else {
+                    $okCount = $script:installTotal - $script:installFailedCount
+                    $installStatusText.Text = "Done: $okCount ok, $($script:installFailedCount) failed"
+                    $btnInstallSelected.IsEnabled = $true
+                    $btnUninstallSelected.IsEnabled = $true
+                    $btnUpgradeAll.IsEnabled = $true
+                    $btnCheckInstalled.IsEnabled = $true
+                    $btnStopInstall.Visibility = 'Collapsed'
+                }
             }
         }
     }
