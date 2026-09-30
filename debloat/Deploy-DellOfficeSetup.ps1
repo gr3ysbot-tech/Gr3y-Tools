@@ -432,6 +432,70 @@ function Get-UninstallEntries {
         Where-Object { $_.DisplayName }
 }
 
+function ConvertFrom-UninstallString {
+    # Pure decision logic extracted out of Remove-OemBloatware's uninstall loop - no
+    # filesystem or process side effects, so it's safe to unit test directly (Pester,
+    # tests/Deploy-DellOfficeSetup.Tests.ps1). The caller still does Test-Path and
+    # Start-ProcessLowPriority itself; this only decides WHAT would run.
+    param(
+        [string]$UninstallString,
+        [string]$QuietUninstallString
+    )
+    # QuietUninstallString, when the vendor provides one, is already the correct
+    # fully-silent command line - trust it over any guessing below.
+    $effectiveString = if ($QuietUninstallString) { $QuietUninstallString } else { $UninstallString }
+    if (-not $effectiveString) {
+        return [PSCustomObject]@{ Type = 'None'; FilePath = $null; ArgumentList = $null; ProductCode = $null; EffectiveString = $effectiveString }
+    }
+
+    if ($effectiveString -match 'msiexec') {
+        # The caller's PSChildName (the registry key name) is a fallback for some Dell
+        # entries where it's a product name, not the GUID - pull the real GUID out of the
+        # uninstall string itself when present.
+        $guidMatch = [regex]::Match($effectiveString, '\{[0-9A-Fa-f-]{36}\}')
+        $productCode = if ($guidMatch.Success) { $guidMatch.Value } else { $null }
+        $argumentList = if ($productCode) { "/x $productCode /qn /norestart" } else { $null }
+        return [PSCustomObject]@{ Type = 'Msi'; FilePath = 'msiexec.exe'; ArgumentList = $argumentList; ProductCode = $productCode; EffectiveString = $effectiveString }
+    }
+
+    # Parse "path" and any trailing args separately - a naive (-replace '"','') -split ' '
+    # approach truncates any quoted path containing a space (e.g. "C:\Program Files\...")
+    # to just the first word, so Test-Path always fails and no EXE uninstaller under
+    # Program Files ever actually runs.
+    $exe = $null
+    $existingArgs = ''
+    $quotedMatch = [regex]::Match($effectiveString, '^"([^"]+)"\s*(.*)$')
+    if ($quotedMatch.Success) {
+        $exe = $quotedMatch.Groups[1].Value
+        $existingArgs = $quotedMatch.Groups[2].Value
+    } else {
+        $bareMatch = [regex]::Match($effectiveString, '^(\S+?\.exe)\s*(.*)$')
+        if ($bareMatch.Success) {
+            $exe = $bareMatch.Groups[1].Value
+            $existingArgs = $bareMatch.Groups[2].Value
+        }
+    }
+
+    if (-not $exe) {
+        return [PSCustomObject]@{ Type = 'Unparseable'; FilePath = $null; ArgumentList = $null; ProductCode = $null; EffectiveString = $effectiveString }
+    }
+
+    $silentArgs =
+        if ((Split-Path -Leaf $exe) -match '^unins\d*\.exe$') {
+            # Inno Setup's own uninstaller - this is its documented silent switch set.
+            '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+        } elseif ($existingArgs) {
+            # The vendor's own uninstall string already carries flags - trust them rather
+            # than guessing over the top of a command that was tested to work.
+            $existingArgs
+        } else {
+            # No args at all in the registry string - /S is the most common silent switch
+            # across NSIS-based uninstallers, which covers most of the rest.
+            '/S'
+        }
+    return [PSCustomObject]@{ Type = 'Exe'; FilePath = $exe; ArgumentList = $silentArgs; ProductCode = $null; EffectiveString = $effectiveString }
+}
+
 function Invoke-ThrottledSteps {
     # Runs a batch of independent script actions in a bounded runspace pool
     # (default 3 at a time) instead of fully serial or fully unbounded-parallel.
@@ -593,57 +657,26 @@ function Remove-OemBloatware {
         foreach ($match in $matches) {
             $name = $match.DisplayName
             Invoke-Step "Uninstalling: $name" {
-                # QuietUninstallString, when the vendor provides one, is already the
-                # correct fully-silent command line - trust it over any guessing below.
-                $uninstallString = if ($match.QuietUninstallString) { $match.QuietUninstallString } else { $match.UninstallString }
-                if ($uninstallString) {
-                    if ($uninstallString -match 'msiexec') {
+                $decision = ConvertFrom-UninstallString -UninstallString $match.UninstallString -QuietUninstallString $match.QuietUninstallString
+                switch ($decision.Type) {
+                    'Msi' {
                         # PSChildName is the registry key name, which for some Dell entries
-                        # is a product name, not the GUID - pull the real GUID out of the
-                        # uninstall string itself instead.
-                        $guidMatch = [regex]::Match($uninstallString, '\{[0-9A-Fa-f-]{36}\}')
-                        $productCode = if ($guidMatch.Success) { $guidMatch.Value } else { $match.PSChildName }
+                        # is a product name, not the GUID - only used as a fallback when the
+                        # uninstall string itself didn't contain a GUID.
+                        $productCode = if ($decision.ProductCode) { $decision.ProductCode } else { $match.PSChildName }
                         Write-Log "Running msiexec /x $productCode /qn /norestart for '$name' (low priority)"
                         Start-ProcessLowPriority -FilePath 'msiexec.exe' -ArgumentList "/x $productCode /qn /norestart"
-                    } else {
-                        # Parse "path" and any trailing args separately - the old
-                        # (-replace '"','') -split ' ' approach truncated any quoted path
-                        # containing a space (e.g. "C:\Program Files\...") to just the
-                        # first word, so Test-Path always failed and no EXE uninstaller
-                        # under Program Files ever actually ran.
-                        $exe = $null
-                        $existingArgs = ''
-                        $quotedMatch = [regex]::Match($uninstallString, '^"([^"]+)"\s*(.*)$')
-                        if ($quotedMatch.Success) {
-                            $exe = $quotedMatch.Groups[1].Value
-                            $existingArgs = $quotedMatch.Groups[2].Value
+                    }
+                    'Exe' {
+                        if (Test-Path $decision.FilePath) {
+                            Write-Log "Running '$($decision.FilePath)' $($decision.ArgumentList) for '$name' (low priority)"
+                            Start-ProcessLowPriority -FilePath $decision.FilePath -ArgumentList $decision.ArgumentList
                         } else {
-                            $bareMatch = [regex]::Match($uninstallString, '^(\S+?\.exe)\s*(.*)$')
-                            if ($bareMatch.Success) {
-                                $exe = $bareMatch.Groups[1].Value
-                                $existingArgs = $bareMatch.Groups[2].Value
-                            }
+                            Write-Log "Could not resolve an uninstaller executable from '$($decision.EffectiveString)' for '$name' - skipping." 'WARN'
                         }
-
-                        if ($exe -and (Test-Path $exe)) {
-                            $silentArgs =
-                                if ((Split-Path -Leaf $exe) -match '^unins\d*\.exe$') {
-                                    # Inno Setup's own uninstaller - this is its documented silent switch set.
-                                    '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
-                                } elseif ($existingArgs) {
-                                    # The vendor's own uninstall string already carries flags - trust them
-                                    # rather than guessing over the top of a command that was tested to work.
-                                    $existingArgs
-                                } else {
-                                    # No args at all in the registry string - /S is the most common silent
-                                    # switch across NSIS-based uninstallers, which covers most of the rest.
-                                    '/S'
-                                }
-                            Write-Log "Running '$exe' $silentArgs for '$name' (low priority)"
-                            Start-ProcessLowPriority -FilePath $exe -ArgumentList $silentArgs
-                        } else {
-                            Write-Log "Could not resolve an uninstaller executable from '$uninstallString' for '$name' - skipping." 'WARN'
-                        }
+                    }
+                    'Unparseable' {
+                        Write-Log "Could not resolve an uninstaller executable from '$($decision.EffectiveString)' for '$name' - skipping." 'WARN'
                     }
                 }
             }

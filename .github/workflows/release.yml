@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run lint checks
+        shell: powershell
+        run: |
+          Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
+          .\tests\Invoke-Lint.ps1
+
+      - name: Run Pester tests
+        shell: powershell
+        run: |
+          Install-Module -Name Pester -MinimumVersion 5.5.0 -Force -Scope CurrentUser -SkipPublisherCheck
+          Import-Module Pester -MinimumVersion 5.5.0 -Force
+          $config = New-PesterConfiguration
+          $config.Run.Path = '.\tests'
+          $config.Run.Exit = $true
+          Invoke-Pester -Configuration $config
+
+      - name: Compute version and build outputs
+        id: build
+        shell: powershell
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag -replace '^v', ''
+          $commit = "${{ github.sha }}"
+          Write-Host "Version: $version, Commit: $commit"
+
+          # SHA256SUMS - every file in debloat\, plus the repo-root bootstrap. Standard
+          # `sha256sum`-style output ("HASH *filename"), so it can be checked with the
+          # real sha256sum tool too, not just this repo's own tooling.
+          $sumLines = New-Object System.Collections.Generic.List[string]
+          $debloatFiles = Get-ChildItem -Path 'debloat' -File | Sort-Object Name
+          foreach ($f in $debloatFiles) {
+              $hash = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash.ToLower()
+              $sumLines.Add("$hash *debloat/$($f.Name)")
+          }
+          $bootstrapHash = (Get-FileHash -Path 'debloat.ps1' -Algorithm SHA256).Hash.ToLower()
+          $sumLines.Add("$bootstrapHash *debloat.ps1")
+          ($sumLines -join "`n") | Set-Content -Path 'SHA256SUMS' -Encoding ASCII -NoNewline
+
+          # latest.json - only the files debloat.ps1's own bootstrap actually downloads
+          # and runs (not every file under debloat\, e.g. not WebApp.ps1 or the dev-only
+          # Generate-ChangesReference.ps1/tests - matches the existing manifest shape).
+          $trackedNames = @('Deploy-DellOfficeSetup.ps1', 'Gr3ysUtilities.ps1', 'apps-catalog.json', 'bloat-patterns.json', 'tweaks.json')
+          $filesObj = [ordered]@{}
+          foreach ($name in $trackedNames) {
+              $path = Join-Path 'debloat' $name
+              $filesObj[$name] = (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToUpper()
+          }
+          $manifest = [ordered]@{ version = $version; commit = $commit; files = $filesObj }
+          ($manifest | ConvertTo-Json -Depth 4) | Set-Content -Path 'latest.json' -Encoding UTF8
+
+          # Release zip - the debloat\ folder as shipped, matching what debloat.ps1 pulls
+          # file-by-file from the pinned commit (this zip is a convenience for anyone who
+          # wants an offline copy, not itself part of the bootstrap flow).
+          $zipName = "Gr3ySupport-v$version.zip"
+          Compress-Archive -Path 'debloat\*' -DestinationPath $zipName -Force
+
+          # Windows PowerShell (not pwsh) needs an explicit UTF-8 encoding here - a bare
+          # `>> $env:GITHUB_OUTPUT` redirect uses its default encoding, which isn't UTF-8
+          # and can produce an output file GitHub's own parser doesn't read correctly.
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "zip_name=$zipName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ steps.build.outputs.zip_name }}
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: powershell
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            "${{ steps.build.outputs.zip_name }}" `
+            "SHA256SUMS" `
+            --title "${{ github.ref_name }}" `
+            --generate-notes
+
+      - name: Point latest.json on main at this release
+        shell: powershell
+        run: |
+          # actions/checkout left latest.json freshly written at the TAGGED commit's
+          # state (detached HEAD) - save its content before switching branches, since
+          # checking out main discards that uncommitted change otherwise.
+          $latestJsonContent = Get-Content -Path 'latest.json' -Raw
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          git pull origin main
+
+          Set-Content -Path 'latest.json' -Value $latestJsonContent -NoNewline -Encoding UTF8
+          git add latest.json
+          $status = git status --porcelain
+          if ($status) {
+            $shortSha = "${{ github.sha }}".Substring(0, 7)
+            git commit -m "Point latest.json at ${{ github.ref_name }} ($shortSha)"
+            git push origin main
+          } else {
+            Write-Host "latest.json already up to date - nothing to commit."
+          }
