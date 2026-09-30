@@ -9,16 +9,12 @@
     {"name": "Tor Browser", "category": "Browsers", "wingetId": "TorProject.TorBrowser", "url": "https://www.torproject.org/"},
 
     {"name": "Adobe Acrobat Reader", "category": "Documents", "wingetId": "Adobe.Acrobat.Reader.64-bit", "url": "https://acrobat.adobe.com/"},
-    {"name": "Foxit PDF Reader", "category": "Documents", "wingetId": "Foxit.FoxitReader", "url": "https://www.foxit.com/pdf-reader/"},
     {"name": "SumatraPDF", "category": "Documents", "wingetId": "SumatraPDF.SumatraPDF", "url": "https://www.sumatrapdfreader.org/"},
-    {"name": "PDF-XChange Editor", "category": "Documents", "wingetId": "TrackerSoftware.PDF-XChangeEditor", "url": "https://www.pdf-xchange.com/product/pdf-xchange-editor"},
     {"name": "PDF24 Creator", "category": "Documents", "wingetId": "geeksoftwareGmbH.PDF24Creator", "url": "https://www.pdf24.org/"},
     {"name": "LibreOffice", "category": "Documents", "wingetId": "TheDocumentFoundation.LibreOffice", "url": "https://www.libreoffice.org/"},
-    {"name": "NAPS2", "category": "Documents", "wingetId": "Cyanfish.NAPS2", "url": "https://www.naps2.com/"},
 
     {"name": "Zoom", "category": "Communications", "wingetId": "Zoom.Zoom", "url": "https://zoom.us/"},
     {"name": "Slack", "category": "Communications", "wingetId": "SlackTechnologies.Slack", "url": "https://slack.com/"},
-    {"name": "Thunderbird", "category": "Communications", "wingetId": "Mozilla.Thunderbird", "url": "https://www.thunderbird.net/"},
 
     {"name": "Autoruns", "category": "Microsoft Tools", "wingetId": "Microsoft.Sysinternals.Autoruns", "url": "https://learn.microsoft.com/en-us/sysinternals/downloads/autoruns"},
     {"name": ".NET Desktop Runtime 6", "category": "Microsoft Tools", "wingetId": "Microsoft.DotNet.DesktopRuntime.6", "url": "https://dotnet.microsoft.com/en-us/download/dotnet/6.0"},
