@@ -2165,10 +2165,37 @@ function Invoke-WindowsUpdateSearchOnly {
     return $result
 }
 
+function Get-WuResultText {
+    # OperationResultCode enum (wuapi.h) - shared by download and install results.
+    # Confirmed against Microsoft's own wuapi.h reference rather than assumed:
+    # 0=NotStarted, 1=InProgress, 2=Succeeded, 3=SucceededWithErrors, 4=Failed, 5=Aborted.
+    param([int]$ResultCode)
+    switch ($ResultCode) {
+        0 { 'not started' }
+        1 { 'in progress' }
+        2 { 'succeeded' }
+        3 { 'succeeded with errors' }
+        4 { 'failed' }
+        5 { 'aborted' }
+        default { "unknown code $ResultCode" }
+    }
+}
+
+function Format-WuElapsed {
+    param([TimeSpan]$Elapsed)
+    $totalSec = [int]$Elapsed.TotalSeconds
+    '{0}m {1:D2}s' -f [int]($totalSec / 60), ($totalSec % 60)
+}
+
 function Invoke-WindowsUpdatePassAttempt {
-    # One search -> download -> install cycle. ResultCode reference (both Download and
-    # Install results use the same enum): 2=Succeeded, 3=SucceededWithErrors, 4=Failed,
-    # 5=Cancelled.
+    # One search -> download -> install cycle. Download()/Install() are still the same
+    # synchronous WUA calls as before (no new async/callback surface - BeginDownload's
+    # callback parameters need a COM event-sink object, which is fragile to implement
+    # reliably from PowerShell) - the only change here is reading the per-update detail
+    # both result objects already carry (IDownloadResult/IInstallationResult.GetUpdateResult,
+    # confirmed via Microsoft's own wuapi.h reference) instead of only the one aggregate
+    # ResultCode for the whole batch, plus elapsed time so a long silent gap reads as
+    # "still working" instead of "did this freeze."
     $result = [PSCustomObject]@{ InstalledCount = 0; RebootRequired = $false; MoreUpdatesAvailable = $false; ErrorOccurred = $false; HResult = $null }
     try {
         $updateSession = New-Object -ComObject Microsoft.Update.Session
@@ -2187,11 +2214,16 @@ function Invoke-WindowsUpdatePassAttempt {
             Write-Log "  - $($update.Title)"
         }
 
-        Write-Log "Downloading $($updatesToDownload.Count) update(s)..."
+        Write-Log "Downloading $($updatesToDownload.Count) update(s)... (large cumulative updates can take several minutes with no further output until the download finishes)"
         $downloader = $updateSession.CreateUpdateDownloader()
         $downloader.Updates = $updatesToDownload
+        $downloadStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         $downloadResult = $downloader.Download()
-        Write-Log "Download result code: $($downloadResult.ResultCode)"
+        Write-Log "Download finished in $(Format-WuElapsed $downloadStopwatch.Elapsed) - overall result: $(Get-WuResultText $downloadResult.ResultCode)"
+        for ($i = 0; $i -lt $updatesToDownload.Count; $i++) {
+            $itemResult = $downloadResult.GetUpdateResult($i)
+            Write-Log "  - $(Get-WuResultText $itemResult.ResultCode): $($updatesToDownload.Item($i).Title)"
+        }
 
         $updatesToInstall = New-Object -ComObject Microsoft.Update.UpdateColl
         for ($i = 0; $i -lt $updatesToDownload.Count; $i++) {
@@ -2204,13 +2236,21 @@ function Invoke-WindowsUpdatePassAttempt {
             return $result
         }
 
-        Write-Log "Installing $($updatesToInstall.Count) update(s)..."
+        Write-Log "Installing $($updatesToInstall.Count) update(s)... (no further output until the install finishes)"
         $installer = $updateSession.CreateUpdateInstaller()
         $installer.Updates = $updatesToInstall
+        $installStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         $installResult = $installer.Install()
-        Write-Log "Install result code: $($installResult.ResultCode)"
+        Write-Log "Install finished in $(Format-WuElapsed $installStopwatch.Elapsed) - overall result: $(Get-WuResultText $installResult.ResultCode)"
 
-        $result.InstalledCount = $updatesToInstall.Count
+        $installedCount = 0
+        for ($i = 0; $i -lt $updatesToInstall.Count; $i++) {
+            $itemResult = $installResult.GetUpdateResult($i)
+            Write-Log "  - $(Get-WuResultText $itemResult.ResultCode): $($updatesToInstall.Item($i).Title)"
+            if ($itemResult.ResultCode -eq 2 -or $itemResult.ResultCode -eq 3) { $installedCount++ }
+        }
+
+        $result.InstalledCount = $installedCount
         $result.RebootRequired = [bool]$installResult.RebootRequired
         $result.MoreUpdatesAvailable = $true
         if ($installResult.ResultCode -eq 4) { $result.ErrorOccurred = $true }
