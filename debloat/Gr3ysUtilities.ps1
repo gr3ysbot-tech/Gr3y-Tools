@@ -1025,6 +1025,8 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
             <Button Name="CatAll" Content="All"/>
             <Button Name="CatBrowsers" Content="Browsers"/>
             <Button Name="CatMsTools" Content="Microsoft Tools"/>
+            <Button Name="CatDocuments" Content="Documents"/>
+            <Button Name="CatCommunications" Content="Communications"/>
             <Button Name="CatUtilities" Content="Utilities"/>
             <Button Name="CatNonSilent" Content="Non-Silent Installs"/>
             <Border Width="12"/>
@@ -1429,6 +1431,8 @@ $searchBox = $window.FindName('SearchBox')
 $catAllBtn = $window.FindName('CatAll')
 $catBrowsersBtn = $window.FindName('CatBrowsers')
 $catMsToolsBtn = $window.FindName('CatMsTools')
+$catDocumentsBtn = $window.FindName('CatDocuments')
+$catCommunicationsBtn = $window.FindName('CatCommunications')
 $catUtilitiesBtn = $window.FindName('CatUtilities')
 $catNonSilentBtn = $window.FindName('CatNonSilent')
 $btnSelectAll = $window.FindName('BtnSelectAll')
@@ -2051,7 +2055,7 @@ foreach ($cat in $categories) {
         }
 
         $wrap.Children.Add($row) | Out-Null
-        $entry = [PSCustomObject]@{ CheckBox = $cb; Row = $row; Name = $app.name; Category = $cat.Name; WingetId = $app.wingetId; DownloadUrl = $app.downloadUrl }
+        $entry = [PSCustomObject]@{ CheckBox = $cb; Row = $row; Name = $app.name; Category = $cat.Name; WingetId = $app.wingetId; DownloadUrl = $app.downloadUrl; DynamicDownloadPage = $app.dynamicDownloadPage; SacRisk = [bool]$app.sacRisk }
         $script:appEntries.Add($entry)
         # Checked/Unchecked (not Click) since they fire off IsChecked itself changing,
         # regardless of interaction method - Click alone was observed to not reliably
@@ -2095,10 +2099,24 @@ $searchBox.Add_TextChanged({
 $catAllBtn.Add_Click({ $script:activeCategory = 'All'; Update-AppVisibility })
 $catBrowsersBtn.Add_Click({ $script:activeCategory = 'Browsers'; Update-AppVisibility })
 $catMsToolsBtn.Add_Click({ $script:activeCategory = 'Microsoft Tools'; Update-AppVisibility })
+$catDocumentsBtn.Add_Click({ $script:activeCategory = 'Documents'; Update-AppVisibility })
+$catCommunicationsBtn.Add_Click({ $script:activeCategory = 'Communications'; Update-AppVisibility })
 $catUtilitiesBtn.Add_Click({ $script:activeCategory = 'Utilities'; Update-AppVisibility })
 $catNonSilentBtn.Add_Click({ $script:activeCategory = 'Non-Silent Installs'; Update-AppVisibility })
 
 $btnSelectAll.Add_Click({
+    # With the "All" filter active, Select All used to tick everything in the entire
+    # catalog in one click - including Tor Browser, qBittorrent and the auto-clicker
+    # tools, which is exactly the kind of one-click mistake that's easy to make on a
+    # client laptop. A specific category filter (e.g. just "Documents") is a deliberate,
+    # narrower choice, so that case proceeds without asking.
+    if ($script:activeCategory -eq 'All') {
+        $visibleCount = @($script:appEntries | Where-Object { $_.Row.Visibility -eq 'Visible' }).Count
+        $result = [System.Windows.MessageBox]::Show(
+            "This selects all $visibleCount apps across every category, including things like Tor Browser, qBittorrent and auto-clicker tools that usually aren't appropriate for a client machine.`r`n`r`nPick a specific category first if you only want apps from one group. Select all $visibleCount anyway?",
+            'Confirm Select All', 'YesNo', 'Warning')
+        if ($result -ne 'Yes') { return }
+    }
     foreach ($entry in $script:appEntries) {
         if ($entry.Row.Visibility -eq 'Visible') { $entry.CheckBox.IsChecked = $true }
     }
@@ -2437,13 +2455,34 @@ function Start-NextInQueue {
             return
         }
 
+        # FreeFileSync's download URL embeds its current version number with no stable
+        # "latest" redirect - the catalog's own downloadUrl goes stale every release, so
+        # when a dynamicDownloadPage is set, resolve today's real filename from that page
+        # first. This is a small page fetch (tens of KB), not the installer itself, so
+        # doing it inline (not in the background runspace below) is an acceptable brief
+        # UI pause rather than a full extra async stage for one catalog entry.
+        $resolvedDownloadUrl = $entry.DownloadUrl
+        if ($entry.DynamicDownloadPage) {
+            try {
+                $pageHtml = Invoke-WebRequest -Uri $entry.DynamicDownloadPage -UseBasicParsing -ErrorAction Stop
+                $fileMatch = [regex]::Match($pageHtml.Content, 'FreeFileSync_[\d.]+_Windows_Setup\.exe')
+                if ($fileMatch.Success) {
+                    $resolvedDownloadUrl = "https://freefilesync.org/download/$($fileMatch.Value)"
+                } else {
+                    $installLogBox.AppendText("Could not find a current download link on $($entry.DynamicDownloadPage) - falling back to the last-known version.`r`n")
+                }
+            } catch {
+                $installLogBox.AppendText("Could not check for the current version ($($_.Exception.Message)) - falling back to the last-known version.`r`n")
+            }
+        }
+
         # Invoke-WebRequest runs in a background runspace, not inline here - this used to
         # block the UI thread for as long as the download took, same class of problem as
         # the Scan feature above. The queue continues once the timer tick sees the
         # background download finish (see the $script:directDownloadPS poll below),
         # instead of recursing into Start-NextInQueue immediately.
-        $downloadPath = Join-Path $workDir (Split-Path -Leaf $entry.DownloadUrl)
-        $installLogBox.AppendText("Downloading $($entry.DownloadUrl)...`r`n")
+        $downloadPath = Join-Path $workDir (Split-Path -Leaf $resolvedDownloadUrl)
+        $installLogBox.AppendText("Downloading $resolvedDownloadUrl...`r`n")
         $installLogBox.ScrollToEnd()
         $script:directDownloadPath = $downloadPath
         $script:directDownloadPS = [powershell]::Create()
@@ -2451,7 +2490,7 @@ function Start-NextInQueue {
             param($Url, $OutFile)
             Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing
         })
-        [void]$script:directDownloadPS.AddArgument($entry.DownloadUrl)
+        [void]$script:directDownloadPS.AddArgument($resolvedDownloadUrl)
         [void]$script:directDownloadPS.AddArgument($downloadPath)
         $script:directDownloadHandle = $script:directDownloadPS.BeginInvoke()
         return
@@ -2480,6 +2519,18 @@ function Start-AppQueue {
     param([string]$Mode)
     $selected = @($script:appEntries | Where-Object { $_.CheckBox.IsChecked })
     if ($selected.Count -eq 0) { return }
+    # $sacPolicyState (read once at window load) is 1 only when Smart App Control is On
+    # and actually enforcing - 0 (off) or 2 (evaluation/audit-only) don't block installs,
+    # so there's nothing useful to warn about in those states.
+    if ($Mode -eq 'install' -and $sacPolicyState -eq 1) {
+        $riskyNames = @($selected | Where-Object { $_.SacRisk } | ForEach-Object { $_.Name })
+        if ($riskyNames.Count -gt 0) {
+            $result = [System.Windows.MessageBox]::Show(
+                "Smart App Control is On for this machine. These selected apps are known to be unsigned/low-reputation and may be blocked by Smart App Control during install:`r`n`r`n$($riskyNames -join "`r`n")`r`n`r`nContinue anyway?",
+                'Confirm: Smart App Control Risk', 'YesNo', 'Warning')
+            if ($result -ne 'Yes') { return }
+        }
+    }
     $script:installQueue = New-Object System.Collections.Generic.Queue[object]
     foreach ($entry in $selected) { $script:installQueue.Enqueue($entry) }
     $script:installMode = $Mode

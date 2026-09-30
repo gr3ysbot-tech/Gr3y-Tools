@@ -8,6 +8,18 @@
     {"name": "Firefox ESR", "category": "Browsers", "wingetId": "Mozilla.Firefox.ESR", "url": "https://www.mozilla.org/firefox/enterprise/"},
     {"name": "Tor Browser", "category": "Browsers", "wingetId": "TorProject.TorBrowser", "url": "https://www.torproject.org/"},
 
+    {"name": "Adobe Acrobat Reader", "category": "Documents", "wingetId": "Adobe.Acrobat.Reader.64-bit", "url": "https://acrobat.adobe.com/"},
+    {"name": "Foxit PDF Reader", "category": "Documents", "wingetId": "Foxit.FoxitReader", "url": "https://www.foxit.com/pdf-reader/"},
+    {"name": "SumatraPDF", "category": "Documents", "wingetId": "SumatraPDF.SumatraPDF", "url": "https://www.sumatrapdfreader.org/"},
+    {"name": "PDF-XChange Editor", "category": "Documents", "wingetId": "TrackerSoftware.PDF-XChangeEditor", "url": "https://www.pdf-xchange.com/product/pdf-xchange-editor"},
+    {"name": "PDF24 Creator", "category": "Documents", "wingetId": "geeksoftwareGmbH.PDF24Creator", "url": "https://www.pdf24.org/"},
+    {"name": "LibreOffice", "category": "Documents", "wingetId": "TheDocumentFoundation.LibreOffice", "url": "https://www.libreoffice.org/"},
+    {"name": "NAPS2", "category": "Documents", "wingetId": "Cyanfish.NAPS2", "url": "https://www.naps2.com/"},
+
+    {"name": "Zoom", "category": "Communications", "wingetId": "Zoom.Zoom", "url": "https://zoom.us/"},
+    {"name": "Slack", "category": "Communications", "wingetId": "SlackTechnologies.Slack", "url": "https://slack.com/"},
+    {"name": "Thunderbird", "category": "Communications", "wingetId": "Mozilla.Thunderbird", "url": "https://www.thunderbird.net/"},
+
     {"name": "Autoruns", "category": "Microsoft Tools", "wingetId": "Microsoft.Sysinternals.Autoruns", "url": "https://learn.microsoft.com/en-us/sysinternals/downloads/autoruns"},
     {"name": ".NET Desktop Runtime 6", "category": "Microsoft Tools", "wingetId": "Microsoft.DotNet.DesktopRuntime.6", "url": "https://dotnet.microsoft.com/en-us/download/dotnet/6.0"},
     {"name": ".NET Desktop Runtime 8", "category": "Microsoft Tools", "wingetId": "Microsoft.DotNet.DesktopRuntime.8", "url": "https://dotnet.microsoft.com"},
@@ -30,7 +42,7 @@
     {"name": "AnyDesk", "category": "Utilities", "wingetId": "AnyDesk.AnyDesk", "url": "https://anydesk.com/"},
     {"name": "AutoHotkey", "category": "Utilities", "wingetId": "AutoHotkey.AutoHotkey", "url": "https://www.autohotkey.com/"},
     {"name": "Bitwarden", "category": "Utilities", "wingetId": "Bitwarden.Bitwarden", "url": "https://bitwarden.com/"},
-    {"name": "BlurAutoClicker", "category": "Utilities", "wingetId": "Blur009.BlurAutoClicker", "url": "https://github.com/Blur009/Blur-AutoClicker"},
+    {"name": "BlurAutoClicker", "category": "Utilities", "wingetId": "Blur009.BlurAutoClicker", "url": "https://github.com/Blur009/Blur-AutoClicker", "sacRisk": true},
     {"name": "Cloudflare WARP", "category": "Utilities", "wingetId": "Cloudflare.Warp", "url": "https://one.one.one.one/"},
     {"name": "Crystal Disk Info", "category": "Utilities", "wingetId": "CrystalDewWorld.CrystalDiskInfo", "url": "https://crystalmark.info/en/software/crystaldiskinfo/"},
     {"name": "Crystal Disk Mark", "category": "Utilities", "wingetId": "CrystalDewWorld.CrystalDiskMark", "url": "https://crystalmark.info/en/software/crystaldiskmark/"},
@@ -46,7 +58,7 @@
     {"name": "NanaZip", "category": "Utilities", "wingetId": "M2Team.NanaZip", "url": "https://github.com/M2Team/NanaZip"},
     {"name": "NVCleanstall", "category": "Utilities", "wingetId": "TechPowerUp.NVCleanstall", "url": "https://www.techpowerup.com/download/techpowerup-nvcleanstall/"},
     {"name": "OFGB (Oh Frick Go Back)", "category": "Utilities", "wingetId": "xM4ddy.OFGB", "url": "https://github.com/xM4ddy/OFGB"},
-    {"name": "OPAutoClicker", "category": "Utilities", "wingetId": "OPAutoClicker.OPAutoClicker", "url": "https://www.opautoclicker.com/"},
+    {"name": "OPAutoClicker", "category": "Utilities", "wingetId": "OPAutoClicker.OPAutoClicker", "url": "https://www.opautoclicker.com/", "sacRisk": true},
     {"name": "OpenRGB", "category": "Utilities", "wingetId": "OpenRGB.OpenRGB", "url": "https://openrgb.org/"},
     {"name": "Oracle VirtualBox", "category": "Utilities", "wingetId": "Oracle.VirtualBox", "url": "https://www.virtualbox.org/"},
     {"name": "Parsec", "category": "Utilities", "wingetId": "Parsec.Parsec", "url": "https://parsec.app/"},
@@ -64,7 +76,15 @@
     {"name": "TranslucentTB", "category": "Utilities", "wingetId": "CharlesMilette.TranslucentTB", "url": "https://github.com/TranslucentTB/TranslucentTB"},
     {"name": "Wise Program Uninstaller", "category": "Utilities", "wingetId": "WiseCleaner.WiseProgramUninstaller", "url": "https://www.wisecleaner.com/wise-program-uninstaller.html"},
     {"name": "WizTree", "category": "Utilities", "wingetId": "AntibodySoftware.WizTree", "url": "https://diskanalyzer.com/"},
+    {"name": "Notepad++", "category": "Utilities", "wingetId": "Notepad++.Notepad++", "url": "https://notepad-plus-plus.org/"},
+    {"name": "VLC media player", "category": "Utilities", "wingetId": "VideoLAN.VLC", "url": "https://www.videolan.org/vlc/"},
+    {"name": "Advanced IP Scanner", "category": "Utilities", "wingetId": "Famatech.AdvancedIPScanner", "url": "https://www.advanced-ip-scanner.com/"},
+    {"name": "PuTTY", "category": "Utilities", "wingetId": "PuTTY.PuTTY", "url": "https://www.putty.org/"},
+    {"name": "WinSCP", "category": "Utilities", "wingetId": "WinSCP.WinSCP", "url": "https://winscp.net/"},
+    {"name": "Wireshark", "category": "Utilities", "wingetId": "WiresharkFoundation.Wireshark", "url": "https://www.wireshark.org/"},
+    {"name": "HWiNFO", "category": "Utilities", "wingetId": "REALiX.HWiNFO", "url": "https://www.hwinfo.com/"},
+    {"name": "CPU-Z", "category": "Utilities", "wingetId": "CPUID.CPU-Z", "url": "https://www.cpuid.com/softwares/cpu-z.html"},
 
-    {"name": "FreeFileSync", "category": "Non-Silent Installs", "url": "https://freefilesync.org/", "downloadUrl": "https://freefilesync.org/download/FreeFileSync_14.12_Windows_Setup.exe"}
+    {"name": "FreeFileSync", "category": "Non-Silent Installs", "url": "https://freefilesync.org/", "downloadUrl": "https://freefilesync.org/download/FreeFileSync_14.12_Windows_Setup.exe", "dynamicDownloadPage": "https://freefilesync.org/download.php"}
   ]
 }
