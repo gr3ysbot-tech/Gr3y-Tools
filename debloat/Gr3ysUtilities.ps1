@@ -698,7 +698,8 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
       <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
         <Button Name="NavDebloat" Style="{StaticResource NavButton}" Tag="selected" Content="Debloat + Office" WindowChrome.IsHitTestVisibleInChrome="True"/>
         <Button Name="NavInstall" Style="{StaticResource NavButton}" Content="Install Apps" WindowChrome.IsHitTestVisibleInChrome="True"/>
-        <Button Name="NavFixes" Style="{StaticResource NavButton}" Content="Fixes" WindowChrome.IsHitTestVisibleInChrome="True"/>
+        <Button Name="NavFixes" Style="{StaticResource NavButton}" Content="Config" WindowChrome.IsHitTestVisibleInChrome="True"/>
+        <Button Name="NavPanels" Style="{StaticResource NavButton}" Content="Panels" WindowChrome.IsHitTestVisibleInChrome="True"/>
       </StackPanel>
 
       <Grid Grid.Column="2" Margin="12,0,12,0" VerticalAlignment="Center" WindowChrome.IsHitTestVisibleInChrome="True">
@@ -906,10 +907,10 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
         </DockPanel>
       </TabItem>
 
-      <TabItem Header="Fixes">
+      <TabItem Header="Config">
         <Grid>
           <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="400"/>
+            <ColumnDefinition Width="660"/>
             <ColumnDefinition Width="10"/>
             <ColumnDefinition Width="*"/>
           </Grid.ColumnDefinitions>
@@ -917,35 +918,38 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
             <ScrollViewer VerticalScrollBarVisibility="Auto">
               <StackPanel>
                 <TextBlock Style="{StaticResource Header}" Text="Fixes"/>
-                <Button Name="BtnFixSystemRepair" Content="System File Repair - Run" HorizontalAlignment="Stretch" Margin="0,0,0,4"
-                        ToolTip="Runs sfc /scannow then DISM RestoreHealth. Can take 10-20+ minutes."/>
-                <Button Name="BtnFixNetworkReset" Content="Network - Reset" HorizontalAlignment="Stretch" Margin="0,0,0,4"
-                        ToolTip="Resets Winsock and TCP/IP, flushes DNS. Requires a reboot after."/>
-                <Button Name="BtnFixWindowsUpdate" Content="Windows Update - Reset" HorizontalAlignment="Stretch" Margin="0,0,0,4"
-                        ToolTip="Clears the update cache and restarts related services - standard fix for a stuck Windows Update."/>
-                <Button Name="BtnFixWinGet" Content="WinGet - Reinstall" HorizontalAlignment="Stretch" Margin="0,0,0,4"
-                        ToolTip="Re-registers the App Installer package - fixes a missing/broken winget."/>
-
-                <TextBlock Style="{StaticResource Header}" Text="Quick Panels" Margin="0,14,0,0"/>
-                <Button Name="BtnPanelCompMgmt" Content="Computer Management" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
-                <Button Name="BtnPanelControlPanel" Content="Control Panel" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
-                <Button Name="BtnPanelMouse" Content="Mouse Properties" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
-                <Button Name="BtnPanelNetwork" Content="Network Connections" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
-                <Button Name="BtnPanelPower" Content="Power Panel" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
-                <Button Name="BtnPanelPrinters" Content="Printer Panel" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
-                <Button Name="BtnPanelProgramsFeatures" Content="Programs and Features" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
-                <Button Name="BtnPanelRegion" Content="Region" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
-                <Button Name="BtnPanelSecurityMaintenance" Content="Security and Maintenance" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
-                <Button Name="BtnPanelSound" Content="Sound Settings" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
-                <Button Name="BtnPanelSystemProps" Content="System Properties" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
-                <Button Name="BtnPanelTimeDate" Content="Time and Date" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
-                <Button Name="BtnPanelFirewall" Content="Windows Defender Firewall" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
-                <Button Name="BtnPanelSystemRestore" Content="Windows Restore" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
+                <Grid>
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="10"/>
+                    <ColumnDefinition Width="*"/>
+                  </Grid.ColumnDefinitions>
+                  <StackPanel Grid.Column="0">
+                    <Button Name="BtnFixSystemRepair" Content="System File Repair - Run" HorizontalAlignment="Stretch" Margin="0,0,0,4"
+                            ToolTip="Runs sfc /scannow then DISM RestoreHealth. Can take 10-20+ minutes."/>
+                    <Button Name="BtnFixNetworkReset" Content="Network - Reset" HorizontalAlignment="Stretch" Margin="0,0,0,4"
+                            ToolTip="Resets Winsock and TCP/IP, flushes DNS. Requires a reboot after."/>
+                  </StackPanel>
+                  <StackPanel Grid.Column="2">
+                    <Button Name="BtnFixWindowsUpdate" Content="Windows Update - Reset" HorizontalAlignment="Stretch" Margin="0,0,0,4"
+                            ToolTip="Clears the update cache and restarts related services - standard fix for a stuck Windows Update."/>
+                    <Button Name="BtnFixWinGet" Content="WinGet - Reinstall" HorizontalAlignment="Stretch" Margin="0,0,0,4"
+                            ToolTip="Re-registers the App Installer package - fixes a missing/broken winget."/>
+                  </StackPanel>
+                </Grid>
 
                 <TextBlock Style="{StaticResource Header}" Text="Customize Preferences" Margin="0,14,0,0"/>
                 <TextBlock Style="{StaticResource Hint}" Text="One-way: applies the &quot;on&quot; value only, no undo. Explorer restarts once at the end if needed."
                            TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
-                <StackPanel Name="TweaksPanel"/>
+                <Grid>
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="16"/>
+                    <ColumnDefinition Width="*"/>
+                  </Grid.ColumnDefinitions>
+                  <StackPanel Grid.Column="0" Name="TweaksPanelA"/>
+                  <StackPanel Grid.Column="2" Name="TweaksPanelB"/>
+                </Grid>
                 <Button Name="BtnApplyTweaks" Content="Apply Selected Tweaks" HorizontalAlignment="Stretch" Margin="0,6,0,4"
                         BorderBrush="{StaticResource GreenBrush}"/>
 
@@ -986,6 +990,34 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
           </Grid>
         </Grid>
+      </TabItem>
+
+      <TabItem Header="Panels">
+        <Border Style="{StaticResource Panel}">
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+              <TextBlock Style="{StaticResource Header}" Text="Quick Panels"/>
+              <TextBlock Style="{StaticResource Hint}" Text="Direct shortcuts to built-in Windows applets - opens instantly, nothing to log."
+                         TextWrapping="Wrap" Margin="0,0,0,8" Opacity="0.7"/>
+              <WrapPanel>
+                <Button Name="BtnPanelCompMgmt" Content="Computer Management" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelControlPanel" Content="Control Panel" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelMouse" Content="Mouse Properties" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelNetwork" Content="Network Connections" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelPower" Content="Power Panel" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelPrinters" Content="Printer Panel" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelProgramsFeatures" Content="Programs and Features" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelRegion" Content="Region" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelSecurityMaintenance" Content="Security and Maintenance" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelSound" Content="Sound Settings" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelSystemProps" Content="System Properties" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelTimeDate" Content="Time and Date" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelFirewall" Content="Windows Defender Firewall" Width="260" Margin="0,0,10,8"/>
+                <Button Name="BtnPanelSystemRestore" Content="Windows Restore" Width="260" Margin="0,0,10,8"/>
+              </WrapPanel>
+            </StackPanel>
+          </ScrollViewer>
+        </Border>
       </TabItem>
     </TabControl>
   </Grid>
@@ -1037,6 +1069,7 @@ $rootGrid = $window.FindName('RootGrid')
 $navDebloat = $window.FindName('NavDebloat')
 $navInstall = $window.FindName('NavInstall')
 $navFixes = $window.FindName('NavFixes')
+$navPanels = $window.FindName('NavPanels')
 $searchHint = $window.FindName('SearchHint')
 $btnOpenLogs = $window.FindName('BtnOpenLogs')
 $btnWinMin = $window.FindName('BtnWinMin')
@@ -1106,7 +1139,8 @@ foreach ($p in $quickPanels) {
 }
 
 # Customize Preferences - same Key strings as Deploy-DellOfficeSetup.ps1's $tweakDefs.
-$tweaksPanel = $window.FindName('TweaksPanel')
+$tweaksPanelA = $window.FindName('TweaksPanelA')
+$tweaksPanelB = $window.FindName('TweaksPanelB')
 $btnApplyTweaks = $window.FindName('BtnApplyTweaks')
 $dnsPresetCombo = $window.FindName('DnsPresetCombo')
 $btnApplyDns = $window.FindName('BtnApplyDns')
@@ -1139,7 +1173,11 @@ $tweakList = @(
 )
 
 $script:tweakCheckBoxes = @{}
-foreach ($t in $tweakList) {
+$tweakHalf = [Math]::Ceiling($tweakList.Count / 2)
+for ($i = 0; $i -lt $tweakList.Count; $i++) {
+    $t = $tweakList[$i]
+    $targetPanel = if ($i -lt $tweakHalf) { $tweaksPanelA } else { $tweaksPanelB }
+
     $row = New-Object System.Windows.Controls.StackPanel
     $row.Orientation = 'Horizontal'
     $row.Margin = '0,3,0,3'
@@ -1153,6 +1191,7 @@ foreach ($t in $tweakList) {
     $label.Text = $t.Label
     $label.VerticalAlignment = 'Center'
     $label.Margin = '8,0,0,0'
+    $label.TextWrapping = 'Wrap'
     $row.Children.Add($label) | Out-Null
 
     $hint = New-Object System.Windows.Controls.TextBlock
@@ -1160,7 +1199,7 @@ foreach ($t in $tweakList) {
     $hint.ToolTip = $t.Tip
     $row.Children.Add($hint) | Out-Null
 
-    $tweaksPanel.Children.Add($row) | Out-Null
+    $targetPanel.Children.Add($row) | Out-Null
     $script:tweakCheckBoxes[$t.Key] = $cb
 }
 
@@ -1218,10 +1257,12 @@ function Set-ActiveTab {
     $navDebloat.Tag = if ($Index -eq 0) { 'selected' } else { '' }
     $navInstall.Tag = if ($Index -eq 1) { 'selected' } else { '' }
     $navFixes.Tag = if ($Index -eq 2) { 'selected' } else { '' }
+    $navPanels.Tag = if ($Index -eq 3) { 'selected' } else { '' }
 }
 $navDebloat.Add_Click({ Set-ActiveTab -Index 0 })
 $navInstall.Add_Click({ Set-ActiveTab -Index 1 })
 $navFixes.Add_Click({ Set-ActiveTab -Index 2 })
+$navPanels.Add_Click({ Set-ActiveTab -Index 3 })
 
 $btnWinMin.Add_Click({ $window.WindowState = 'Minimized' })
 $btnWinMax.Add_Click({
