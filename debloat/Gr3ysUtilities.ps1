@@ -833,6 +833,10 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
         <Button Name="NavInstall" Style="{StaticResource NavButton}" Content="Install Apps" WindowChrome.IsHitTestVisibleInChrome="True"/>
         <Button Name="NavFixes" Style="{StaticResource NavButton}" Content="Config" WindowChrome.IsHitTestVisibleInChrome="True"/>
         <Button Name="NavPanels" Style="{StaticResource NavButton}" Content="Panels" WindowChrome.IsHitTestVisibleInChrome="True"/>
+        <Border Name="SacStatusBorder" BorderThickness="1" BorderBrush="{StaticResource MutedBrush}" CornerRadius="3"
+                Padding="6,2" Margin="14,0,0,0" VerticalAlignment="Center" Visibility="Collapsed">
+          <TextBlock Name="SacStatusText" Text="Smart App Control: -" FontSize="11" Foreground="{StaticResource MutedBrush}"/>
+        </Border>
       </StackPanel>
 
       <Grid Grid.Column="2" Margin="12,0,12,0" VerticalAlignment="Center" WindowChrome.IsHitTestVisibleInChrome="True">
@@ -1398,6 +1402,34 @@ if ([Environment]::OSVersion.Version.Build -lt 22621 -or $null -eq $sacPolicySta
         default { "(currently: unknown state $sacPolicyState)" }
     }
 }
+
+# Always-visible indicator in the top nav bar (not just the Tweaks-tab row above), so a
+# tech can see Smart App Control's state from any tab, e.g. before going to Install Apps.
+$sacStatusBorder = $window.FindName('SacStatusBorder')
+$sacStatusText = $window.FindName('SacStatusText')
+if ($null -ne $sacPolicyState) {
+    $sacStatusBorder.Visibility = 'Visible'
+    switch ($sacPolicyState) {
+        0 { $sacStatusText.Text = 'Smart App Control: Off'; $sacStatusText.Foreground = $window.Resources['MutedBrush']; $sacStatusBorder.BorderBrush = $window.Resources['MutedBrush'] }
+        1 { $sacStatusText.Text = 'Smart App Control: On'; $sacStatusText.Foreground = $window.Resources['YellowBrush']; $sacStatusBorder.BorderBrush = $window.Resources['YellowBrush'] }
+        2 { $sacStatusText.Text = 'Smart App Control: Evaluation'; $sacStatusText.Foreground = $window.Resources['YellowBrush']; $sacStatusBorder.BorderBrush = $window.Resources['YellowBrush'] }
+        default { $sacStatusText.Text = "Smart App Control: state $sacPolicyState"; $sacStatusText.Foreground = $window.Resources['MutedBrush']; $sacStatusBorder.BorderBrush = $window.Resources['MutedBrush'] }
+    }
+}
+
+# Smart App Control's cloud reputation checks need Optional diagnostic data - Microsoft's
+# own guidance states SAC "requires Optional Diagnostic Data to be enabled" to query its
+# app-intelligence graph. Reduce Telemetry lowers diagnostic data below that level, which
+# can leave SAC unable to evaluate unknown/unsigned apps it would otherwise allow. Only
+# warn when SAC is actually On (state 1) - Off and Evaluation aren't affected the same way.
+$optTweakTelemetry.Add_Checked({
+    if ($sacPolicyState -eq 1) {
+        [System.Windows.MessageBox]::Show(
+            "Smart App Control is On for this machine. Its cloud reputation checks need Optional diagnostic data enabled to work - reducing telemetry below that level can leave Smart App Control unable to evaluate unknown or unsigned apps it would otherwise allow through.`r`n`r`nThis tweak will still apply if you continue.",
+            'Note: Smart App Control Interaction', 'OK', 'Information') | Out-Null
+    }
+})
+
 $optChannel = $window.FindName('OptChannel')
 $btnScan = $window.FindName('BtnScan')
 $btnStart = $window.FindName('BtnStart')
