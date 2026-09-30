@@ -89,6 +89,17 @@
     automatic reboot). Requires AC power; suspends BitLocker for one reboot first if it's
     on. No-ops on non-Dell/Lenovo hardware.
 
+.PARAMETER RunWindowsUpdate
+    Searches, downloads and installs Windows updates in a loop (up to 4 passes) until none
+    remain. If a pass needs a reboot to continue, saves state and registers a scheduled
+    task to resume automatically after the next restart - see -Resume. Dry run does one
+    search-only pass and reports what would be installed.
+
+.PARAMETER Resume
+    Internal - set by the scheduled task Register-WindowsUpdateResumeTask registers, to
+    continue a Windows Update pass loop that needed a reboot. Not meant to be passed by
+    hand under normal use.
+
 .PARAMETER ApplyOneDriveKfm
     Configures silent OneDrive sign-in and Known Folder Move (Desktop/Documents/Pictures
     per -KfmDesktop/-KfmDocuments/-KfmPictures) instead of removing OneDrive. Requires
@@ -208,6 +219,8 @@ param(
     [switch]$RenameComputer,
     [string]$HostnamePattern = '',
     [switch]$ApplyOemUpdates,
+    [switch]$RunWindowsUpdate,
+    [switch]$Resume,
     [switch]$ApplyOneDriveKfm,
     [string]$EntraTenantId = '',
     [switch]$KfmDesktop,
@@ -1808,6 +1821,214 @@ function Invoke-OemDriverUpdates {
     }
 }
 
+function Enable-MicrosoftUpdateService {
+    Invoke-Step 'Opting into Microsoft Update (Office/driver updates alongside Windows Update)' {
+        try {
+            $serviceManager = New-Object -ComObject Microsoft.Update.ServiceManager
+            $serviceManager.AddService2('7971f918-a847-4430-9279-4a52d1efe18d', 7, '') | Out-Null
+            Write-Log 'Opted into Microsoft Update.'
+        } catch {
+            Write-Log "Could not opt into Microsoft Update (often means it's already opted in): $($_.Exception.Message)"
+        }
+    }
+}
+
+function Invoke-StoreAppUpdateScan {
+    try {
+        $mdmClass = Get-CimInstance -Namespace 'root\cimv2\mdm\dmmap' -ClassName 'MDM_EnterpriseModernAppManagement_AppManagement01' -ErrorAction Stop
+        if ($mdmClass) {
+            Invoke-CimMethod -InputObject $mdmClass -MethodName 'UpdateScanMethod' -ErrorAction Stop | Out-Null
+            Write-Log 'Triggered a Microsoft Store app update scan.'
+        }
+    } catch {
+        Write-Log "Could not trigger a Store app update scan (the MDM bridge may not be available on this edition/config): $($_.Exception.Message)"
+    }
+}
+
+function Invoke-WindowsUpdateSearchOnly {
+    $result = [PSCustomObject]@{ Count = 0; Titles = @() }
+    try {
+        $updateSession = New-Object -ComObject Microsoft.Update.Session
+        $updateSearcher = $updateSession.CreateUpdateSearcher()
+        $searchResult = $updateSearcher.Search("IsInstalled=0 and IsHidden=0 and Type='Software'")
+        $result.Count = $searchResult.Updates.Count
+        if ($result.Count -gt 0) {
+            $result.Titles = @(0..($result.Count - 1) | ForEach-Object { $searchResult.Updates.Item($_).Title })
+        }
+    } catch {
+        Write-Log "Windows Update search failed: $($_.Exception.Message)" 'WARN'
+    }
+    return $result
+}
+
+function Invoke-WindowsUpdatePassAttempt {
+    # One search -> download -> install cycle. ResultCode reference (both Download and
+    # Install results use the same enum): 2=Succeeded, 3=SucceededWithErrors, 4=Failed,
+    # 5=Cancelled.
+    $result = [PSCustomObject]@{ InstalledCount = 0; RebootRequired = $false; MoreUpdatesAvailable = $false; ErrorOccurred = $false; HResult = $null }
+    try {
+        $updateSession = New-Object -ComObject Microsoft.Update.Session
+        $updateSearcher = $updateSession.CreateUpdateSearcher()
+        $searchResult = $updateSearcher.Search("IsInstalled=0 and IsHidden=0 and Type='Software'")
+
+        $count = $searchResult.Updates.Count
+        Write-Log "Found $count applicable update(s)."
+        if ($count -eq 0) { return $result }
+
+        $updatesToDownload = New-Object -ComObject Microsoft.Update.UpdateColl
+        for ($i = 0; $i -lt $count; $i++) {
+            $update = $searchResult.Updates.Item($i)
+            if (-not $update.EulaAccepted) { [void]$update.AcceptEula() }
+            [void]$updatesToDownload.Add($update)
+            Write-Log "  - $($update.Title)"
+        }
+
+        Write-Log "Downloading $($updatesToDownload.Count) update(s)..."
+        $downloader = $updateSession.CreateUpdateDownloader()
+        $downloader.Updates = $updatesToDownload
+        $downloadResult = $downloader.Download()
+        Write-Log "Download result code: $($downloadResult.ResultCode)"
+
+        $updatesToInstall = New-Object -ComObject Microsoft.Update.UpdateColl
+        for ($i = 0; $i -lt $updatesToDownload.Count; $i++) {
+            $update = $updatesToDownload.Item($i)
+            if ($update.IsDownloaded) { [void]$updatesToInstall.Add($update) }
+        }
+        if ($updatesToInstall.Count -eq 0) {
+            Write-Log 'No updates were successfully downloaded this pass.' 'WARN'
+            $result.ErrorOccurred = $true
+            return $result
+        }
+
+        Write-Log "Installing $($updatesToInstall.Count) update(s)..."
+        $installer = $updateSession.CreateUpdateInstaller()
+        $installer.Updates = $updatesToInstall
+        $installResult = $installer.Install()
+        Write-Log "Install result code: $($installResult.ResultCode)"
+
+        $result.InstalledCount = $updatesToInstall.Count
+        $result.RebootRequired = [bool]$installResult.RebootRequired
+        $result.MoreUpdatesAvailable = $true
+        if ($installResult.ResultCode -eq 4) { $result.ErrorOccurred = $true }
+    } catch {
+        Write-Log "Windows Update pass failed: $($_.Exception.Message)" 'WARN'
+        $result.ErrorOccurred = $true
+        $result.HResult = $_.Exception.HResult
+    }
+    return $result
+}
+
+function Invoke-WindowsUpdatePass {
+    # WU_E_ALL_UPDATES_FAILED (0x80240022 / -2145124318 as a signed HRESULT, confirmed via
+    # search rather than assumed) is usually transient - AV/network blocking the
+    # SoftwareDistribution working folder - so one retry after a cooldown is worth it;
+    # anything else (or a second failure) is not retried.
+    $attempt = 0
+    while ($true) {
+        $attempt++
+        $result = Invoke-WindowsUpdatePassAttempt
+        if ($result.ErrorOccurred -and $result.HResult -eq -2145124318 -and $attempt -eq 1) {
+            Write-Log 'Windows Update reported WU_E_ALL_UPDATES_FAILED (0x80240022, often transient) - retrying once after 60s.' 'WARN'
+            Start-Sleep -Seconds 60
+            continue
+        }
+        return $result
+    }
+}
+
+function Register-WindowsUpdateResumeTask {
+    # Copies the worker (and the two JSON files it hard-requires at startup) into a
+    # stable cache dir under the work dir - the original install came from a timestamped
+    # %TEMP%\Gr3yTools_* folder that the 7-day-old sweep (or just a reboot clearing temp
+    # profiles) could remove before the scheduled task ever fires.
+    $cacheDir = Join-Path $workDir 'resume_cache'
+    New-Item -ItemType Directory -Path $cacheDir -Force -ErrorAction SilentlyContinue | Out-Null
+    $cachedScriptPath = Join-Path $cacheDir 'Deploy-DellOfficeSetup.ps1'
+    Copy-Item -Path $PSCommandPath -Destination $cachedScriptPath -Force
+    Copy-Item -Path $patternsPath -Destination (Join-Path $cacheDir 'bloat-patterns.json') -Force -ErrorAction SilentlyContinue
+    Copy-Item -Path $tweaksJsonPath -Destination (Join-Path $cacheDir 'tweaks.json') -Force -ErrorAction SilentlyContinue
+
+    $taskName = 'Gr3yToolsWindowsUpdateResume'
+    $taskArgument = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$cachedScriptPath`" -RunWindowsUpdate -Resume -NoReboot -SkipDebloat -SkipOfficeRemoval -SkipOfficeInstall"
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $taskArgument
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+    Write-Log "Registered scheduled task '$taskName' to resume Windows Update automatically after the next reboot."
+}
+
+function Unregister-WindowsUpdateResumeTask {
+    Unregister-ScheduledTask -TaskName 'Gr3yToolsWindowsUpdateResume' -Confirm:$false -ErrorAction SilentlyContinue
+}
+
+function Invoke-WindowsUpdateToCompletion {
+    param([switch]$Resume)
+
+    $stateFile = Join-Path $workDir 'wu_resume_state.json'
+    $maxPasses = 4
+
+    if ($DryRun -and -not $Resume) {
+        Invoke-Step 'Checking for Windows updates (dry run - search only, no download/install)' {
+            $searchOnly = Invoke-WindowsUpdateSearchOnly
+            if ($searchOnly.Count -gt 0) {
+                Write-Log "DRYRUN: $($searchOnly.Count) update(s) available: $($searchOnly.Titles -join '; ')" 'DRYRUN'
+            } else {
+                Write-Log 'DRYRUN: No updates available - already current.' 'DRYRUN'
+            }
+        }
+        return
+    }
+
+    $startPass = 1
+    if ($Resume -and (Test-Path $stateFile)) {
+        try {
+            $state = Get-Content -Path $stateFile -Raw | ConvertFrom-Json
+            $startPass = [int]$state.pass + 1
+            Write-Log "Resuming Windows Update after reboot - continuing at pass $startPass of $maxPasses."
+        } catch {
+            Write-Log "Could not read the resume state file - starting from pass 1 instead: $($_.Exception.Message)" 'WARN'
+        }
+    } elseif ($Resume) {
+        Write-Log 'Resume requested but no state file found - starting from pass 1.' 'WARN'
+    }
+
+    Invoke-Step "Patching Windows Update to current (starting at pass $startPass of up to $maxPasses)" {
+        Enable-MicrosoftUpdateService
+        Invoke-StoreAppUpdateScan
+
+        for ($pass = $startPass; $pass -le $maxPasses; $pass++) {
+            Write-Log "--- Windows Update pass $pass of $maxPasses ---"
+            $passResult = Invoke-WindowsUpdatePass
+
+            if ($passResult.ErrorOccurred) {
+                Write-Log "Windows Update pass $pass reported an error - stopping here rather than looping further." 'WARN'
+                Remove-Item -Path $stateFile -Force -ErrorAction SilentlyContinue
+                Unregister-WindowsUpdateResumeTask
+                return
+            }
+
+            if ($passResult.InstalledCount -eq 0 -and -not $passResult.MoreUpdatesAvailable) {
+                Write-Log 'No further updates found - Windows Update is current.'
+                Remove-Item -Path $stateFile -Force -ErrorAction SilentlyContinue
+                Unregister-WindowsUpdateResumeTask
+                return
+            }
+
+            if ($passResult.RebootRequired) {
+                @{ pass = $pass; timestamp = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss') } | ConvertTo-Json | Set-Content -Path $stateFile -Encoding UTF8
+                Register-WindowsUpdateResumeTask
+                Write-Log "REBOOT REQUIRED to continue Windows Update (pass $pass of $maxPasses installed $($passResult.InstalledCount) update(s)) - it will resume automatically after the next reboot. Use the Reboot button (Debloat + Office tab) or reboot manually."
+                return
+            }
+        }
+
+        Write-Log "Reached the $maxPasses-pass cap - some updates may remain. Re-run Patch to Current if needed." 'WARN'
+        Remove-Item -Path $stateFile -Force -ErrorAction SilentlyContinue
+        Unregister-WindowsUpdateResumeTask
+    }
+}
+
 function Set-RegionalPowerLockBaseline {
     param([string]$TimeZoneId, [string]$GeoId, [string]$CultureName, [string]$PowerPlanName, [int]$LockTimeoutSec)
     Invoke-Step 'Applying regional, power and lock baseline' {
@@ -1909,6 +2130,7 @@ if ($FixWinGetReinstall) { Invoke-WinGetReinstall }
 
 if ($RenameComputer) { Rename-ComputerFromPattern -Pattern $HostnamePattern }
 if ($ApplyOemUpdates) { Invoke-OemDriverUpdates }
+if ($RunWindowsUpdate) { Invoke-WindowsUpdateToCompletion -Resume:$Resume }
 if ($ApplyOneDriveKfm) { Set-OneDriveKfm -TenantId $EntraTenantId -Desktop $KfmDesktop -Documents $KfmDocuments -Pictures $KfmPictures }
 if ($ApplyRegionalBaseline) { Set-RegionalPowerLockBaseline -TimeZoneId $TimeZoneId -GeoId $GeoId -CultureName $CultureName -PowerPlanName $PowerPlanName -LockTimeoutSec $LockTimeoutSec }
 

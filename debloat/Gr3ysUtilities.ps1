@@ -1667,10 +1667,19 @@ $btnApplyOemUpdates.Add_Click({
     Start-ProvisionJob -ProvisionArgs @('-ApplyOemUpdates') -Label 'Apply OEM Driver/BIOS Updates'
 })
 
-# Windows Update to completion (2.2) and the validation/handoff package (2.10) are still
-# being built - placeholders so these buttons are honest about not doing anything yet,
-# instead of silently no-op'ing on click.
-$btnRunWindowsUpdate.Add_Click({ [System.Windows.MessageBox]::Show('Windows Update to completion: not yet available in this build.', 'Gr3y Tools', 'OK', 'Information') | Out-Null })
+$btnRunWindowsUpdate.Add_Click({
+    $msg = if ($optDryRun.IsChecked) {
+        "Check for available Windows updates (dry run - search only, nothing will be downloaded or installed)?"
+    } else {
+        "Patch Windows Update to current?`r`n`r`nSearches, downloads and installs in a loop (up to 4 passes) until none remain. If a reboot is needed mid-way, it schedules itself to resume automatically after you restart - no need to re-click anything."
+    }
+    $result = [System.Windows.MessageBox]::Show($msg, 'Confirm Windows Update', 'YesNo', 'Warning')
+    if ($result -ne 'Yes') { return }
+    Start-ProvisionJob -ProvisionArgs @('-RunWindowsUpdate') -Label 'Patch to Current'
+})
+
+# Validation/handoff package (2.10) is still being built - a placeholder so the button is
+# honest about not doing anything yet, instead of silently no-op'ing on click.
 $btnGenerateHandoff.Add_Click({ [System.Windows.MessageBox]::Show('Validation report / handoff package: not yet available in this build.', 'Gr3y Tools', 'OK', 'Information') | Out-Null })
 
 # Customize Preferences - built from tweaks.json (shared with Deploy-DellOfficeSetup.ps1,
@@ -2712,6 +2721,22 @@ $timer.Add_Tick({
             foreach ($b in $provisionButtons) { $b.IsEnabled = $true }
             $script:provisionProc = $null
         }
+    }
+
+    # A reboot-resume can complete via a SYSTEM scheduled task while the GUI wasn't even
+    # open (or was open but didn't spawn that process itself), so this can't rely on
+    # $script:provisionProc tracking - just check whether the worker's own state file is
+    # still there, cheap enough to do every tick.
+    $wuStateFile = Join-Path $workDir 'wu_resume_state.json'
+    if (Test-Path $wuStateFile) {
+        try {
+            $wuState = Get-Content -Path $wuStateFile -Raw -ErrorAction Stop | ConvertFrom-Json
+            $textWindowsUpdateResume.Text = "Windows Update: resume pending (was on pass $($wuState.pass) of 4 - will continue automatically after the next reboot)"
+        } catch {
+            $textWindowsUpdateResume.Text = 'Windows Update: a resume is pending (could not read its details).'
+        }
+    } elseif ($textWindowsUpdateResume.Text) {
+        $textWindowsUpdateResume.Text = ''
     }
 })
 $timer.Start()
