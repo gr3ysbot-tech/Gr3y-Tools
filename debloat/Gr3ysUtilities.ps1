@@ -69,6 +69,12 @@ $patternsPath = Join-Path $scriptDir 'bloat-patterns.json'
 $workDir = Join-Path $env:ProgramData 'DellOfficeDeploy'
 New-Item -ItemType Directory -Path $workDir -Force | Out-Null
 
+# One-time cleanup of old run/fix/scan/winget logs on every GUI launch - this directory
+# otherwise only ever grows, run after run, laptop after laptop.
+Get-ChildItem -Path $workDir -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
 if (-not (Test-Path $deployScript)) {
     [System.Windows.Forms.MessageBox]::Show("Deploy-DellOfficeSetup.ps1 not found next to this script at:`r`n$deployScript", 'Gr3y Tools', 'OK', 'Error') | Out-Null
     exit 1
@@ -1680,11 +1686,23 @@ $btnStop.Add_Click({
 $btnDownloadLog.Add_Click({
     if (-not $script:deployLogFile -or -not (Test-Path $script:deployLogFile)) { return }
     $dialog = New-Object Microsoft.Win32.SaveFileDialog
-    $dialog.FileName = "gr3ytools-debloat_$(Get-Date -Format 'yyyyMMdd_HHmmss')_$(Get-MachineTag).log"
+    $dialog.FileName = "gr3ytools-debloat_$(Get-Date -Format 'yyyyMMdd_HHmmss')_$(Get-MachineTag).zip"
     $dialog.InitialDirectory = [Environment]::GetFolderPath('Desktop')
-    $dialog.Filter = 'Log files (*.log)|*.log|All files (*.*)|*.*'
+    $dialog.Filter = 'Zip files (*.zip)|*.zip|All files (*.*)|*.*'
     if ($dialog.ShowDialog()) {
-        Copy-Item -Path $script:deployLogFile -Destination $dialog.FileName -Force
+        $filesToZip = New-Object System.Collections.Generic.List[string]
+        $filesToZip.Add($script:deployLogFile)
+        if ($script:deployErrFile -and (Test-Path $script:deployErrFile)) { $filesToZip.Add($script:deployErrFile) }
+        # gui_run_*.out.log only has what the worker wrote to stdout - the worker's own
+        # Start-Transcript log additionally has the exact command line (every -Tweak*/
+        # -Skip*/-Office* flag) it was launched with, which is often the first thing
+        # worth checking on a "why did this run do something unexpected" ticket. Most
+        # recent run_*.log in the work dir, since Download Log is only ever enabled once
+        # a job has finished and nothing else writes new transcripts there concurrently.
+        $transcript = Get-ChildItem -Path $workDir -Filter 'run_*.log' -ErrorAction SilentlyContinue |
+            Sort-Object CreationTime -Descending | Select-Object -First 1
+        if ($transcript) { $filesToZip.Add($transcript.FullName) }
+        Compress-Archive -Path $filesToZip -DestinationPath $dialog.FileName -Force
     }
 })
 
@@ -2131,11 +2149,17 @@ $timer.Add_Tick({
                 $btnCheckInstalled.IsEnabled = $true
                 $btnStopInstall.Visibility = 'Collapsed'
             } else {
-                # install / uninstall: queue-driven, one winget process per selected app.
+                # install / uninstall: queue-driven, one winget process (and log file) per
+                # selected app - up to 63 of them in a full run. Delete each one right
+                # after reading it into the log box instead of leaving it in
+                # C:\ProgramData\DellOfficeDeploy forever - its content already went into
+                # the Install Apps log box above.
                 $tail = $null
                 if ($script:installLogFile -and (Test-Path $script:installLogFile)) {
                     $tail = Get-Content -Path $script:installLogFile -Raw -ErrorAction SilentlyContinue
                     if ($tail) { $installLogBox.AppendText($tail); $installLogBox.AppendText("`r`n"); $installLogBox.ScrollToEnd() }
+                    Remove-Item -Path $script:installLogFile -Force -ErrorAction SilentlyContinue
+                    Remove-Item -Path "$($script:installLogFile).err" -Force -ErrorAction SilentlyContinue
                 }
 
                 $exitCode = $null
