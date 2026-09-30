@@ -417,6 +417,89 @@
         {"path": "HKCU:\\Software\\Policies\\Microsoft\\office\\16.0\\common\\general", "name": "OptInDisable", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
         {"path": "HKCU:\\Software\\Microsoft\\Office\\16.0\\Common\\General", "name": "ShownFirstRunOptin", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
       ]
+    },
+    {
+      "key": "ClassicContextMenu",
+      "label": "Restore Classic Right-Click Context Menu",
+      "tip": "Brings back the full Windows 10-style right-click menu instead of Windows 11's shortened one with a 'Show more options' submenu. Creates an empty CLSID override key - a well-documented, fully reversible Windows 11 mechanism (verified live: New-Item + Set-Item with an empty value creates it, Remove-Item -Recurse cleanly removes it). Current-profile only - does not mirror to the Default profile, since this lives under HKCU\\Software\\Classes (backed by UsrClass.dat), not the NTUSER.DAT hive the Default-profile mirror loads.",
+      "scope": "HKCU",
+      "explorerRestart": true,
+      "entries": []
+    },
+    {
+      "key": "PrinterAutoManageOff",
+      "label": "Stop Windows From Auto-Changing the Default Printer",
+      "tip": "Disables 'Let Windows manage my default printer', which otherwise silently switches the default printer to whichever one was most recently used - a common help-desk complaint in offices with more than one printer. Opt-in and reversible.",
+      "scope": "HKCU",
+      "entries": [
+        {"path": "HKCU:\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows", "name": "LegacyDefaultPrinterMode", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
+      ]
+    },
+    {
+      "key": "FirstLogonAnimationOff",
+      "label": "Disable First Sign-In Animation",
+      "tip": "Skips the 'Hi' / spinning-dots animation the first time a new account signs in - a small speedup during provisioning when several accounts get set up back to back. Machine-wide (HKLM) GPO-backed value. Opt-in and reversible.",
+      "scope": "HKLM",
+      "entries": [
+        {"path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", "name": "EnableFirstLogonAnimation", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"}
+      ]
+    },
+    {
+      "key": "AutoRestartSignOnOff",
+      "label": "Disable Automatic Sign-In After Restart",
+      "tip": "Turns off Winlogon's Automatic Restart Sign-On (ARSO), which otherwise re-signs the last interactive user back in (and unlocks their lock-screen apps) after a Windows Update restart with no PIN/password prompt. Recommended for shared/multi-user PCs. Machine-wide (HKLM) GPO-backed value. Opt-in and reversible.",
+      "scope": "HKLM",
+      "entries": [
+        {"path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", "name": "DisableAutomaticRestartSignOn", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
+      ]
+    },
+    {
+      "key": "PrintScreenOpensSnipping",
+      "label": "Print Screen Key Opens Snipping Tool",
+      "tip": "Pins the Print Screen key to open Snipping Tool's screen capture instead of just copying the full screen to the clipboard. This is Windows 11's own default when the value is absent, so 'off' explicitly sets 0 rather than removing the value - simply removing it would fall back to the same enabled behavior as 'on', not actually restore the classic clipboard-copy behavior. Requires an Explorer restart (both explorer.exe and Taskbar.dll read this at startup, per Microsoft's own documented behavior). Opt-in and reversible.",
+      "scope": "HKCU",
+      "explorerRestart": true,
+      "entries": [
+        {"path": "HKCU:\\Control Panel\\Keyboard", "name": "PrintScreenKeyForSnippingEnabled", "type": "DWord", "onValue": "1", "offValue": "0"}
+      ]
+    },
+    {
+      "key": "ExplorerOpensToThisPC",
+      "label": "File Explorer Opens to This PC",
+      "tip": "Makes new File Explorer windows open to This PC instead of Quick Access/Home. Opt-in and reversible - turning it back off restores the default Quick Access view.",
+      "scope": "HKCU",
+      "entries": [
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", "name": "LaunchTo", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
+      ]
+    },
+    {
+      "key": "RecycleBinDeleteConfirmOn",
+      "label": "Show Recycle Bin Delete Confirmation",
+      "tip": "Shows the 'Are you sure you want to move this file to the Recycle Bin?' dialog on every delete, which is off by default on Windows 10/11. Useful for less experienced users on shared/office PCs. Opt-in and reversible.",
+      "scope": "HKCU",
+      "entries": [
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer", "name": "ConfirmFileDelete", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
+      ]
+    },
+    {
+      "key": "TaskbarChatOff",
+      "label": "Hide Taskbar Chat (Teams) Icon",
+      "tip": "Removes the Chat icon from the taskbar. Requires an Explorer restart. Opt-in and reversible.",
+      "scope": "HKCU",
+      "explorerRestart": true,
+      "entries": [
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", "name": "TaskbarMn", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"}
+      ]
+    },
+    {
+      "key": "PhoneLinkStartOff",
+      "label": "Hide Phone Link From Start Menu",
+      "tip": "Hides the Phone Link (mobile device) companion panel from the Start menu. Does not uninstall or disable the Phone Link app itself, only its Start menu integration. Requires an Explorer restart. Verified against Win11Debloat's real Disable_Phone_Link_In_Start.reg. Opt-in and reversible.",
+      "scope": "HKCU",
+      "explorerRestart": true,
+      "entries": [
+        {"path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Start\\Companions\\Microsoft.YourPhone_8wekyb3d8bbwe", "name": "IsEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"}
+      ]
     }
   ]
 }

@@ -710,12 +710,13 @@ $script:undoSnapshotPath = $null
 function Initialize-UndoSnapshot {
     if ($script:undoSnapshot) { return }
     $script:undoSnapshot = [ordered]@{
-        hostname  = $env:COMPUTERNAME
-        timestamp = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
-        registry  = New-Object System.Collections.Generic.List[object]
-        services  = New-Object System.Collections.Generic.List[object]
-        dns       = New-Object System.Collections.Generic.List[object]
-        power     = $null
+        hostname     = $env:COMPUTERNAME
+        timestamp    = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
+        registry     = New-Object System.Collections.Generic.List[object]
+        registryKeys = New-Object System.Collections.Generic.List[object]
+        services     = New-Object System.Collections.Generic.List[object]
+        dns          = New-Object System.Collections.Generic.List[object]
+        power        = $null
     }
 }
 
@@ -730,6 +731,24 @@ function Add-UndoRegistryEntry {
         $script:undoSnapshot.registry.Add([ordered]@{ path = $Path; name = $Name; hadValue = $false; value = $null; type = $Type })
     } else {
         $script:undoSnapshot.registry.Add([ordered]@{ path = $Path; name = $Name; hadValue = $true; value = $existing.$Name; type = $Type })
+    }
+}
+
+function Add-UndoRegistryKeyEntry {
+    # For whole-key create/delete tweaks (e.g. the classic context menu's InprocServer32
+    # key) where the value being set is the key's own unnamed default value - Name '' is
+    # not usable with Get/Set-ItemProperty (Set-ItemProperty -Name '' throws outright,
+    # confirmed by hand against a real key), so this captures/restores via
+    # Get-Item/Set-Item's GetValue('')/-Value instead, and tracks key existence itself
+    # rather than a single named value's existence.
+    param([string]$Path)
+    Initialize-UndoSnapshot
+    if ($script:undoSnapshot.registryKeys | Where-Object { $_.path -eq $Path }) { return }
+    $item = Get-Item -Path $Path -ErrorAction SilentlyContinue
+    if ($null -eq $item) {
+        $script:undoSnapshot.registryKeys.Add([ordered]@{ path = $Path; hadKey = $false; defaultValue = $null })
+    } else {
+        $script:undoSnapshot.registryKeys.Add([ordered]@{ path = $Path; hadKey = $true; defaultValue = $item.GetValue('') })
     }
 }
 
@@ -826,6 +845,23 @@ function Invoke-UndoSnapshot {
                 }
             } catch {
                 Write-Log "Could not revert $($entry.path)\$($entry.name): $($_.Exception.Message)" 'WARN'
+            }
+        }
+    }
+
+    $registryKeyEntries = @($snapshot.registryKeys)
+    [array]::Reverse($registryKeyEntries)
+    foreach ($keyEntry in $registryKeyEntries) {
+        Invoke-Step "Reverting registry key: $($keyEntry.path)" {
+            try {
+                if (-not $keyEntry.hadKey) {
+                    Remove-Item -Path $keyEntry.path -Recurse -Force -ErrorAction SilentlyContinue
+                } else {
+                    New-Item -Path $keyEntry.path -Force -ErrorAction Stop | Out-Null
+                    Set-Item -Path $keyEntry.path -Value $keyEntry.defaultValue -ErrorAction Stop
+                }
+            } catch {
+                Write-Log "Could not revert registry key $($keyEntry.path): $($_.Exception.Message)" 'WARN'
             }
         }
     }
@@ -1135,6 +1171,26 @@ function Invoke-DefaultProfileRegistry {
     }
 }
 
+# Classic context menu is a whole-key create/delete tweak (the key's own unnamed default
+# value, not a named value under an existing key) - Set-ItemProperty -Name '' throws
+# outright (confirmed by hand against a real key), so this can't be expressed as a normal
+# tweaks.json entries[] item. ClassicContextMenu's tweakDefs entry carries entries=@() and
+# is special-cased in Invoke-CustomizeTweaks instead, using Add-UndoRegistryKeyEntry for
+# revert support. Confirmed live: New-Item + Set-Item -Value '' creates the key with an
+# empty REG_SZ default value; Remove-Item -Recurse deletes it and Windows falls back to
+# the modern menu, matching Microsoft Q&A/community-documented revert steps.
+function Set-ClassicContextMenu {
+    param([string]$Direction)
+    $keyPath = 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32'
+    Add-UndoRegistryKeyEntry -Path $keyPath
+    if ($Direction -eq 'on') {
+        New-Item -Path $keyPath -Force -ErrorAction Stop | Out-Null
+        Set-Item -Path $keyPath -Value '' -ErrorAction Stop
+    } else {
+        Remove-Item -Path $keyPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # $script:tweakDefs is loaded from tweaks.json above (shared with Gr3ysUtilities.ps1's
 # toggle list and its live-state read). Each entry carries an onValue and offValue (a
 # literal "<RemoveEntry>" offValue means delete the value rather than write one) - the
@@ -1173,17 +1229,21 @@ function Invoke-CustomizeTweaks {
         }
         Invoke-Step "Applying tweak: $($def.label) -> $direction" {
             try {
-                if ($def.needsHKU -and -not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
-                    New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS -Scope Script -ErrorAction Stop | Out-Null
-                }
-                foreach ($entry in $def.entries) {
-                    $value = if ($direction -eq 'on') { $entry.onValue } else { $entry.offValue }
-                    Add-UndoRegistryEntry -Path $entry.path -Name $entry.name -Type $entry.type
-                    if ($value -eq '<RemoveEntry>') {
-                        Remove-ItemProperty -Path $entry.path -Name $entry.name -ErrorAction SilentlyContinue
-                    } else {
-                        New-Item -Path $entry.path -Force -ErrorAction SilentlyContinue | Out-Null
-                        Set-ItemProperty -Path $entry.path -Name $entry.name -Value $value -Type $entry.type -ErrorAction Stop
+                if ($key -eq 'ClassicContextMenu') {
+                    Set-ClassicContextMenu -Direction $direction
+                } else {
+                    if ($def.needsHKU -and -not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
+                        New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS -Scope Script -ErrorAction Stop | Out-Null
+                    }
+                    foreach ($entry in $def.entries) {
+                        $value = if ($direction -eq 'on') { $entry.onValue } else { $entry.offValue }
+                        Add-UndoRegistryEntry -Path $entry.path -Name $entry.name -Type $entry.type
+                        if ($value -eq '<RemoveEntry>') {
+                            Remove-ItemProperty -Path $entry.path -Name $entry.name -ErrorAction SilentlyContinue
+                        } else {
+                            New-Item -Path $entry.path -Force -ErrorAction SilentlyContinue | Out-Null
+                            Set-ItemProperty -Path $entry.path -Name $entry.name -Value $value -Type $entry.type -ErrorAction Stop
+                        }
                     }
                 }
                 Write-Log "Applied: $($def.label) -> $direction"
@@ -1192,6 +1252,9 @@ function Invoke-CustomizeTweaks {
             }
         }
         if ($def.explorerRestart) { $restartExplorer = $true }
+        if ($key -eq 'ClassicContextMenu' -and $TargetProfile -in @('Default', 'Both')) {
+            Write-Log 'Classic context menu is current-profile-only and does not mirror to the Default profile - it lives under HKCU\Software\Classes, which is backed by UsrClass.dat, not the NTUSER.DAT hive the Default-profile mirror mechanism loads. A new user account will still get the modern Windows 11 menu.' 'WARN'
+        }
         $appliedDefs.Add(@{ Def = $def; Direction = $direction })
     }
 

@@ -1785,6 +1785,12 @@ function Test-TweakIsOn {
     # a checkbox's initial state; Apply always (re)writes every entry for a changed key,
     # regardless of whether any single entry already happened to match.
     param($TweakDef)
+    # ClassicContextMenu has no named-value entries (it's a whole-key create/delete tweak
+    # applied via Deploy-DellOfficeSetup.ps1's Set-ClassicContextMenu special case) - "on"
+    # just means the InprocServer32 key exists.
+    if ($TweakDef.key -eq 'ClassicContextMenu') {
+        return (Test-Path 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32')
+    }
     if (-not $TweakDef.entries -or $TweakDef.entries.Count -eq 0) { return $false }
     $first = $TweakDef.entries[0]
     try {
