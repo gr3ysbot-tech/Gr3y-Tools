@@ -1,0 +1,13 @@
+# This repo is LF-only, pure ASCII in debloat/*.ps1 and *.json (target: Windows
+# PowerShell 5.1, and any byte change - including a line-ending flip - would break a
+# future Authenticode signature). Without this file, a Windows git client or a Windows
+# GitHub Actions runner can check these files out as CRLF via core.autocrlf, even though
+# the committed blobs are genuinely LF - confirmed for real: the CI lint job failed on
+# exactly this after actions/checkout on windows-latest, despite every file being
+# verified LF-only before every commit all session.
+* text=auto eol=lf
+*.ps1 text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
