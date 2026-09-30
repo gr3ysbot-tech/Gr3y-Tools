@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Gr3y Tools - one-line launcher for Gr3y's Utilities: Dell/Lenovo debloat,
+    Gr3y Tools - one-line launcher for Gr3y Support: Dell/Lenovo debloat,
     Microsoft 365 Apps for business deploy, and a WinUtil-style app install catalog.
 
 .DESCRIPTION
@@ -38,7 +38,7 @@ if (-not (Test-Gr3yToolsIsAdmin)) {
     return
 }
 
-Write-Host "Gr3y's Utilities - Dell/Lenovo debloat + Office deploy + app installer" -ForegroundColor Cyan
+Write-Host "Gr3y Support - Dell/Lenovo debloat + Office deploy + app installer" -ForegroundColor Cyan
 Write-Host 'Downloading latest tool files...'
 
 $installDir = Join-Path $env:TEMP ("Gr3yTools_{0}" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
@@ -53,7 +53,7 @@ foreach ($relativePath in $toolFiles) {
     Invoke-WebRequest -Uri $sourceUrl -OutFile $destPath -UseBasicParsing
 }
 
-Write-Host "Starting Gr3y's Utilities..." -ForegroundColor Green
+Write-Host "Starting Gr3y Support..." -ForegroundColor Green
 
 # Always launch as its own -ExecutionPolicy Bypass process, regardless of what
 # policy the CURRENT session has. Relying on the elevation relaunch above to set

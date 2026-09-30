@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Gr3y's Utilities - native Windows GUI for Dell/Lenovo debloat, Microsoft 365 Apps
+    Gr3y Support - native Windows GUI for Dell/Lenovo debloat, Microsoft 365 Apps
     for business deploy, and a WinUtil-style app install catalog.
 
 .DESCRIPTION
@@ -295,7 +295,7 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
 [xml]$xamlDoc = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Gr3y's Utilities" Height="820" Width="1150" MinHeight="640" MinWidth="980"
+        Title="Gr3y Support" Height="820" Width="1150" MinHeight="640" MinWidth="980"
         WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize"
         AllowsTransparency="False" Background="#232629"
         FontFamily="Segoe UI" FontSize="12"
@@ -692,7 +692,7 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
         <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
 
-      <TextBlock Grid.Column="0" Text="Gr3y's Utilities" FontFamily="Consolas" FontSize="16" FontWeight="Bold"
+      <TextBlock Grid.Column="0" Text="Gr3y Support" FontFamily="Consolas" FontSize="16" FontWeight="Bold"
                  Foreground="{StaticResource HeaderBrush}" VerticalAlignment="Center" Margin="14,0,16,0"/>
 
       <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">

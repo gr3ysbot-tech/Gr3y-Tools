@@ -4,7 +4,7 @@ One-line PowerShell utilities for field IT work. Each tool is meant to be run
 directly on a target machine with a single command - no manual file copying,
 no keeping a USB kit in sync across every laptop.
 
-## Gr3y's Utilities - Debloat + Office Deploy + App Installer
+## Gr3y Support - Debloat + Office Deploy + App Installer
 
 A native Windows GUI (WPF, no browser involved) styled after ChrisTitusTech's
 WinUtil: a custom dark window chrome with the tabs, a search box, and window
