@@ -41,7 +41,7 @@ $needsElevation = -not (Test-IsAdmin)
 $needsSTA = [System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA'
 
 if ($needsElevation -or $needsSTA) {
-    $relaunchArgs = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
+    $relaunchArgs = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', """$PSCommandPath""")
     if ($needsElevation) {
         Start-Process -FilePath 'powershell.exe' -ArgumentList $relaunchArgs -Verb RunAs
     } else {
@@ -152,13 +152,20 @@ function Get-LogTail {
 }
 
 function Get-LogSummary {
+    # One-shot summary that reads the whole log file - fine for a single call when a
+    # job has just finished, but too expensive to call every timer tick against a log
+    # that can grow to megabytes during a long-running phase (sfc/DISM, Office install).
+    # For live per-tick phase tracking during a run, use Update-PhaseFromTail instead.
     param([string]$LogPath)
     $result = @{ phase = 'Idle'; completed = $false }
     if (-not $LogPath -or -not (Test-Path $LogPath)) { return $result }
     $content = Get-Content -Path $LogPath -Raw -ErrorAction SilentlyContinue
     if (-not $content) { $result.phase = 'Starting...'; return $result }
     $phase = 'Starting...'
-    $found = [regex]::Matches($content, '--- (Phase \d[a-z]?: [^-]+) ---')
+    # .+? (not [^-]+) - a phase header can itself contain a hyphen, e.g. "en-us", which
+    # [^-]+ would stop at, so the header never matched and the UI got stuck on the
+    # previous phase for the rest of the run.
+    $found = [regex]::Matches($content, '--- (Phase \d[a-z]?: .+?) ---')
     if ($found.Count -gt 0) { $phase = $found[$found.Count - 1].Groups[1].Value.Trim() }
     if ($content -match 'Run complete\.') {
         $phase = 'All phases complete'
@@ -166,6 +173,17 @@ function Get-LogSummary {
     }
     $result.phase = $phase
     return $result
+}
+
+function Update-PhaseFromTail {
+    # Incremental counterpart to Get-LogSummary's phase-scan: scans only newly-appended
+    # tail text (which the per-tick timer already has from Get-LogTail) instead of
+    # re-reading the entire log file from disk on every 1.2s tick.
+    param([string]$TailText, [string]$CurrentPhase)
+    if (-not $TailText) { return $CurrentPhase }
+    $found = [regex]::Matches($TailText, '--- (Phase \d[a-z]?: .+?) ---')
+    if ($found.Count -gt 0) { return $found[$found.Count - 1].Groups[1].Value.Trim() }
+    return $CurrentPhase
 }
 
 function Get-UninstallEntries {
@@ -291,6 +309,13 @@ if (-not (Test-Path $catalogPath)) {
     exit 1
 }
 $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
+
+$tweaksJsonPath = Join-Path $scriptDir 'tweaks.json'
+if (-not (Test-Path $tweaksJsonPath)) {
+    [System.Windows.Forms.MessageBox]::Show("tweaks.json not found next to this script at:`r`n$tweaksJsonPath", 'Gr3y Tools', 'OK', 'Error') | Out-Null
+    exit 1
+}
+$tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).tweaks
 
 [xml]$xamlDoc = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -945,7 +970,7 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
                 </Grid>
 
                 <TextBlock Style="{StaticResource Header}" Text="Customize Preferences" Margin="0,14,0,0"/>
-                <TextBlock Style="{StaticResource Hint}" Text="One-way: applies the &quot;on&quot; value only, no undo. Explorer restarts once at the end if needed."
+                <TextBlock Style="{StaticResource Hint}" Text="Each switch reflects the machine's current setting. Toggle what you want and Apply only sends what changed. Explorer restarts once at the end if needed."
                            TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
                 <Grid>
                   <Grid.ColumnDefinitions>
@@ -1146,44 +1171,44 @@ foreach ($p in $quickPanels) {
     }.GetNewClosure())
 }
 
-# Customize Preferences - same Key strings as Deploy-DellOfficeSetup.ps1's $tweakDefs.
+# Customize Preferences - built from tweaks.json (shared with Deploy-DellOfficeSetup.ps1,
+# which applies from the same file). Each switch reflects the LIVE current registry state
+# at window load (read here, since this process is already elevated), not just "off by
+# default" - so unlike the old one-way version, unchecking a switch that's currently on
+# and clicking Apply actually reverts it, and checking one that's already on is a no-op.
 $tweaksPanelA = $window.FindName('TweaksPanelA')
 $tweaksPanelB = $window.FindName('TweaksPanelB')
 $btnApplyTweaks = $window.FindName('BtnApplyTweaks')
 $dnsPresetCombo = $window.FindName('DnsPresetCombo')
 $btnApplyDns = $window.FindName('BtnApplyDns')
 
-$tweakList = @(
-    @{ Key = 'DarkTheme'; Label = 'Dark Theme for Windows'; Tip = 'Dark Mode for the system and applications.' }
-    @{ Key = 'ShowFileExt'; Label = 'File Explorer File Extensions'; Tip = 'Shows file extensions in Explorer (.exe, .png, etc.)' }
-    @{ Key = 'ShowHiddenFiles'; Label = 'File Explorer Hidden Files'; Tip = 'Reveals hidden files in Explorer.' }
-    @{ Key = 'LongPaths'; Label = 'Enable Long Paths'; Tip = 'Allows file paths longer than 260 characters in Explorer.' }
-    @{ Key = 'GameMode'; Label = 'Game Mode'; Tip = 'Prioritizes gaming performance by allocating system resources to games.' }
-    @{ Key = 'MouseAcceleration'; Label = 'Mouse Acceleration'; Tip = 'Cursor movement is affected by the speed of physical mouse movements.' }
-    @{ Key = 'NumLockOnStartup'; Label = 'Num Lock on Startup'; Tip = 'Turns Num Lock on when the computer starts.' }
-    @{ Key = 'WindowSnapping'; Label = 'Window Snapping'; Tip = 'Enables the window snapping feature when dragging windows.' }
-    @{ Key = 'ScrollbarsAlwaysVisible'; Label = 'Scrollbars Always Visible'; Tip = 'Scrollbars are always visible instead of auto-hiding.' }
-    @{ Key = 'StickyKeys'; Label = 'Sticky Keys'; Tip = 'Enables Sticky Keys (activates by pressing Shift 5 times).' }
-    @{ Key = 'TaskbarCenteredIcons'; Label = 'Taskbar Centered Icons'; Tip = 'Centers Taskbar icons instead of left-aligning them.' }
-    @{ Key = 'TaskbarSearchIcon'; Label = 'Taskbar Search Icon'; Tip = 'Shows the Search button on the Taskbar.' }
-    @{ Key = 'TaskbarTaskViewIcon'; Label = 'Taskbar Task View Icon'; Tip = 'Shows the Task View button on the Taskbar.' }
-    @{ Key = 'StartMenuBingSearch'; Label = 'Start Menu Bing Search'; Tip = 'Enables Bing web search results in Windows Search.' }
-    @{ Key = 'StartMenuRecommendations'; Label = 'Start Menu Recommendations'; Tip = 'Enables the Recommended section in the Start Menu. WARNING: also affects Windows Spotlight on the Lock Screen.' }
-    @{ Key = 'SettingsHomePage'; Label = 'Settings Home Page'; Tip = 'Shows the Home page in the Windows Settings app.' }
-    @{ Key = 'BatteryPercentage'; Label = 'System Tray Battery Percentage'; Tip = 'Shows numeric battery percentage next to the battery icon in the system tray.' }
-    @{ Key = 'BSoDVerbose'; Label = 'BSoD Verbose Mode'; Tip = 'Gives more information when you blue screen.' }
-    @{ Key = 'DisableLockScreen'; Label = 'Lock Screen - Disable'; Tip = 'Skips the lock screen entirely, goes directly to sign-in on boot and wake.' }
-    @{ Key = 'LogonAcrylicBlur'; Label = 'Logon Screen Acrylic Blur'; Tip = 'Enables the acrylic blur effect on the login screen background.' }
-    @{ Key = 'LogonVerbose'; Label = 'Logon Verbose Mode'; Tip = 'Shows detailed messages during startup/shutdown.' }
-    @{ Key = 'NewOutlook'; Label = 'Microsoft Outlook New Version'; Tip = 'Forces the new Outlook application to be used.' }
-    @{ Key = 'S0SleepNetwork'; Label = 'S0 Sleep Network Connectivity'; Tip = 'Keeps network connectivity during S0 (modern standby) low-power idle.' }
-    @{ Key = 'S3Sleep'; Label = 'S3 Sleep'; Tip = 'Switches from Modern Standby to S3 Sleep (cuts power to the CPU, keeps RAM refreshed).' }
-)
+function Test-TweakIsOn {
+    # "On" is decided from the tweak's first registry entry only - good enough to seed
+    # a checkbox's initial state; Apply always (re)writes every entry for a changed key,
+    # regardless of whether any single entry already happened to match.
+    param($TweakDef)
+    if (-not $TweakDef.entries -or $TweakDef.entries.Count -eq 0) { return $false }
+    $first = $TweakDef.entries[0]
+    try {
+        $current = (Get-ItemProperty -Path $first.path -Name $first.name -ErrorAction Stop).($first.name)
+        return ("$current" -eq "$($first.onValue)")
+    } catch {
+        return $false
+    }
+}
+
+# NumLockOnStartup's first entry lives under HKU:\.Default - mount that PSDrive once,
+# up front, so the live-state read below can resolve it (not auto-mounted by default,
+# unlike HKLM:/HKCU:).
+if (-not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
+    New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS -Scope Script -ErrorAction SilentlyContinue | Out-Null
+}
 
 $script:tweakCheckBoxes = @{}
-$tweakHalf = [Math]::Ceiling($tweakList.Count / 2)
-for ($i = 0; $i -lt $tweakList.Count; $i++) {
-    $t = $tweakList[$i]
+$script:tweakInitialState = @{}
+$tweakHalf = [Math]::Ceiling($tweaksCatalog.Count / 2)
+for ($i = 0; $i -lt $tweaksCatalog.Count; $i++) {
+    $t = $tweaksCatalog[$i]
     $targetPanel = if ($i -lt $tweakHalf) { $tweaksPanelA } else { $tweaksPanelB }
 
     $row = New-Object System.Windows.Controls.StackPanel
@@ -1193,10 +1218,12 @@ for ($i = 0; $i -lt $tweakList.Count; $i++) {
     $cb = New-Object System.Windows.Controls.CheckBox
     $cb.Style = $window.Resources['ToggleSwitchStyle']
     $cb.VerticalAlignment = 'Center'
+    $isOn = Test-TweakIsOn -TweakDef $t
+    $cb.IsChecked = $isOn
     $row.Children.Add($cb) | Out-Null
 
     $label = New-Object System.Windows.Controls.TextBlock
-    $label.Text = $t.Label
+    $label.Text = $t.label
     $label.VerticalAlignment = 'Center'
     $label.Margin = '8,0,0,0'
     $label.TextWrapping = 'Wrap'
@@ -1204,20 +1231,30 @@ for ($i = 0; $i -lt $tweakList.Count; $i++) {
 
     $hint = New-Object System.Windows.Controls.TextBlock
     $hint.Style = $window.Resources['Hint']
-    $hint.ToolTip = $t.Tip
+    $hint.ToolTip = $t.tip
     $row.Children.Add($hint) | Out-Null
 
     $targetPanel.Children.Add($row) | Out-Null
-    $script:tweakCheckBoxes[$t.Key] = $cb
+    $script:tweakCheckBoxes[$t.key] = $cb
+    $script:tweakInitialState[$t.key] = $isOn
 }
 
 $btnApplyTweaks.Add_Click({
-    $keys = $script:tweakCheckBoxes.Keys | Where-Object { $script:tweakCheckBoxes[$_].IsChecked }
-    if (-not $keys) {
-        [System.Windows.MessageBox]::Show('No tweaks selected.', 'Gr3y Tools', 'OK', 'Information') | Out-Null
+    $changed = $script:tweakCheckBoxes.Keys | Where-Object {
+        [bool]$script:tweakCheckBoxes[$_].IsChecked -ne [bool]$script:tweakInitialState[$_]
+    }
+    if (-not $changed) {
+        [System.Windows.MessageBox]::Show('No tweak changes to apply - every switch already matches its current setting.', 'Gr3y Tools', 'OK', 'Information') | Out-Null
         return
     }
-    Start-FixJob -FixArgs @('-CustomizeTweaks', ($keys -join ',')) -Label 'Apply Tweaks'
+    $selections = $changed | ForEach-Object {
+        $direction = if ($script:tweakCheckBoxes[$_].IsChecked) { 'on' } else { 'off' }
+        "$_=$direction"
+    }
+    Start-FixJob -FixArgs @('-CustomizeTweaks', ($selections -join ',')) -Label 'Apply Tweaks'
+    # Optimistic - assumes the job succeeds, so a second Apply later only sends whatever
+    # changes again from here, rather than re-sending everything just applied.
+    foreach ($key in $changed) { $script:tweakInitialState[$key] = [bool]$script:tweakCheckBoxes[$key].IsChecked }
 })
 
 $btnApplyDns.Add_Click({
@@ -1401,6 +1438,7 @@ $script:deployLogOffset = 0
 $script:deployStartTime = $null
 $script:deployIsDryRun = $false
 $script:deployHasFinishedBannerShown = $true
+$script:deployPhase = 'Idle'
 
 $btnScan.Add_Click({
     $btnScan.IsEnabled = $false
@@ -1420,7 +1458,7 @@ $btnScan.Add_Click({
 })
 
 $btnStart.Add_Click({
-    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $deployScript, '-NoReboot')
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', """$deployScript""", '-NoReboot')
     if ($optDryRun.IsChecked) { $argList += '-DryRun' }
     if ($optCreateRestorePoint.IsChecked) { $argList += '-CreateRestorePoint' }
     if ($optSkipDebloat.IsChecked) { $argList += '-SkipDebloat' }
@@ -1442,6 +1480,7 @@ $btnStart.Add_Click({
     $script:deployLogOffset = 0
     $script:deployIsDryRun = [bool]$optDryRun.IsChecked
     $script:deployHasFinishedBannerShown = $false
+    $script:deployPhase = 'Starting...'
 
     $logBox.Text = ''
     $bannerBorder.Visibility = 'Collapsed'
@@ -1500,7 +1539,7 @@ function Start-FixJob {
     param([string[]]$FixArgs, [string]$Label)
     if ($script:fixProc -and -not $script:fixProc.HasExited) { return }
 
-    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $deployScript,
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', """$deployScript""",
                  '-NoReboot', '-SkipDebloat', '-SkipOfficeRemoval', '-SkipOfficeInstall') + $FixArgs
 
     $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -1718,8 +1757,8 @@ $timer.Add_Tick({
             $running = -not $script:deployProc.HasExited
         } catch {}
 
-        $summary = Get-LogSummary -LogPath $script:deployLogFile
-        $phaseText.Text = $summary.phase
+        $script:deployPhase = Update-PhaseFromTail -TailText $logResult.text -CurrentPhase $script:deployPhase
+        $phaseText.Text = $script:deployPhase
         if ($script:deployStartTime) {
             $elapsed = [int]((Get-Date) - $script:deployStartTime).TotalSeconds
             $elapsedText.Text = "{0}:{1:D2}" -f [int]($elapsed / 60), ($elapsed % 60)
@@ -1738,7 +1777,10 @@ $timer.Add_Tick({
             $btnDownloadLog.Visibility = 'Visible'
             if (-not $script:deployHasFinishedBannerShown) {
                 $script:deployHasFinishedBannerShown = $true
-                if ($summary.completed) {
+                # One-shot full-file read is fine here - this only runs once, right as
+                # the job finishes, not on every tick.
+                $finishedSummary = Get-LogSummary -LogPath $script:deployLogFile
+                if ($finishedSummary.completed) {
                     $stateText.Text = 'Done'
                     $statusDot.Fill = $accentBrush
                     $bannerText.Text = 'Run finished successfully. Reboot to finish clearing removed services/drivers.'

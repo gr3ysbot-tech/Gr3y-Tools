@@ -11,8 +11,8 @@
     If the current session isn't elevated, this relaunches itself elevated (one UAC
     prompt) and re-fetches itself there - same pattern as the tools this is modeled
     after. Once elevated, it downloads the actual tool files (Deploy-DellOfficeSetup.ps1,
-    Gr3ysUtilities.ps1, apps-catalog.json, bloat-patterns.json) fresh from this repo
-    into a per-run temp folder and opens the native GUI.
+    Gr3ysUtilities.ps1, apps-catalog.json, bloat-patterns.json, tweaks.json) fresh from
+    this repo into a per-run temp folder and opens the native GUI.
 
     Always pulls the current version from GitHub, so there's nothing to keep manually
     copied/updated across client laptops - including edits to apps-catalog.json or
@@ -44,7 +44,7 @@ Write-Host 'Downloading latest tool files...'
 $installDir = Join-Path $env:TEMP ("Gr3yTools_{0}" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 
-$toolFiles = @('debloat/Deploy-DellOfficeSetup.ps1', 'debloat/Gr3ysUtilities.ps1', 'debloat/apps-catalog.json', 'debloat/bloat-patterns.json')
+$toolFiles = @('debloat/Deploy-DellOfficeSetup.ps1', 'debloat/Gr3ysUtilities.ps1', 'debloat/apps-catalog.json', 'debloat/bloat-patterns.json', 'debloat/tweaks.json')
 foreach ($relativePath in $toolFiles) {
     $fileName = Split-Path -Leaf $relativePath
     $destPath = Join-Path $installDir $fileName
@@ -62,6 +62,7 @@ Write-Host "Starting Gr3y Support..." -ForegroundColor Green
 # plain "& script.ps1" call here would inherit whatever policy this session
 # already has (Restricted by default on an unmodified/clean machine - exactly
 # what this tool's target laptops are).
+$guiPath = Join-Path $installDir 'Gr3ysUtilities.ps1'
 Start-Process -FilePath 'powershell.exe' -Wait -ArgumentList @(
-    '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $installDir 'Gr3ysUtilities.ps1')
+    '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', """$guiPath"""
 )

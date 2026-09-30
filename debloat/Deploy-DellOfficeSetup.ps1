@@ -66,9 +66,11 @@
     is logged as a warning, not treated as a hard error.
 
 .PARAMETER CustomizeTweaks
-    Comma-separated keys of Windows preference tweaks to apply (see $script:tweakDefs for the
-    full key list). One-directional: checking a tweak applies its "on" registry value; there is
-    no revert/undo path. Restarts Explorer once at the end if any selected tweak needs it.
+    Comma-separated "Key=on" / "Key=off" pairs of Windows preference tweaks to apply (see
+    tweaks.json, which must sit next to this script, for the full key list and each key's
+    on/off registry values). Reversible: "off" writes the tweak's documented original value
+    (or removes the registry value entirely, where that's what turning it off means).
+    Restarts Explorer once at the end if any selected tweak needs it.
 
 .PARAMETER DnsPreset
     Sets DNS servers on all "Up" network adapters to a named preset (Google, Cloudflare,
@@ -247,6 +249,20 @@ if (-not (Test-Path $patternsPath)) {
 }
 $bloatPatterns = Get-Content -Path $patternsPath -Raw | ConvertFrom-Json
 
+# Customize Preferences tweak definitions live in tweaks.json (must also sit next to
+# this script) - shared with Gr3ysUtilities.ps1, which reads it to build the toggle list
+# and to read each tweak's live current state, so both sides read one source of truth.
+$tweaksJsonPath = Join-Path $scriptDir 'tweaks.json'
+if (-not (Test-Path $tweaksJsonPath)) {
+    Write-Log "ERROR: tweaks.json not found next to this script at $tweaksJsonPath" 'ERROR'
+    Stop-Transcript | Out-Null
+    exit 1
+}
+$script:tweakDefs = @{}
+foreach ($tweakDef in (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).tweaks) {
+    $script:tweakDefs[$tweakDef.key] = $tweakDef
+}
+
 # Which OEM section(s) to actually check - avoids matching Lenovo patterns on a
 # known-Dell machine (and vice versa) when the operator already knows the brand.
 # Generic bloat (McAfee/Dropbox/Widgets/Teams) isn't OEM-specific, so it always runs.
@@ -332,15 +348,22 @@ function Invoke-ThrottledSteps {
 function Start-ProcessLowPriority {
     # Launches an uninstaller at BelowNormal process priority so it yields to
     # whatever else is using the machine (remote session, foreground apps)
-    # instead of competing for CPU/disk at full priority.
+    # instead of competing for CPU/disk at full priority. Bounded wait - a wrong
+    # silent flag can pop an interactive dialog on a -WindowStyle Hidden process,
+    # which would otherwise block this step (and the whole run) forever.
     param(
         [string]$FilePath,
-        [string]$ArgumentList
+        [string]$ArgumentList,
+        [int]$TimeoutMs = 600000
     )
     $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru -WindowStyle Hidden -ErrorAction SilentlyContinue
     if ($proc) {
         try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch {}
-        $proc.WaitForExit()
+        $exited = $proc.WaitForExit($TimeoutMs)
+        if (-not $exited) {
+            Write-Log "Uninstaller '$FilePath' did not exit within $($TimeoutMs / 1000)s (likely showing a dialog with the wrong silent flag) - killing it." 'WARN'
+            try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+        }
     }
 }
 
@@ -401,21 +424,56 @@ function Remove-OemBloatware {
         foreach ($match in $matches) {
             $name = $match.DisplayName
             Invoke-Step "Uninstalling: $name" {
-                $uninstallString = $match.UninstallString
+                # QuietUninstallString, when the vendor provides one, is already the
+                # correct fully-silent command line - trust it over any guessing below.
+                $uninstallString = if ($match.QuietUninstallString) { $match.QuietUninstallString } else { $match.UninstallString }
                 if ($uninstallString) {
                     if ($uninstallString -match 'msiexec') {
-                        $productCode = $match.PSChildName
+                        # PSChildName is the registry key name, which for some Dell entries
+                        # is a product name, not the GUID - pull the real GUID out of the
+                        # uninstall string itself instead.
+                        $guidMatch = [regex]::Match($uninstallString, '\{[0-9A-Fa-f-]{36}\}')
+                        $productCode = if ($guidMatch.Success) { $guidMatch.Value } else { $match.PSChildName }
                         Write-Log "Running msiexec /x $productCode /qn /norestart for '$name' (low priority)"
                         Start-ProcessLowPriority -FilePath 'msiexec.exe' -ArgumentList "/x $productCode /qn /norestart"
                     } else {
-                        # Best-effort silent flags for EXE-based uninstallers (NSIS/InstallShield/Inno).
-                        foreach ($flag in @('/S', '/silent', '/verysilent /norestart', '/quiet')) {
-                            Write-Log "Attempting EXE uninstall for '$name' with flag(s): $flag (low priority)"
-                            $exe = ($uninstallString -replace '"', '') -split ' ' | Select-Object -First 1
-                            if (Test-Path $exe) {
-                                Start-ProcessLowPriority -FilePath $exe -ArgumentList $flag
-                                break
+                        # Parse "path" and any trailing args separately - the old
+                        # (-replace '"','') -split ' ' approach truncated any quoted path
+                        # containing a space (e.g. "C:\Program Files\...") to just the
+                        # first word, so Test-Path always failed and no EXE uninstaller
+                        # under Program Files ever actually ran.
+                        $exe = $null
+                        $existingArgs = ''
+                        $quotedMatch = [regex]::Match($uninstallString, '^"([^"]+)"\s*(.*)$')
+                        if ($quotedMatch.Success) {
+                            $exe = $quotedMatch.Groups[1].Value
+                            $existingArgs = $quotedMatch.Groups[2].Value
+                        } else {
+                            $bareMatch = [regex]::Match($uninstallString, '^(\S+?\.exe)\s*(.*)$')
+                            if ($bareMatch.Success) {
+                                $exe = $bareMatch.Groups[1].Value
+                                $existingArgs = $bareMatch.Groups[2].Value
                             }
+                        }
+
+                        if ($exe -and (Test-Path $exe)) {
+                            $silentArgs =
+                                if ((Split-Path -Leaf $exe) -match '^unins\d*\.exe$') {
+                                    # Inno Setup's own uninstaller - this is its documented silent switch set.
+                                    '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+                                } elseif ($existingArgs) {
+                                    # The vendor's own uninstall string already carries flags - trust them
+                                    # rather than guessing over the top of a command that was tested to work.
+                                    $existingArgs
+                                } else {
+                                    # No args at all in the registry string - /S is the most common silent
+                                    # switch across NSIS-based uninstallers, which covers most of the rest.
+                                    '/S'
+                                }
+                            Write-Log "Running '$exe' $silentArgs for '$name' (low priority)"
+                            Start-ProcessLowPriority -FilePath $exe -ArgumentList $silentArgs
+                        } else {
+                            Write-Log "Could not resolve an uninstaller executable from '$uninstallString' for '$name' - skipping." 'WARN'
                         }
                     }
                 }
@@ -585,162 +643,43 @@ function Install-OemUpdateTool {
     }
 }
 
-# Registry values sourced verbatim from ChrisTitusTech/winutil's config/tweaks.json
-# (WPFToggle* entries under the "Customize Preferences" category), fetched live from
-# github.com/ChrisTitusTech/winutil main branch. One-directional: applying only ever
-# writes the "enabled" value below - there is no undo/revert path from this tool.
-$script:tweakDefs = @{
-    'BSoDVerbose'              = @{
-        Label   = 'BSoD Verbose Mode'
-        Entries = @(
-            @{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'; Name = 'DisplayParameters'; Value = 1; Type = 'DWord' }
-            @{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'; Name = 'DisableEmoticon'; Value = 1; Type = 'DWord' }
-        )
-    }
-    'BatteryPercentage'        = @{
-        Label   = 'System Tray Battery Percentage'
-        Entries = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'IsBatteryPercentageEnabled'; Value = 1; Type = 'DWord' })
-    }
-    'DarkTheme'                = @{
-        Label           = 'Dark Theme for Windows'
-        Entries         = @(
-            @{ Path = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'; Name = 'AppsUseLightTheme'; Value = 0; Type = 'DWord' }
-            @{ Path = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'; Name = 'SystemUsesLightTheme'; Value = 0; Type = 'DWord' }
-        )
-        ExplorerRestart = $true
-    }
-    'LongPaths'                = @{
-        Label   = 'Enable Long Paths'
-        Entries = @(@{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'; Name = 'LongPathsEnabled'; Value = 1; Type = 'DWord' })
-    }
-    'ShowFileExt'              = @{
-        Label           = 'File Explorer File Extensions'
-        Entries         = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'HideFileExt'; Value = 0; Type = 'DWord' })
-        ExplorerRestart = $true
-    }
-    'ShowHiddenFiles'          = @{
-        Label           = 'File Explorer Hidden Files'
-        Entries         = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'Hidden'; Value = 1; Type = 'DWord' })
-        ExplorerRestart = $true
-    }
-    'GameMode'                 = @{
-        Label   = 'Game Mode'
-        Entries = @(
-            @{ Path = 'HKCU:\Software\Microsoft\GameBar'; Name = 'AllowAutoGameMode'; Value = 1; Type = 'DWord' }
-            @{ Path = 'HKCU:\Software\Microsoft\GameBar'; Name = 'AutoGameModeEnabled'; Value = 1; Type = 'DWord' }
-        )
-    }
-    'DisableLockScreen'        = @{
-        Label   = 'Lock Screen - Disable'
-        Entries = @(@{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'; Name = 'NoLockScreen'; Value = 1; Type = 'DWord' })
-    }
-    'LogonAcrylicBlur'         = @{
-        Label   = 'Logon Screen Acrylic Blur'
-        Entries = @(@{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'; Name = 'DisableAcrylicBackgroundOnLogon'; Value = 0; Type = 'DWord' })
-    }
-    'LogonVerbose'             = @{
-        Label   = 'Logon Verbose Mode'
-        Entries = @(@{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'; Name = 'VerboseStatus'; Value = 1; Type = 'DWord' })
-    }
-    'NewOutlook'               = @{
-        Label   = 'Microsoft Outlook New Version'
-        Entries = @(
-            @{ Path = 'HKCU:\SOFTWARE\Microsoft\Office\16.0\Outlook\Preferences'; Name = 'UseNewOutlook'; Value = 1; Type = 'DWord' }
-            @{ Path = 'HKCU:\Software\Microsoft\Office\16.0\Outlook\Options\General'; Name = 'HideNewOutlookToggle'; Value = 0; Type = 'DWord' }
-            @{ Path = 'HKCU:\Software\Policies\Microsoft\Office\16.0\Outlook\Options\General'; Name = 'DoNewOutlookAutoMigration'; Value = 0; Type = 'DWord' }
-            @{ Path = 'HKCU:\Software\Policies\Microsoft\Office\16.0\Outlook\Preferences'; Name = 'NewOutlookMigrationUserSetting'; Value = 0; Type = 'DWord' }
-        )
-    }
-    'MouseAcceleration'        = @{
-        Label   = 'Mouse Acceleration'
-        Entries = @(
-            @{ Path = 'HKCU:\Control Panel\Mouse'; Name = 'MouseSpeed'; Value = 1; Type = 'DWord' }
-            @{ Path = 'HKCU:\Control Panel\Mouse'; Name = 'MouseThreshold1'; Value = 6; Type = 'DWord' }
-            @{ Path = 'HKCU:\Control Panel\Mouse'; Name = 'MouseThreshold2'; Value = 10; Type = 'DWord' }
-        )
-    }
-    'NumLockOnStartup'         = @{
-        Label   = 'Num Lock on Startup'
-        Entries = @(
-            @{ Path = 'HKU:\.Default\Control Panel\Keyboard'; Name = 'InitialKeyboardIndicators'; Value = '2'; Type = 'String' }
-            @{ Path = 'HKCU:\Control Panel\Keyboard'; Name = 'InitialKeyboardIndicators'; Value = '2'; Type = 'String' }
-        )
-        NeedsHKU = $true
-    }
-    'S0SleepNetwork'           = @{
-        Label   = 'S0 Sleep Network Connectivity'
-        Entries = @(@{ Path = 'HKCU:\SOFTWARE\Policies\Microsoft\Power\PowerSettings\f15576e8-98b7-4186-b944-eafa664402d9'; Name = 'ACSettingIndex'; Value = 1; Type = 'DWord' })
-    }
-    'S3Sleep'                  = @{
-        Label   = 'S3 Sleep'
-        Entries = @(@{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Power'; Name = 'PlatformAoAcOverride'; Value = 0; Type = 'DWord' })
-    }
-    'ScrollbarsAlwaysVisible'  = @{
-        Label   = 'Scrollbars Always Visible'
-        Entries = @(@{ Path = 'HKCU:\Control Panel\Accessibility'; Name = 'DynamicScrollbars'; Value = 0; Type = 'DWord' })
-    }
-    'SettingsHomePage'         = @{
-        Label   = 'Settings Home Page'
-        Entries = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer'; Name = 'SettingsPageVisibility'; Value = 'show:home'; Type = 'String' })
-    }
-    'StartMenuBingSearch'      = @{
-        Label   = 'Start Menu Bing Search'
-        Entries = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search'; Name = 'BingSearchEnabled'; Value = 1; Type = 'DWord' })
-    }
-    'StartMenuRecommendations' = @{
-        Label           = 'Start Menu Recommendations'
-        Entries         = @(
-            @{ Path = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Start'; Name = 'HideRecommendedSection'; Value = 0; Type = 'DWord' }
-            @{ Path = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Education'; Name = 'IsEducationEnvironment'; Value = 0; Type = 'DWord' }
-            @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'; Name = 'HideRecommendedSection'; Value = 0; Type = 'DWord' }
-        )
-        ExplorerRestart = $true
-    }
-    'StickyKeys'               = @{
-        Label   = 'Sticky Keys'
-        Entries = @(@{ Path = 'HKCU:\Control Panel\Accessibility\StickyKeys'; Name = 'Flags'; Value = 506; Type = 'DWord' })
-    }
-    'TaskbarCenteredIcons'     = @{
-        Label           = 'Taskbar Centered Icons'
-        Entries         = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'TaskbarAl'; Value = 1; Type = 'DWord' })
-        ExplorerRestart = $true
-    }
-    'TaskbarSearchIcon'        = @{
-        Label   = 'Taskbar Search Icon'
-        Entries = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search'; Name = 'SearchboxTaskbarMode'; Value = 1; Type = 'DWord' })
-    }
-    'TaskbarTaskViewIcon'      = @{
-        Label   = 'Taskbar Task View Icon'
-        Entries = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'ShowTaskViewButton'; Value = 1; Type = 'DWord' })
-    }
-    'WindowSnapping'           = @{
-        Label   = 'Window Snapping'
-        Entries = @(@{ Path = 'HKCU:\Control Panel\Desktop'; Name = 'WindowArrangementActive'; Value = '1'; Type = 'String' })
-    }
-}
-
+# $script:tweakDefs is loaded from tweaks.json above (shared with Gr3ysUtilities.ps1's
+# toggle list and its live-state read). Each entry carries an onValue and offValue (a
+# literal "<RemoveEntry>" offValue means delete the value rather than write one) - the
+# GUI computes which keys actually changed since it loaded and sends "Key=on"/"Key=off"
+# for each, so this is a real reversible apply, not a one-way-only tweak.
 function Invoke-CustomizeTweaks {
-    param([string[]]$Keys)
+    param([string[]]$Selections)
 
     $restartExplorer = $false
-    foreach ($key in $Keys) {
+    foreach ($selection in $Selections) {
+        $parts = $selection -split '=', 2
+        if ($parts.Count -ne 2) { Write-Log "Malformed tweak selection: $selection" 'WARN'; continue }
+        $key = $parts[0]
+        $direction = $parts[1]
         if (-not $script:tweakDefs.ContainsKey($key)) { Write-Log "Unknown tweak key: $key" 'WARN'; continue }
+        if ($direction -ne 'on' -and $direction -ne 'off') { Write-Log "Unknown tweak direction '$direction' for $key" 'WARN'; continue }
         $def = $script:tweakDefs[$key]
-        Invoke-Step "Applying tweak: $($def.Label)" {
+        Invoke-Step "Applying tweak: $($def.label) -> $direction" {
             try {
-                if ($def.NeedsHKU -and -not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
+                if ($def.needsHKU -and -not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
                     New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS -Scope Script -ErrorAction Stop | Out-Null
                 }
-                foreach ($entry in $def.Entries) {
-                    New-Item -Path $entry.Path -Force -ErrorAction SilentlyContinue | Out-Null
-                    Set-ItemProperty -Path $entry.Path -Name $entry.Name -Value $entry.Value -Type $entry.Type -ErrorAction Stop
+                foreach ($entry in $def.entries) {
+                    $value = if ($direction -eq 'on') { $entry.onValue } else { $entry.offValue }
+                    if ($value -eq '<RemoveEntry>') {
+                        Remove-ItemProperty -Path $entry.path -Name $entry.name -ErrorAction SilentlyContinue
+                    } else {
+                        New-Item -Path $entry.path -Force -ErrorAction SilentlyContinue | Out-Null
+                        Set-ItemProperty -Path $entry.path -Name $entry.name -Value $value -Type $entry.type -ErrorAction Stop
+                    }
                 }
-                Write-Log "Applied: $($def.Label)"
+                Write-Log "Applied: $($def.label) -> $direction"
             } catch {
-                Write-Log "Could not apply '$($def.Label)': $($_.Exception.Message)" 'WARN'
+                Write-Log "Could not apply '$($def.label)': $($_.Exception.Message)" 'WARN'
             }
         }
-        if ($def.ExplorerRestart) { $restartExplorer = $true }
+        if ($def.explorerRestart) { $restartExplorer = $true }
     }
 
     if ($restartExplorer) {
@@ -1040,7 +979,7 @@ if ($TweakDisableHibernation) { Disable-Hibernation }
 if ($TweakPreventSleep) { Set-SleepNever }
 if ($TweakDisableSmartAppControl) { Disable-SmartAppControl }
 if ($InstallOemUpdateTool) { Install-OemUpdateTool }
-if ($CustomizeTweaks) { Invoke-CustomizeTweaks -Keys ($CustomizeTweaks -split ',' | Where-Object { $_ }) }
+if ($CustomizeTweaks) { Invoke-CustomizeTweaks -Selections ($CustomizeTweaks -split ',' | Where-Object { $_ }) }
 if ($DnsPreset) { Set-DnsPreset -Preset $DnsPreset }
 
 if (-not $SkipDebloat) {
