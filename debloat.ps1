@@ -6,7 +6,7 @@
 .DESCRIPTION
     Run this on the target laptop from an elevated or non-elevated PowerShell prompt:
 
-        irm https://raw.githubusercontent.com/gr3ysbot-tech/Gr3y-Tools/main/debloat.ps1 | iex
+        irm get.gr3y.io/debloat | iex
 
     If the current session isn't elevated, this relaunches itself elevated (one UAC
     prompt) and re-fetches itself there - same pattern as the tools this is modeled

@@ -4,15 +4,22 @@
     for business deploy, and a WinUtil-style app install catalog.
 
 .DESCRIPTION
-    Two tabs:
+    Four tabs:
       1. Debloat + Office - same engine as Deploy-DellOfficeSetup.ps1 (must sit next to
          this script), driven through checkboxes instead of a command line, with live
          log streaming and a CPU-activity heartbeat across the whole process tree.
       2. Install Apps - a categorized winget-backed install catalog loaded from
-         apps-catalog.json (must also sit next to this script). Edit that JSON file to
-         add/remove/rename entries - no code changes needed.
+         apps-catalog.json (must also sit next to this script), including a
+         Non-Silent Installs category for direct-download entries with no winget
+         package. Edit that JSON file to add/remove/rename entries - no code changes
+         needed.
+      3. Config - one-click Fixes (System Repair, Network Reset, Windows Update Reset,
+         winget re-registration), Customize Preferences (reversible per-tweak toggles
+         driven by tweaks.json, must also sit next to this script), and DNS presets.
+      4. Panels - direct shortcuts to built-in Windows applets (Computer Management,
+         Control Panel, Programs and Features, Windows Firewall, and the like).
 
-    Launch via the repo's debloat.ps1 bootstrap (self-elevates, downloads all three
+    Launch via the repo's debloat.ps1 bootstrap (self-elevates, downloads all five
     files fresh, then runs this), or directly if already elevated:
         .\Gr3ysUtilities.ps1
 
@@ -262,10 +269,16 @@ function Get-UninstallEntries {
         Where-Object { $_.DisplayName }
 }
 
-# Read-only inspection using the exact same patterns Deploy-DellOfficeSetup.ps1 acts on
-# (both load from bloat-patterns.json) - nothing here changes the system, it only reports
-# what a real run would touch. Respects the Dell/Lenovo toggles the same way the real run
-# does, so the scan matches what Start would actually do.
+# Read-only inspection using the exact same bloat-detection patterns
+# Deploy-DellOfficeSetup.ps1 acts on (both load from bloat-patterns.json) - nothing here
+# changes the system, it only reports what a real run's Phase 1 (OEM bloat removal) would
+# touch. Respects the Dell/Lenovo toggles the same way a real run does. Two known gaps
+# versus a real run, though: it only checks Get-AppxPackage -AllUsers, not
+# Get-AppxProvisionedPackage -Online, so a package provisioned for future profiles but not
+# installed for any current user won't show up here even though de-provisioning would
+# still catch it; and its totals don't account for the Skip Debloat toggle - Scan always
+# reports what Phase 1 would remove, even when Skip Debloat is checked and a real Start
+# click would skip that phase entirely.
 #
 # Runs in a background runspace (see $btnScan.Add_Click below) instead of directly on the
 # UI thread - AppX/scheduled-task/registry/service enumeration together take 5-20s on a
