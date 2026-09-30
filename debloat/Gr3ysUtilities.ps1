@@ -1104,13 +1104,34 @@ foreach ($cat in $categories) {
 
     $wrap = New-Object System.Windows.Controls.WrapPanel
     foreach ($app in ($cat.Group | Sort-Object name)) {
+        $row = New-Object System.Windows.Controls.StackPanel
+        $row.Orientation = 'Horizontal'
+        $row.Width = 230
+        $row.Margin = '2,1'
+
         $cb = New-Object System.Windows.Controls.CheckBox
         $cb.Content = $app.name
         $cb.Tag = $app.wingetId
-        $cb.Width = 230
-        $cb.Margin = '2,1'
-        $wrap.Children.Add($cb) | Out-Null
-        $entry = [PSCustomObject]@{ CheckBox = $cb; Name = $app.name; Category = $cat.Name; WingetId = $app.wingetId }
+        $cb.MaxWidth = 208
+        $row.Children.Add($cb) | Out-Null
+
+        if ($app.url) {
+            $help = New-Object System.Windows.Controls.TextBlock
+            $help.Text = '(?)'
+            $help.Foreground = $headerBrush
+            $help.FontSize = 11
+            $help.Margin = '3,0,0,0'
+            $help.VerticalAlignment = 'Center'
+            $help.Cursor = 'Hand'
+            $help.TextDecorations = [System.Windows.TextDecorations]::Underline
+            $help.ToolTip = "Open $($app.url)"
+            $helpUrl = $app.url
+            $help.Add_MouseLeftButtonUp({ Start-Process $helpUrl }.GetNewClosure())
+            $row.Children.Add($help) | Out-Null
+        }
+
+        $wrap.Children.Add($row) | Out-Null
+        $entry = [PSCustomObject]@{ CheckBox = $cb; Row = $row; Name = $app.name; Category = $cat.Name; WingetId = $app.wingetId }
         $script:appEntries.Add($entry)
         # Checked/Unchecked (not Click) since they fire off IsChecked itself changing,
         # regardless of interaction method - Click alone was observed to not reliably
@@ -1137,7 +1158,7 @@ function Update-AppVisibility {
         foreach ($entry in ($script:appEntries | Where-Object { $_.Category -eq $block.Category })) {
             $nameMatches = (-not $searchText) -or ($entry.Name.ToLower().Contains($searchText))
             $visible = $categoryMatches -and $nameMatches
-            $entry.CheckBox.Visibility = if ($visible) { 'Visible' } else { 'Collapsed' }
+            $entry.Row.Visibility = if ($visible) { 'Visible' } else { 'Collapsed' }
             if ($visible) { $anyVisible = $true }
         }
         $blockVisibility = if ($anyVisible) { 'Visible' } else { 'Collapsed' }
@@ -1158,7 +1179,7 @@ $catUtilitiesBtn.Add_Click({ $script:activeCategory = 'Utilities'; Update-AppVis
 
 $btnSelectAll.Add_Click({
     foreach ($entry in $script:appEntries) {
-        if ($entry.CheckBox.Visibility -eq 'Visible') { $entry.CheckBox.IsChecked = $true }
+        if ($entry.Row.Visibility -eq 'Visible') { $entry.CheckBox.IsChecked = $true }
     }
     Update-SelectedCount
 })
