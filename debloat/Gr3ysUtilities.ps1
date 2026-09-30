@@ -1171,6 +1171,109 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
           </ScrollViewer>
         </Border>
       </TabItem>
+
+      <TabItem Header="Provisioning">
+        <Border Style="{StaticResource Panel}">
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="4">
+              <TextBlock Style="{StaticResource Header}" Text="Client Profile"/>
+              <TextBlock Style="{StaticResource Hint}" Text="Save these fields once per client engagement, then Load Profile on every subsequent machine for the same client instead of re-entering them. Never contains secrets - just settings."
+                         TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
+              <WrapPanel Margin="0,0,0,4">
+                <Button Name="BtnLoadProfile" Content="Load Profile..." Width="150" Margin="0,0,8,6"/>
+                <Button Name="BtnSaveProfile" Content="Save Profile..." Width="150" Margin="0,0,8,6"/>
+                <Button Name="BtnNewProfile" Content="Clear / New" Width="120" Margin="0,0,8,6"/>
+                <TextBlock Name="TextProfileLoaded" Text="No profile loaded" VerticalAlignment="Center" Opacity="0.7" Margin="4,0,0,6"/>
+              </WrapPanel>
+              <Grid Margin="0,4,0,0">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="150"/>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="20"/>
+                  <ColumnDefinition Width="150"/>
+                  <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Client code:" VerticalAlignment="Center" Margin="0,4,0,4"/>
+                <TextBox Grid.Row="0" Grid.Column="1" Name="TextClientCode" Margin="0,4,0,4" ToolTip="Short identifier for this client, e.g. ACME."/>
+                <TextBlock Grid.Row="0" Grid.Column="3" Text="Entra tenant ID:" VerticalAlignment="Center" Margin="0,4,0,4"/>
+                <TextBox Grid.Row="0" Grid.Column="4" Name="TextEntraTenantId" Margin="0,4,0,4" ToolTip="Used for OneDrive silent sign-in (KFMSilentOptIn). Leave blank if not Entra-joined."/>
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="Hostname pattern:" VerticalAlignment="Center" Margin="0,4,0,4"/>
+                <TextBox Grid.Row="1" Grid.Column="1" Name="TextHostnamePattern" Margin="0,4,0,4" ToolTip="Use {SERIAL} for the BIOS serial number, e.g. ACME-{SERIAL}. Result is trimmed to 15 characters."/>
+                <TextBlock Grid.Row="1" Grid.Column="3" Text="Lock timeout (sec):" VerticalAlignment="Center" Margin="0,4,0,4"/>
+                <TextBox Grid.Row="1" Grid.Column="4" Name="TextLockTimeoutSec" Margin="0,4,0,4" Text="900" ToolTip="Screen lock inactivity timeout in seconds. 900 = 15 minutes."/>
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="Time zone:" VerticalAlignment="Center" Margin="0,4,0,4"/>
+                <ComboBox Grid.Row="2" Grid.Column="1" Name="OptTimeZone" Margin="0,4,0,4"/>
+                <TextBlock Grid.Row="2" Grid.Column="3" Text="Region:" VerticalAlignment="Center" Margin="0,4,0,4"/>
+                <ComboBox Grid.Row="2" Grid.Column="4" Name="OptRegion" Margin="0,4,0,4"/>
+                <TextBlock Grid.Row="3" Grid.Column="0" Text="Power plan:" VerticalAlignment="Center" Margin="0,4,0,4"/>
+                <ComboBox Grid.Row="3" Grid.Column="1" Name="OptPowerPlan" SelectedIndex="0" Margin="0,4,0,4">
+                  <ComboBoxItem Content="Balanced"/>
+                  <ComboBoxItem Content="High performance"/>
+                  <ComboBoxItem Content="Power saver"/>
+                </ComboBox>
+              </Grid>
+
+              <Separator Margin="0,10,0,10"/>
+              <TextBlock Style="{StaticResource Header}" Text="Hostname Rename"/>
+              <TextBlock Style="{StaticResource Hint}" Text="Renames from the pattern above and this machine's BIOS serial number. Does not restart - a reboot is required to take effect. Do this before Entra join."
+                         TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
+              <WrapPanel>
+                <TextBlock Text="Computed name: " VerticalAlignment="Center"/>
+                <TextBlock Name="TextComputedHostname" Text="(enter a pattern above)" VerticalAlignment="Center" FontWeight="Bold" Margin="0,0,16,0"/>
+                <Button Name="BtnRenameComputer" Content="Rename This Computer" Width="180"/>
+              </WrapPanel>
+
+              <Separator Margin="0,10,0,10"/>
+              <TextBlock Style="{StaticResource Header}" Text="OneDrive Known Folder Move"/>
+              <TextBlock Style="{StaticResource Hint}" Text="Configures silent OneDrive sign-in and redirects Desktop/Documents/Pictures into OneDrive, instead of removing OneDrive. Requires the Entra tenant ID above and only applies on Entra-joined devices."
+                         TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
+              <WrapPanel>
+                <CheckBox Name="OptKfmDesktop" Content="Desktop" IsChecked="True" VerticalAlignment="Center" Margin="0,0,16,8"/>
+                <CheckBox Name="OptKfmDocuments" Content="Documents" IsChecked="True" VerticalAlignment="Center" Margin="0,0,16,8"/>
+                <CheckBox Name="OptKfmPictures" Content="Pictures" IsChecked="True" VerticalAlignment="Center" Margin="0,0,16,8"/>
+              </WrapPanel>
+              <Button Name="BtnApplyOneDriveKfm" Content="Apply OneDrive KFM" Width="180" HorizontalAlignment="Left"/>
+
+              <Separator Margin="0,10,0,10"/>
+              <TextBlock Style="{StaticResource Header}" Text="Regional, Power and Lock Baseline"/>
+              <TextBlock Style="{StaticResource Hint}" Text="Applies the time zone, region, power plan and lock timeout selected above, plus a 15-minute monitor timeout and Fast Startup off (needed for clean Wake-on-LAN and Windows Update)."
+                         TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
+              <Button Name="BtnApplyRegionalBaseline" Content="Apply Regional/Power/Lock Baseline" Width="240" HorizontalAlignment="Left"/>
+
+              <Separator Margin="0,10,0,10"/>
+              <TextBlock Style="{StaticResource Header}" Text="OEM Driver / BIOS Updates"/>
+              <TextBlock Style="{StaticResource Hint}" Text="Runs Dell Command | Update or Lenovo System Update (already installed via the Debloat + Office tab's OEM update tool option) to scan and apply driver/BIOS updates. Requires AC power. May require a reboot - watch for the Reboot button."
+                         TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
+              <Button Name="BtnApplyOemUpdates" Content="Apply OEM Driver/BIOS Updates" Width="240" HorizontalAlignment="Left"/>
+
+              <Separator Margin="0,10,0,10"/>
+              <TextBlock Style="{StaticResource Header}" Text="Windows Update to Completion"/>
+              <TextBlock Style="{StaticResource Hint}" Text="Searches, downloads and installs all available Windows updates, looping until none remain (up to 4 passes). If a reboot is needed mid-way, schedules itself to resume automatically after restart - the status below tracks progress across reboots."
+                         TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
+              <WrapPanel>
+                <Button Name="BtnRunWindowsUpdate" Content="Patch to Current" Width="180" Margin="0,0,12,0"/>
+                <TextBlock Name="TextWindowsUpdateResume" Text="" VerticalAlignment="Center" Foreground="{StaticResource YellowBrush}"/>
+              </WrapPanel>
+
+              <Separator Margin="0,10,0,10"/>
+              <TextBlock Style="{StaticResource Header}" Text="Validation and Handoff Package"/>
+              <TextBlock Style="{StaticResource Hint}" Text="Read-only checks (activation, Defender, firewall, pending reboot, disk space) plus a machine inventory, written as a handoff folder with an HTML report that opens automatically."
+                         TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
+              <Button Name="BtnGenerateHandoff" Content="Generate Validation Report + Handoff Package" Width="320" HorizontalAlignment="Left"/>
+
+              <Separator Margin="0,10,0,10"/>
+              <TextBlock Name="ProvisioningStatusText" Text="Idle" Opacity="0.8" Margin="0,0,0,4"/>
+              <TextBox Name="ProvisioningLogBox" Style="{StaticResource LogBox}" Height="160" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontSize="11"/>
+            </StackPanel>
+          </ScrollViewer>
+        </Border>
+      </TabItem>
     </TabControl>
   </Grid>
 </Window>
@@ -1327,6 +1430,241 @@ foreach ($p in $quickPanels) {
         }
     }.GetNewClosure())
 }
+
+# ============================================================================
+# Provisioning tab (Phase 2 core: client profile, hostname rename, OneDrive KFM,
+# regional/power/lock baseline, OEM driver/BIOS updates, Windows Update to completion,
+# validation/handoff package)
+# ============================================================================
+
+$btnLoadProfile = $window.FindName('BtnLoadProfile')
+$btnSaveProfile = $window.FindName('BtnSaveProfile')
+$btnNewProfile = $window.FindName('BtnNewProfile')
+$textProfileLoaded = $window.FindName('TextProfileLoaded')
+$textClientCode = $window.FindName('TextClientCode')
+$textEntraTenantId = $window.FindName('TextEntraTenantId')
+$textHostnamePattern = $window.FindName('TextHostnamePattern')
+$textLockTimeoutSec = $window.FindName('TextLockTimeoutSec')
+$optTimeZone = $window.FindName('OptTimeZone')
+$optRegion = $window.FindName('OptRegion')
+$optPowerPlan = $window.FindName('OptPowerPlan')
+$textComputedHostname = $window.FindName('TextComputedHostname')
+$btnRenameComputer = $window.FindName('BtnRenameComputer')
+$optKfmDesktop = $window.FindName('OptKfmDesktop')
+$optKfmDocuments = $window.FindName('OptKfmDocuments')
+$optKfmPictures = $window.FindName('OptKfmPictures')
+$btnApplyOneDriveKfm = $window.FindName('BtnApplyOneDriveKfm')
+$btnApplyRegionalBaseline = $window.FindName('BtnApplyRegionalBaseline')
+$btnApplyOemUpdates = $window.FindName('BtnApplyOemUpdates')
+$btnRunWindowsUpdate = $window.FindName('BtnRunWindowsUpdate')
+$textWindowsUpdateResume = $window.FindName('TextWindowsUpdateResume')
+$btnGenerateHandoff = $window.FindName('BtnGenerateHandoff')
+$provisioningStatusText = $window.FindName('ProvisioningStatusText')
+$provisioningLogBox = $window.FindName('ProvisioningLogBox')
+
+# Populated live from this machine's own installed time zones - always accurate, no
+# hardcoded list to go stale. .Id is exactly what Set-TimeZone -Id expects.
+foreach ($tz in [System.TimeZoneInfo]::GetSystemTimeZones()) {
+    $item = New-Object System.Windows.Controls.ComboBoxItem
+    $item.Content = "$($tz.Id) ($($tz.DisplayName))"
+    $item.Tag = $tz.Id
+    [void]$optTimeZone.Items.Add($item)
+    if ($tz.Id -eq [System.TimeZoneInfo]::Local.Id) { $optTimeZone.SelectedItem = $item }
+}
+
+# GeoId values verified against Microsoft's own "Table of Geographical Locations"
+# (learn.microsoft.com/windows/win32/intl/table-of-geographical-locations) before use -
+# a short, MSP-realistic list rather than the full few-hundred-country table.
+$script:regionGeoIds = [ordered]@{
+    'United States'  = 244
+    'Canada'         = 39
+    'United Kingdom' = 242
+    'Australia'      = 12
+}
+foreach ($regionName in $script:regionGeoIds.Keys) {
+    $item = New-Object System.Windows.Controls.ComboBoxItem
+    $item.Content = $regionName
+    $item.Tag = $script:regionGeoIds[$regionName]
+    [void]$optRegion.Items.Add($item)
+}
+$optRegion.SelectedIndex = 0
+
+function Update-ComputedHostnamePreview {
+    $pattern = $textHostnamePattern.Text
+    if (-not $pattern) {
+        $textComputedHostname.Text = '(enter a pattern above)'
+        return
+    }
+    try {
+        $serial = (Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop).SerialNumber
+    } catch {
+        $serial = 'UNKNOWN'
+    }
+    $name = $pattern -replace '\{SERIAL\}', $serial
+    $name = $name -replace '[^A-Za-z0-9-]', ''
+    if ($name.Length -gt 15) { $name = $name.Substring(0, 15) }
+    $textComputedHostname.Text = if ($name) { $name } else { '(pattern produced an empty name)' }
+}
+$textHostnamePattern.Add_TextChanged({ Update-ComputedHostnamePreview })
+Update-ComputedHostnamePreview
+
+function Get-CurrentProfileObject {
+    [ordered]@{
+        clientCode      = $textClientCode.Text
+        hostnamePattern = $textHostnamePattern.Text
+        entraTenantId   = $textEntraTenantId.Text
+        timeZoneId      = if ($optTimeZone.SelectedItem) { $optTimeZone.SelectedItem.Tag } else { $null }
+        geoId           = if ($optRegion.SelectedItem) { $optRegion.SelectedItem.Tag } else { $null }
+        powerPlan       = $optPowerPlan.SelectedItem.Content
+        lockTimeoutSec  = $textLockTimeoutSec.Text
+        kfmDesktop      = [bool]$optKfmDesktop.IsChecked
+        kfmDocuments    = [bool]$optKfmDocuments.IsChecked
+        kfmPictures     = [bool]$optKfmPictures.IsChecked
+    }
+}
+
+function Set-ProfileToControls {
+    param($Profile)
+    if ($Profile.clientCode) { $textClientCode.Text = $Profile.clientCode }
+    if ($Profile.hostnamePattern) { $textHostnamePattern.Text = $Profile.hostnamePattern }
+    if ($Profile.entraTenantId) { $textEntraTenantId.Text = $Profile.entraTenantId }
+    if ($Profile.lockTimeoutSec) { $textLockTimeoutSec.Text = "$($Profile.lockTimeoutSec)" }
+    if ($null -ne $Profile.kfmDesktop) { $optKfmDesktop.IsChecked = [bool]$Profile.kfmDesktop }
+    if ($null -ne $Profile.kfmDocuments) { $optKfmDocuments.IsChecked = [bool]$Profile.kfmDocuments }
+    if ($null -ne $Profile.kfmPictures) { $optKfmPictures.IsChecked = [bool]$Profile.kfmPictures }
+    if ($Profile.timeZoneId) {
+        foreach ($item in $optTimeZone.Items) { if ($item.Tag -eq $Profile.timeZoneId) { $optTimeZone.SelectedItem = $item; break } }
+    }
+    if ($Profile.geoId) {
+        foreach ($item in $optRegion.Items) { if ($item.Tag -eq $Profile.geoId) { $optRegion.SelectedItem = $item; break } }
+    }
+    if ($Profile.powerPlan) {
+        foreach ($item in $optPowerPlan.Items) { if ($item.Content -eq $Profile.powerPlan) { $optPowerPlan.SelectedItem = $item; break } }
+    }
+    Update-ComputedHostnamePreview
+}
+
+$btnSaveProfile.Add_Click({
+    $dialog = New-Object Microsoft.Win32.SaveFileDialog
+    $dialog.FileName = if ($textClientCode.Text) { "$($textClientCode.Text)-profile.json" } else { 'profile.json' }
+    $dialog.Filter = 'Profile files (*.json)|*.json|All files (*.*)|*.*'
+    if ($dialog.ShowDialog()) {
+        try {
+            Get-CurrentProfileObject | ConvertTo-Json -Depth 4 | Set-Content -Path $dialog.FileName -Encoding UTF8
+            $script:loadedProfilePath = $dialog.FileName
+            $textProfileLoaded.Text = "Saved: $(Split-Path -Leaf $dialog.FileName)"
+        } catch {
+            [System.Windows.MessageBox]::Show("Could not save the profile: $($_.Exception.Message)", 'Gr3y Tools', 'OK', 'Error') | Out-Null
+        }
+    }
+})
+
+$btnLoadProfile.Add_Click({
+    $dialog = New-Object Microsoft.Win32.OpenFileDialog
+    $dialog.Filter = 'Profile files (*.json)|*.json|All files (*.*)|*.*'
+    if ($dialog.ShowDialog()) {
+        try {
+            $profileObj = Get-Content -Path $dialog.FileName -Raw | ConvertFrom-Json
+            Set-ProfileToControls -Profile $profileObj
+            $script:loadedProfilePath = $dialog.FileName
+            $textProfileLoaded.Text = "Loaded: $(Split-Path -Leaf $dialog.FileName)"
+        } catch {
+            [System.Windows.MessageBox]::Show("Could not load that profile: $($_.Exception.Message)", 'Gr3y Tools', 'OK', 'Error') | Out-Null
+        }
+    }
+})
+
+$btnNewProfile.Add_Click({
+    $textClientCode.Text = ''
+    $textHostnamePattern.Text = ''
+    $textEntraTenantId.Text = ''
+    $textLockTimeoutSec.Text = '900'
+    $optKfmDesktop.IsChecked = $true
+    $optKfmDocuments.IsChecked = $true
+    $optKfmPictures.IsChecked = $true
+    $optPowerPlan.SelectedIndex = 0
+    $optRegion.SelectedIndex = 0
+    $script:loadedProfilePath = $null
+    $textProfileLoaded.Text = 'No profile loaded'
+    Update-ComputedHostnamePreview
+})
+
+# Provisioning gets its own job track (like Tab 1/Install Apps/Fixes each have their own)
+# rather than reusing Start-FixJob, since Start-FixJob always bundles
+# -SkipDebloat/-SkipOfficeRemoval/-SkipOfficeInstall, which doesn't make sense to imply
+# for a provisioning action.
+$script:provisionProc = $null
+$script:provisionLogFile = $null
+$script:provisionErrFile = $null
+$script:provisionLogOffset = 0
+$script:provisionStartTime = $null
+
+$provisionButtons = @($btnRenameComputer, $btnApplyOneDriveKfm, $btnApplyRegionalBaseline, $btnApplyOemUpdates, $btnRunWindowsUpdate, $btnGenerateHandoff)
+
+function Start-ProvisionJob {
+    param([string[]]$ProvisionArgs, [string]$Label)
+    if ($script:provisionProc -and -not $script:provisionProc.HasExited) { return }
+
+    $argList = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', """$deployScript""",
+                 '-NoReboot', '-SkipDebloat', '-SkipOfficeRemoval', '-SkipOfficeInstall') + $ProvisionArgs
+    if ($Version) { $argList += @('-Version', $Version) }
+    if ($Commit) { $argList += @('-Commit', $Commit) }
+    if ($optDryRun.IsChecked) { $argList += '-DryRun' }
+
+    $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    $script:provisionLogFile = Join-Path $workDir "gui_provision_$stamp.out.log"
+    $script:provisionErrFile = Join-Path $workDir "gui_provision_$stamp.err.log"
+    $script:provisionLogOffset = 0
+    $provisioningLogBox.Text = ''
+    $provisioningStatusText.Text = if ($optDryRun.IsChecked) { "Running (DRY RUN - no changes will be made): $Label..." } else { "Running: $Label..." }
+    foreach ($b in $provisionButtons) { $b.IsEnabled = $false }
+
+    $script:provisionProc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList `
+        -RedirectStandardOutput $script:provisionLogFile -RedirectStandardError $script:provisionErrFile `
+        -WindowStyle Hidden -PassThru
+    $script:provisionStartTime = Get-Date
+}
+
+$btnRenameComputer.Add_Click({
+    $computed = $textComputedHostname.Text
+    $result = [System.Windows.MessageBox]::Show(
+        "Rename this computer to '$computed'?`r`n`r`nTakes effect after a reboot. Do this before joining Entra - renaming an already-joined device is refused.",
+        'Confirm Rename', 'YesNo', 'Warning')
+    if ($result -ne 'Yes') { return }
+    Start-ProvisionJob -ProvisionArgs @('-RenameComputer', '-HostnamePattern', $textHostnamePattern.Text) -Label 'Rename Computer'
+})
+
+$btnApplyOneDriveKfm.Add_Click({
+    if (-not $textEntraTenantId.Text) {
+        [System.Windows.MessageBox]::Show('Enter an Entra tenant ID above first - OneDrive silent sign-in/KFM needs it.', 'Gr3y Tools', 'OK', 'Warning') | Out-Null
+        return
+    }
+    $provisionArgs = @('-ApplyOneDriveKfm', '-EntraTenantId', $textEntraTenantId.Text)
+    if ($optKfmDesktop.IsChecked) { $provisionArgs += '-KfmDesktop' }
+    if ($optKfmDocuments.IsChecked) { $provisionArgs += '-KfmDocuments' }
+    if ($optKfmPictures.IsChecked) { $provisionArgs += '-KfmPictures' }
+    Start-ProvisionJob -ProvisionArgs $provisionArgs -Label 'Apply OneDrive KFM'
+})
+
+$btnApplyRegionalBaseline.Add_Click({
+    $provisionArgs = @('-ApplyRegionalBaseline', '-LockTimeoutSec', $textLockTimeoutSec.Text)
+    if ($optTimeZone.SelectedItem) { $provisionArgs += @('-TimeZoneId', $optTimeZone.SelectedItem.Tag) }
+    if ($optRegion.SelectedItem) {
+        $provisionArgs += @('-GeoId', "$($optRegion.SelectedItem.Tag)")
+        $cultureMap = @{ 244 = 'en-US'; 39 = 'en-CA'; 242 = 'en-GB'; 12 = 'en-AU' }
+        $culture = $cultureMap[[int]$optRegion.SelectedItem.Tag]
+        if ($culture) { $provisionArgs += @('-CultureName', $culture) }
+    }
+    if ($optPowerPlan.SelectedItem) { $provisionArgs += @('-PowerPlanName', $optPowerPlan.SelectedItem.Content) }
+    Start-ProvisionJob -ProvisionArgs $provisionArgs -Label 'Apply Regional/Power/Lock Baseline'
+})
+
+# OEM driver/BIOS updates (2.1), Windows Update to completion (2.2) and the validation/
+# handoff package (2.10) are still being built - placeholders so these buttons are
+# honest about not doing anything yet, instead of silently no-op'ing on click.
+$btnApplyOemUpdates.Add_Click({ [System.Windows.MessageBox]::Show('OEM driver/BIOS updates: not yet available in this build.', 'Gr3y Tools', 'OK', 'Information') | Out-Null })
+$btnRunWindowsUpdate.Add_Click({ [System.Windows.MessageBox]::Show('Windows Update to completion: not yet available in this build.', 'Gr3y Tools', 'OK', 'Information') | Out-Null })
+$btnGenerateHandoff.Add_Click({ [System.Windows.MessageBox]::Show('Validation report / handoff package: not yet available in this build.', 'Gr3y Tools', 'OK', 'Information') | Out-Null })
 
 # Customize Preferences - built from tweaks.json (shared with Deploy-DellOfficeSetup.ps1,
 # which applies from the same file). Each switch reflects the LIVE current registry state
@@ -2340,6 +2678,32 @@ $timer.Add_Tick({
             foreach ($b in $fixButtons) { $b.IsEnabled = $true }
             $btnStopFixes.Visibility = 'Collapsed'
             $script:fixProc = $null
+        }
+    }
+
+    # --- Provisioning tab ---
+    if ($script:provisionProc) {
+        $running = $false
+        try {
+            $script:provisionProc.Refresh()
+            $running = -not $script:provisionProc.HasExited
+        } catch {}
+
+        $logResult = Get-LogTail -Path $script:provisionLogFile -Offset $script:provisionLogOffset
+        if ($logResult.text) {
+            $provisioningLogBox.AppendText($logResult.text)
+            $provisioningLogBox.ScrollToEnd()
+        }
+        $script:provisionLogOffset = $logResult.offset
+
+        if ($running) {
+            $elapsed = [int]((Get-Date) - $script:provisionStartTime).TotalSeconds
+            $provisioningStatusText.Text = "Running... ({0}:{1:D2} elapsed)" -f [int]($elapsed / 60), ($elapsed % 60)
+        } else {
+            $summary = Get-LogSummary -LogPath $script:provisionLogFile
+            $provisioningStatusText.Text = if ($summary.completed) { 'Done.' } else { 'Ended before finishing - check the log above.' }
+            foreach ($b in $provisionButtons) { $b.IsEnabled = $true }
+            $script:provisionProc = $null
         }
     }
 })

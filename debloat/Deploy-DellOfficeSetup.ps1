@@ -79,6 +79,21 @@
     OEM/AppX/Office removal and Smart App Control are one-way and were never captured,
     so Revert can't undo those regardless of which undo file is used.
 
+.PARAMETER RenameComputer
+    Renames this computer using -HostnamePattern (e.g. "ACME-{SERIAL}", {SERIAL} replaced
+    with the BIOS serial number, result trimmed to 15 NetBIOS-safe characters). No
+    immediate restart. Refuses if the machine is already Entra joined - rename first.
+
+.PARAMETER ApplyOneDriveKfm
+    Configures silent OneDrive sign-in and Known Folder Move (Desktop/Documents/Pictures
+    per -KfmDesktop/-KfmDocuments/-KfmPictures) instead of removing OneDrive. Requires
+    -EntraTenantId; only meaningful on an Entra-joined device.
+
+.PARAMETER ApplyRegionalBaseline
+    Applies -TimeZoneId, -GeoId, -CultureName, -PowerPlanName and -LockTimeoutSec, plus a
+    15-minute AC monitor timeout and Fast Startup off (needed for clean Wake-on-LAN and
+    Windows Update).
+
 .PARAMETER TargetProfile
     Current, Default, or Both (default). Every HKCU-scoped tweak entry always applies to
     the current (elevated) user's own hive; Default/Both additionally mirror it into
@@ -184,7 +199,20 @@ param(
     [switch]$FixWinGetReinstall,
     [string]$Undo = '',
     [string]$Version = '',
-    [string]$Commit = ''
+    [string]$Commit = '',
+    [switch]$RenameComputer,
+    [string]$HostnamePattern = '',
+    [switch]$ApplyOneDriveKfm,
+    [string]$EntraTenantId = '',
+    [switch]$KfmDesktop,
+    [switch]$KfmDocuments,
+    [switch]$KfmPictures,
+    [switch]$ApplyRegionalBaseline,
+    [string]$TimeZoneId = '',
+    [string]$GeoId = '',
+    [string]$CultureName = '',
+    [string]$PowerPlanName = '',
+    [int]$LockTimeoutSec = 900
 )
 
 $ErrorActionPreference = 'Continue'
@@ -1559,6 +1587,127 @@ $languageLines
 }
 
 # ============================================================================
+# PROVISIONING (Phase 2 core) - client hostname, OneDrive KFM, regional/power/lock
+# baseline. Opt-in, driven from the GUI's Provisioning tab / client profile.
+# ============================================================================
+
+function Rename-ComputerFromPattern {
+    param([string]$Pattern)
+    Invoke-Step "Renaming computer using pattern '$Pattern'" {
+        if (-not $Pattern) {
+            Write-Log 'No hostname pattern provided - nothing to do.' 'WARN'
+            return
+        }
+        $dsregOutput = & dsregcmd /status 2>&1 | Out-String
+        if ($dsregOutput -match 'AzureAdJoined\s*:\s*YES') {
+            Write-Log 'This machine is already Entra (Azure AD) joined - renaming now can break the device identity Entra already has on record. Skipping. Rename before joining, not after.' 'WARN'
+            return
+        }
+        try {
+            $serial = (Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop).SerialNumber
+        } catch {
+            $serial = 'UNKNOWN'
+        }
+        # NetBIOS-safe: letters/digits/hyphens only, 15 chars max - Windows itself still
+        # enforces the 15-char limit for Rename-Computer regardless of DNS's longer limit.
+        $newName = $Pattern -replace '\{SERIAL\}', $serial
+        $newName = $newName -replace '[^A-Za-z0-9-]', ''
+        if ($newName.Length -gt 15) { $newName = $newName.Substring(0, 15) }
+        if (-not $newName) {
+            Write-Log "Pattern '$Pattern' produced an empty computer name - not renaming." 'WARN'
+            return
+        }
+        if ($newName -eq $env:COMPUTERNAME) {
+            Write-Log "Computer name is already '$newName' - nothing to do."
+            return
+        }
+        try {
+            Rename-Computer -NewName $newName -Force -ErrorAction Stop
+            Write-Log "Computer renamed to '$newName'. Takes effect after a reboot."
+        } catch {
+            Write-Log "Could not rename the computer: $($_.Exception.Message)" 'WARN'
+        }
+    }
+}
+
+function Set-OneDriveKfm {
+    param([string]$TenantId, [bool]$Desktop, [bool]$Documents, [bool]$Pictures)
+    Invoke-Step 'Configuring OneDrive Known Folder Move (silent sign-in + redirect)' {
+        if (-not $TenantId) {
+            Write-Log 'No Entra tenant ID provided - silent OneDrive sign-in/KFM only works on an Entra-joined device with a tenant ID. Skipping.' 'WARN'
+            return
+        }
+        try {
+            $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\OneDrive'
+            New-Item -Path $policyPath -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path $policyPath -Name 'SilentAccountConfig' -Value 1 -Type DWord -ErrorAction Stop
+            Set-ItemProperty -Path $policyPath -Name 'KFMSilentOptIn' -Value $TenantId -Type String -ErrorAction Stop
+            Set-ItemProperty -Path $policyPath -Name 'KFMSilentOptInWithNotification' -Value 1 -Type DWord -ErrorAction Stop
+            Set-ItemProperty -Path $policyPath -Name 'KFMBlockOptOut' -Value 1 -Type DWord -ErrorAction Stop
+            Set-ItemProperty -Path $policyPath -Name 'FilesOnDemandEnabled' -Value 1 -Type DWord -ErrorAction Stop
+            if ($Desktop) { Set-ItemProperty -Path $policyPath -Name 'KFMSilentOptInDesktop' -Value 1 -Type DWord -ErrorAction Stop }
+            if ($Documents) { Set-ItemProperty -Path $policyPath -Name 'KFMSilentOptInDocuments' -Value 1 -Type DWord -ErrorAction Stop }
+            if ($Pictures) { Set-ItemProperty -Path $policyPath -Name 'KFMSilentOptInPictures' -Value 1 -Type DWord -ErrorAction Stop }
+            Write-Log "OneDrive KFM configured for tenant $TenantId (Desktop=$Desktop, Documents=$Documents, Pictures=$Pictures). Takes effect the next time OneDrive starts and the user signs in."
+        } catch {
+            Write-Log "Could not configure OneDrive KFM: $($_.Exception.Message)" 'WARN'
+        }
+    }
+}
+
+function Set-RegionalPowerLockBaseline {
+    param([string]$TimeZoneId, [string]$GeoId, [string]$CultureName, [string]$PowerPlanName, [int]$LockTimeoutSec)
+    Invoke-Step 'Applying regional, power and lock baseline' {
+        try {
+            if ($TimeZoneId) {
+                Set-TimeZone -Id $TimeZoneId -ErrorAction Stop
+                Write-Log "Time zone set to $TimeZoneId"
+            }
+            Get-Service -Name tzautoupdate -ErrorAction SilentlyContinue | Set-Service -StartupType Automatic -ErrorAction SilentlyContinue
+            if ($GeoId) {
+                Set-WinHomeLocation -GeoId $GeoId -ErrorAction Stop
+                Write-Log "Home location (GeoId) set to $GeoId"
+            }
+            if ($CultureName) {
+                Set-Culture -CultureInfo $CultureName -ErrorAction Stop
+                Write-Log "Culture set to $CultureName"
+            }
+            # Domain controllers own time sync for domain members - resyncing here would
+            # just fight the domain's own NTP hierarchy.
+            $csForTime = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+            if (-not ($csForTime -and $csForTime.PartOfDomain)) {
+                w32tm /resync 2>&1 | ForEach-Object { Write-Log "w32tm: $_" }
+            }
+            if ($PowerPlanName) {
+                $schemeLine = powercfg /list | Select-String -Pattern ([regex]::Escape($PowerPlanName))
+                if ($schemeLine) {
+                    $schemeGuid = [regex]::Match($schemeLine.Line, '([0-9a-fA-F]{8}-[0-9a-fA-F-]{27})').Value
+                    if ($schemeGuid) {
+                        powercfg /setactive $schemeGuid 2>&1 | Out-Null
+                        Write-Log "Power plan set to $PowerPlanName"
+                    }
+                } else {
+                    Write-Log "Power plan '$PowerPlanName' not found via powercfg /list - leaving the active plan unchanged." 'WARN'
+                }
+            }
+            powercfg /change monitor-timeout-ac 15 2>&1 | Out-Null
+            $lockPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+            New-Item -Path $lockPath -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path $lockPath -Name 'InactivityTimeoutSecs' -Value $LockTimeoutSec -Type DWord -ErrorAction Stop
+            # Fast Startup hibernates the kernel session instead of a full shutdown, which
+            # both interferes with Wake-on-LAN and can leave a Windows Update pass looking
+            # "installed" without a genuine cold boot.
+            $powerKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power'
+            New-Item -Path $powerKey -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path $powerKey -Name 'HiberbootEnabled' -Value 0 -Type DWord -ErrorAction Stop
+            Write-Log "Regional/power/lock baseline applied (monitor timeout 15 min on AC, lock timeout ${LockTimeoutSec}s, Fast Startup off)."
+        } catch {
+            Write-Log "Could not fully apply the regional/power/lock baseline: $($_.Exception.Message)" 'WARN'
+        }
+    }
+}
+
+# ============================================================================
 # MAIN
 # ============================================================================
 
@@ -1604,6 +1753,10 @@ if ($FixSystemRepair) { Invoke-SystemRepair }
 if ($FixNetworkReset) { Invoke-NetworkReset }
 if ($FixWindowsUpdateReset) { Invoke-WindowsUpdateReset }
 if ($FixWinGetReinstall) { Invoke-WinGetReinstall }
+
+if ($RenameComputer) { Rename-ComputerFromPattern -Pattern $HostnamePattern }
+if ($ApplyOneDriveKfm) { Set-OneDriveKfm -TenantId $EntraTenantId -Desktop $KfmDesktop -Documents $KfmDocuments -Pictures $KfmPictures }
+if ($ApplyRegionalBaseline) { Set-RegionalPowerLockBaseline -TimeZoneId $TimeZoneId -GeoId $GeoId -CultureName $CultureName -PowerPlanName $PowerPlanName -LockTimeoutSec $LockTimeoutSec }
 
 if (-not $DryRun) { Save-UndoSnapshot }
 
