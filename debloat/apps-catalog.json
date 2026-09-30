@@ -63,6 +63,8 @@
     {"name": "TreeSize Free", "category": "Utilities", "wingetId": "JAMSoftware.TreeSize.Free", "url": "https://www.jam-software.com/treesize_free"},
     {"name": "TranslucentTB", "category": "Utilities", "wingetId": "CharlesMilette.TranslucentTB", "url": "https://github.com/TranslucentTB/TranslucentTB"},
     {"name": "Wise Program Uninstaller", "category": "Utilities", "wingetId": "WiseCleaner.WiseProgramUninstaller", "url": "https://www.wisecleaner.com/wise-program-uninstaller.html"},
-    {"name": "WizTree", "category": "Utilities", "wingetId": "AntibodySoftware.WizTree", "url": "https://diskanalyzer.com/"}
+    {"name": "WizTree", "category": "Utilities", "wingetId": "AntibodySoftware.WizTree", "url": "https://diskanalyzer.com/"},
+
+    {"name": "FreeFileSync", "category": "Non-Silent Installs", "url": "https://freefilesync.org/", "downloadUrl": "https://freefilesync.org/download/FreeFileSync_14.12_Windows_Setup.exe"}
   ]
 }

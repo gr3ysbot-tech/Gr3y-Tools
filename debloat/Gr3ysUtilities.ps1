@@ -876,6 +876,7 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
             <Button Name="CatBrowsers" Content="Browsers"/>
             <Button Name="CatMsTools" Content="Microsoft Tools"/>
             <Button Name="CatUtilities" Content="Utilities"/>
+            <Button Name="CatNonSilent" Content="Non-Silent Installs"/>
             <Border Width="12"/>
             <Button Name="BtnSelectAll" Content="Select All"/>
             <Button Name="BtnClearSelection" Content="Clear Selection"/>
@@ -1090,6 +1091,7 @@ $catAllBtn = $window.FindName('CatAll')
 $catBrowsersBtn = $window.FindName('CatBrowsers')
 $catMsToolsBtn = $window.FindName('CatMsTools')
 $catUtilitiesBtn = $window.FindName('CatUtilities')
+$catNonSilentBtn = $window.FindName('CatNonSilent')
 $btnSelectAll = $window.FindName('BtnSelectAll')
 $btnClearSelection = $window.FindName('BtnClearSelection')
 $btnCheckInstalled = $window.FindName('BtnCheckInstalled')
@@ -1330,7 +1332,7 @@ foreach ($cat in $categories) {
         }
 
         $wrap.Children.Add($row) | Out-Null
-        $entry = [PSCustomObject]@{ CheckBox = $cb; Row = $row; Name = $app.name; Category = $cat.Name; WingetId = $app.wingetId }
+        $entry = [PSCustomObject]@{ CheckBox = $cb; Row = $row; Name = $app.name; Category = $cat.Name; WingetId = $app.wingetId; DownloadUrl = $app.downloadUrl }
         $script:appEntries.Add($entry)
         # Checked/Unchecked (not Click) since they fire off IsChecked itself changing,
         # regardless of interaction method - Click alone was observed to not reliably
@@ -1375,6 +1377,7 @@ $catAllBtn.Add_Click({ $script:activeCategory = 'All'; Update-AppVisibility })
 $catBrowsersBtn.Add_Click({ $script:activeCategory = 'Browsers'; Update-AppVisibility })
 $catMsToolsBtn.Add_Click({ $script:activeCategory = 'Microsoft Tools'; Update-AppVisibility })
 $catUtilitiesBtn.Add_Click({ $script:activeCategory = 'Utilities'; Update-AppVisibility })
+$catNonSilentBtn.Add_Click({ $script:activeCategory = 'Non-Silent Installs'; Update-AppVisibility })
 
 $btnSelectAll.Add_Click({
     foreach ($entry in $script:appEntries) {
@@ -1570,6 +1573,33 @@ function Start-NextInQueue {
         'check' { 'Checking' }
     }
     $installStatusText.Text = "$actionWord $($entry.Name)... ($($script:installDone + 1)/$($script:installTotal))"
+
+    # Direct-download entries (no winget package exists) skip winget entirely - they
+    # download their own installer and launch it visibly (not hidden, not waited on),
+    # since some free-edition installers (FreeFileSync) don't support silent/unattended
+    # install and would otherwise stall the queue waiting on a window nobody can click.
+    if (-not $entry.WingetId -and $entry.DownloadUrl) {
+        $installLogBox.AppendText("=== $actionWord`: $($entry.Name) (direct download, no winget package) ===`r`n")
+        if ($script:installMode -ne 'install') {
+            $installLogBox.AppendText("Not available via winget - manage $($entry.Name) manually (Programs and Features).`r`n")
+        } else {
+            try {
+                $downloadPath = Join-Path $workDir (Split-Path -Leaf $entry.DownloadUrl)
+                $installLogBox.AppendText("Downloading $($entry.DownloadUrl)...`r`n")
+                $installLogBox.ScrollToEnd()
+                Invoke-WebRequest -Uri $entry.DownloadUrl -OutFile $downloadPath -UseBasicParsing
+                $installLogBox.AppendText("Downloaded. Launching installer - this app's free edition doesn't support silent install, so finish its setup wizard manually.`r`n")
+                Start-Process -FilePath $downloadPath
+            } catch {
+                $installLogBox.AppendText("Download/launch failed: $($_.Exception.Message)`r`n")
+            }
+        }
+        $installLogBox.ScrollToEnd()
+        $script:installDone++
+        Start-NextInQueue
+        return
+    }
+
     $installLogBox.AppendText("=== $actionWord`: $($entry.Name) ($($entry.WingetId)) ===`r`n")
     $installLogBox.ScrollToEnd()
 
