@@ -1143,6 +1143,17 @@ try {
     exit 1
 }
 
+# The XAML's Height="820" isn't clamped to the work area - on a 1366x768 laptop, or a
+# 13-inch FHD panel at 150% scaling (a ~700px-tall effective work area), that puts the
+# Install Apps action bar and window controls off-screen with no way to reach them.
+$workArea = [System.Windows.SystemParameters]::WorkArea
+if ($workArea.Height -lt 840) {
+    $window.WindowState = 'Maximized'
+} else {
+    if ($window.Height -gt $workArea.Height - 20) { $window.Height = $workArea.Height - 20 }
+    if ($window.Width -gt $workArea.Width - 20) { $window.Width = $workArea.Width - 20 }
+}
+
 # --- Tab 1 controls ---
 $optDryRun = $window.FindName('OptDryRun')
 $optCreateRestorePoint = $window.FindName('OptCreateRestorePoint')
