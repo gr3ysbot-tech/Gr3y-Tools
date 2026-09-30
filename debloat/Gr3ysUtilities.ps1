@@ -1085,12 +1085,16 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                             ToolTip="Runs sfc /scannow then DISM RestoreHealth. Can take 10-20+ minutes."/>
                     <Button Name="BtnFixNetworkReset" Content="Network - Reset" HorizontalAlignment="Stretch" Margin="0,0,0,4"
                             ToolTip="Resets Winsock and TCP/IP, flushes DNS. Requires a reboot after."/>
+                    <Button Name="BtnFixTimeSync" Content="Time - Resync Now" HorizontalAlignment="Stretch" Margin="0,0,0,4"
+                            ToolTip="Forces an immediate clock resync (w32tm /resync). On a non-domain-joined machine, also points the time service at pool.ntp.org first. Fixes TLS/certificate and Office activation errors caused by clock drift."/>
                   </StackPanel>
                   <StackPanel Grid.Column="2">
                     <Button Name="BtnFixWindowsUpdate" Content="Windows Update - Reset" HorizontalAlignment="Stretch" Margin="0,0,0,4"
                             ToolTip="Clears the update cache and restarts related services - standard fix for a stuck Windows Update."/>
                     <Button Name="BtnFixWinGet" Content="WinGet - Reinstall" HorizontalAlignment="Stretch" Margin="0,0,0,4"
                             ToolTip="Re-registers the App Installer package - fixes a missing/broken winget."/>
+                    <Button Name="BtnFixNetFx3" Content=".NET Framework 3.5 - Enable" HorizontalAlignment="Stretch" Margin="0,0,0,4"
+                            ToolTip="Enable-WindowsOptionalFeature -Online -FeatureName NetFx3 -All. Needed by some older line-of-business apps. Requires internet access (or installation media) if the feature files aren't already cached locally."/>
                     <Button Name="BtnRevertLastRun" Content="Revert Last Run" HorizontalAlignment="Stretch" Margin="0,0,0,4"
                             ToolTip="Undoes tweak/DNS/telemetry/power changes from the most recent run, using the undo snapshot it saved automatically. Does NOT cover OEM/AppX/Office removal or Smart App Control - those are one-way by design."/>
                   </StackPanel>
@@ -1439,6 +1443,8 @@ $btnInstallWinGet = $window.FindName('BtnInstallWinGet')
 # --- Tab 3 controls ---
 $btnFixSystemRepair = $window.FindName('BtnFixSystemRepair')
 $btnFixNetworkReset = $window.FindName('BtnFixNetworkReset')
+$btnFixTimeSync = $window.FindName('BtnFixTimeSync')
+$btnFixNetFx3 = $window.FindName('BtnFixNetFx3')
 $btnFixWindowsUpdate = $window.FindName('BtnFixWindowsUpdate')
 $btnFixWinGet = $window.FindName('BtnFixWinGet')
 $btnRevertLastRun = $window.FindName('BtnRevertLastRun')
@@ -1790,6 +1796,20 @@ function Test-TweakIsOn {
     # just means the InprocServer32 key exists.
     if ($TweakDef.key -eq 'ClassicContextMenu') {
         return (Test-Path 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32')
+    }
+    # F8BootMenuOn is a BCD setting, not a registry value - read it back via bcdedit's own
+    # documented /enum output format (a "bootmenupolicy    Legacy" line when explicitly
+    # set; the line is absent under the Standard default). Not live-verified against a
+    # real elevated bcdedit in this dev session (this sandbox session isn't elevated,
+    # confirmed via IsInRole(Administrator)=False, and the real GUI always runs elevated) -
+    # based on Microsoft's own documented /set bootmenupolicy behavior instead.
+    if ($TweakDef.key -eq 'F8BootMenuOn') {
+        try {
+            $bcdOutput = & bcdedit /enum '{current}' 2>&1
+            return [bool]($bcdOutput | Select-String -Pattern 'bootmenupolicy\s+Legacy' -Quiet)
+        } catch {
+            return $false
+        }
     }
     if (-not $TweakDef.entries -or $TweakDef.entries.Count -eq 0) { return $false }
     $first = $TweakDef.entries[0]
@@ -2236,7 +2256,7 @@ $script:fixErrFile = $null
 $script:fixLogOffset = 0
 $script:fixStartTime = $null
 
-$fixButtons = @($btnFixSystemRepair, $btnFixNetworkReset, $btnFixWindowsUpdate, $btnFixWinGet, $btnApplyTweaks, $btnApplyDns, $btnRevertLastRun)
+$fixButtons = @($btnFixSystemRepair, $btnFixNetworkReset, $btnFixTimeSync, $btnFixWindowsUpdate, $btnFixWinGet, $btnFixNetFx3, $btnApplyTweaks, $btnApplyDns, $btnRevertLastRun)
 
 function Start-FixJob {
     param([string[]]$FixArgs, [string]$Label)
@@ -2279,6 +2299,10 @@ $btnFixWindowsUpdate.Add_Click({
 })
 
 $btnFixWinGet.Add_Click({ Start-FixJob -FixArgs @('-FixWinGetReinstall') -Label 'Reinstall winget' })
+
+$btnFixTimeSync.Add_Click({ Start-FixJob -FixArgs @('-FixTimeSync') -Label 'Time Resync' })
+
+$btnFixNetFx3.Add_Click({ Start-FixJob -FixArgs @('-FixNetFx3') -Label 'Enable .NET Framework 3.5' })
 
 $btnRevertLastRun.Add_Click({
     $undoFile = Get-ChildItem -Path $workDir -Filter 'undo_*.json' -ErrorAction SilentlyContinue |

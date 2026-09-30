@@ -225,6 +225,8 @@ param(
     [switch]$FixNetworkReset,
     [switch]$FixWindowsUpdateReset,
     [switch]$FixWinGetReinstall,
+    [switch]$FixTimeSync,
+    [switch]$FixNetFx3,
     [string]$Undo = '',
     [string]$Version = '',
     [string]$Commit = '',
@@ -1219,6 +1221,23 @@ function Set-ClassicContextMenu {
     }
 }
 
+# F8BootMenuOn sets a whole-machine BCD value (not a registry value), so - like
+# ClassicContextMenu - it can't go through the tweaks.json entries[] engine and is
+# special-cased instead. Deliberately NOT wired into the Revert Last Run undo snapshot:
+# bootmenupolicy only has two legal values (Legacy/Standard), the tweak's own on/off
+# toggle is already a full, trivial revert, and Revert Last Run already has documented
+# exclusions (OEM/AppX/Office removal, Smart App Control) for things outside its scope -
+# adding a third undo-snapshot category (alongside registry/registryKeys/mpPreference)
+# for a single two-state BCD flag isn't worth the added mechanism.
+function Set-F8BootMenuPolicy {
+    param([string]$Direction)
+    $policyValue = if ($Direction -eq 'on') { 'Legacy' } else { 'Standard' }
+    $bcdOutput = & bcdedit /set '{current}' bootmenupolicy $policyValue 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "bcdedit exited with code $LASTEXITCODE - $($bcdOutput -join ' ')"
+    }
+}
+
 # DefenderHardening's registry entries (RunAsPPL, SmartScreen) go through the normal
 # tweaks.json entries[] loop - only the two Set-MpPreference calls need this dedicated
 # function, since the generic engine only knows how to set/remove registry values.
@@ -1282,6 +1301,8 @@ function Invoke-CustomizeTweaks {
             try {
                 if ($key -eq 'ClassicContextMenu') {
                     Set-ClassicContextMenu -Direction $direction
+                } elseif ($key -eq 'F8BootMenuOn') {
+                    Set-F8BootMenuPolicy -Direction $direction
                 } else {
                     if ($def.needsHKU -and -not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
                         New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS -Scope Script -ErrorAction Stop | Out-Null
@@ -1298,6 +1319,10 @@ function Invoke-CustomizeTweaks {
                     }
                     if ($key -eq 'DefenderHardening') {
                         Set-DefenderMpPreferenceHardening -Direction $direction
+                    }
+                    if ($key -eq 'RegistryBackupOn' -and $direction -eq 'on') {
+                        Start-ScheduledTask -TaskName 'RegIdleBackup' -TaskPath '\Microsoft\Windows\Registry\' -ErrorAction SilentlyContinue
+                        Write-Log 'Triggered an immediate RegIdleBackup run, in addition to its normal scheduled maintenance window.'
                     }
                 }
                 Write-Log "Applied: $($def.label) -> $direction"
@@ -1492,6 +1517,48 @@ function Invoke-NetworkReset {
     Invoke-Step 'Resetting TCP/IP stack' { netsh int ip reset 2>&1 | ForEach-Object { Write-Log "netsh: $_" } }
     Invoke-Step 'Flushing DNS cache' { ipconfig /flushdns 2>&1 | ForEach-Object { Write-Log "ipconfig: $_" } }
     Write-Log 'Network reset complete. A reboot is required for the Winsock/TCP-IP reset to fully take effect.'
+}
+
+function Invoke-TimeSync {
+    Write-Log '--- Fix: Forcing an immediate time resync ---'
+    # Only touch the NTP peer list on a non-domain-joined machine - a domain-joined PC is
+    # supposed to sync from the domain hierarchy (PDC emulator), and pointing it at
+    # pool.ntp.org instead would work against Kerberos's clock-skew tolerance and
+    # whatever the domain's own time policy already enforces.
+    $isDomainJoined = [bool](Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue).PartOfDomain
+    if (-not $isDomainJoined) {
+        Invoke-Step 'Configuring pool.ntp.org as the time source (not domain-joined)' {
+            & w32tm /config /manualpeerlist:'pool.ntp.org' /syncfromflags:manual /reliable:yes /update 2>&1 | ForEach-Object { Write-Log "w32tm config: $_" }
+            Restart-Service -Name w32time -ErrorAction SilentlyContinue
+        }
+    } else {
+        Write-Log 'Machine is domain-joined - leaving the time source as the domain hierarchy, only forcing a resync.'
+    }
+    Invoke-Step 'Resyncing the system clock (w32tm /resync)' {
+        $resyncOutput = & w32tm /resync /force 2>&1
+        $resyncOutput | ForEach-Object { Write-Log "w32tm resync: $_" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Log "w32tm /resync exited with code $LASTEXITCODE - the time service may not be running or reachable yet (common right after a fresh config change)." 'WARN'
+        } else {
+            Write-Log 'Time resync completed successfully.'
+        }
+    }
+}
+
+function Invoke-NetFx3Enable {
+    Write-Log '--- Fix: Enabling .NET Framework 3.5 ---'
+    Invoke-Step 'Enable-WindowsOptionalFeature -Online -FeatureName NetFx3 -All' {
+        try {
+            $result = Enable-WindowsOptionalFeature -Online -FeatureName NetFx3 -All -NoRestart -ErrorAction Stop
+            if ($result -and $result.RestartNeeded) {
+                Write-Log '.NET Framework 3.5 enabled - a restart is recommended to fully finish.'
+            } else {
+                Write-Log '.NET Framework 3.5 enabled.'
+            }
+        } catch {
+            Write-Log ".NET Framework 3.5 could not be enabled: $($_.Exception.Message). This usually means no internet access and no Windows installation media/SXS source configured." 'WARN'
+        }
+    }
 }
 
 function Invoke-WindowsUpdateReset {
@@ -2499,6 +2566,8 @@ if ($FixSystemRepair) { Invoke-SystemRepair }
 if ($FixNetworkReset) { Invoke-NetworkReset }
 if ($FixWindowsUpdateReset) { Invoke-WindowsUpdateReset }
 if ($FixWinGetReinstall) { Invoke-WinGetReinstall }
+if ($FixTimeSync) { Invoke-TimeSync }
+if ($FixNetFx3) { Invoke-NetFx3Enable }
 
 if ($RenameComputer) { Rename-ComputerFromPattern -Pattern $HostnamePattern }
 if ($ApplyOemUpdates) { Invoke-OemDriverUpdates }

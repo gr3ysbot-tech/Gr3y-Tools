@@ -511,6 +511,22 @@
         {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System", "name": "EnableSmartScreen", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
         {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System", "name": "ShellSmartScreenLevel", "type": "String", "onValue": "Warn", "offValue": "<RemoveEntry>"}
       ]
+    },
+    {
+      "key": "RegistryBackupOn",
+      "label": "Enable Daily Registry Backup",
+      "tip": "Re-enables Windows' own automatic registry backup, which Microsoft turned off by default starting with Windows 10 1803. Copies the system registry hives to %WinDir%\\System32\\config\\RegBack as part of scheduled maintenance (RegIdleBackup task, Microsoft\\Windows\\Registry), giving a same-machine fallback if the live registry gets corrupted. Opt-in and reversible.",
+      "scope": "HKLM",
+      "entries": [
+        {"path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Configuration Manager", "name": "EnablePeriodicBackup", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
+      ]
+    },
+    {
+      "key": "F8BootMenuOn",
+      "label": "Enable Legacy F8 Boot Menu",
+      "tip": "Restores the Windows 7-style F8 Advanced Boot Options menu at startup (bcdedit bootmenupolicy Legacy), which Windows 8 and later hide by default because fast boot leaves no time to press F8. Useful for field techs who need Safe Mode access without going through Settings first. This is a whole-machine BCD setting, not a registry value, so it is applied via a dedicated function rather than the usual registry-entries engine. Opt-in and reversible - off restores Standard (the Windows 10/11 default).",
+      "scope": "HKLM",
+      "entries": []
     }
   ]
 }
