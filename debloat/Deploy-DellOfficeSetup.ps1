@@ -182,7 +182,9 @@ param(
     [switch]$FixNetworkReset,
     [switch]$FixWindowsUpdateReset,
     [switch]$FixWinGetReinstall,
-    [string]$Undo = ''
+    [string]$Undo = '',
+    [string]$Version = '',
+    [string]$Commit = ''
 )
 
 $ErrorActionPreference = 'Continue'
@@ -238,7 +240,7 @@ function Write-Log {
     Write-Host $line
 }
 
-Write-Log "Worker PID: $PID"
+Write-Log "Gr3y Support $(if ($Version) { "v$Version" } else { '(unversioned - launched directly, not via debloat.ps1)' })$(if ($Commit) { " ($Commit)" } else { '' }) | Worker PID: $PID | Profile: $env:USERNAME"
 Write-Log "Machine: $machineHost | $machineManufacturer $machineModel | Serial/Service Tag: $machineSerial"
 if ($osInfo) {
     Write-Log "OS: $($osInfo.Caption) (Build $($osInfo.BuildNumber)) | Logged-in user: $env:USERNAME"

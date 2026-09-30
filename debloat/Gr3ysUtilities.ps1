@@ -30,7 +30,10 @@
 #>
 
 [CmdletBinding()]
-param()
+param(
+    [string]$Version = '',
+    [string]$Commit = ''
+)
 
 # ============================================================================
 # Elevation + STA self-relaunch (WPF requires STA; admin is required by the
@@ -53,6 +56,8 @@ if ($needsElevation -or $needsSTA) {
     # window and isn't affected by its own console's visibility. Without this, techs saw
     # an empty "Windows PowerShell" console sitting behind the GUI for the whole session.
     $relaunchArgs = @('-NoProfile', '-STA', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', """$PSCommandPath""")
+    if ($Version) { $relaunchArgs += @('-Version', $Version) }
+    if ($Commit) { $relaunchArgs += @('-Commit', $Commit) }
     if ($needsElevation) {
         Start-Process -FilePath 'powershell.exe' -ArgumentList $relaunchArgs -Verb RunAs
     } else {
@@ -1179,6 +1184,10 @@ try {
     exit 1
 }
 
+if ($Version) {
+    $window.Title = "Gr3y Support v$Version" + $(if ($Commit) { " ($Commit)" } else { '' })
+}
+
 # The XAML's Height="820" isn't clamped to the work area - on a 1366x768 laptop, or a
 # 13-inch FHD panel at 150% scaling (a ~700px-tall effective work area), that puts the
 # Install Apps action bar and window controls off-screen with no way to reach them.
@@ -1673,6 +1682,8 @@ $btnStart.Add_Click({
     }
 
     $argList = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', """$deployScript""", '-NoReboot')
+    if ($Version) { $argList += @('-Version', $Version) }
+    if ($Commit) { $argList += @('-Commit', $Commit) }
     if ($optDryRun.IsChecked) { $argList += '-DryRun' }
     if ($optCreateRestorePoint.IsChecked) { $argList += '-CreateRestorePoint' }
     if ($optSkipDebloat.IsChecked) { $argList += '-SkipDebloat' }
@@ -1767,6 +1778,8 @@ function Start-FixJob {
 
     $argList = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', """$deployScript""",
                  '-NoReboot', '-SkipDebloat', '-SkipOfficeRemoval', '-SkipOfficeInstall') + $FixArgs
+    if ($Version) { $argList += @('-Version', $Version) }
+    if ($Commit) { $argList += @('-Commit', $Commit) }
     # Honor the Debloat + Office tab's Dry run checkbox here too - it previously only
     # applied to the Start button, so ticking Dry run and then clicking a Config-tab
     # action (a Fix, Apply Tweaks, Apply DNS) made real changes anyway.
