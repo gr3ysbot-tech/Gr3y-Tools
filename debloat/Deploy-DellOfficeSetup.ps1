@@ -56,6 +56,17 @@
     (Smart App Control cannot be turned back on without reinstalling Windows),
     so only enable it where that tradeoff is acceptable.
 
+.PARAMETER CustomizeTweaks
+    Comma-separated keys of Windows preference tweaks to apply (see $script:tweakDefs for the
+    full key list). One-directional: checking a tweak applies its "on" registry value; there is
+    no revert/undo path. Restarts Explorer once at the end if any selected tweak needs it.
+
+.PARAMETER DnsPreset
+    Sets DNS servers on all "Up" network adapters to a named preset (Google, Cloudflare,
+    Cloudflare_Malware, Cloudflare_Malware_Adult, Open_DNS, Quad9, AdGuard_Ads_Trackers,
+    AdGuard_Ads_Trackers_Malware_Adult) or back to DHCP. 'Default' (or omitted) makes no change.
+    Registry/IP values sourced from ChrisTitusTech/winutil's config/tweaks.json and config/dns.json.
+
 .PARAMETER FixSystemRepair
     Run sfc /scannow then DISM /Online /Cleanup-Image /RestoreHealth. Can take
     10-20+ minutes. Off by default - intended to be triggered standalone from the
@@ -129,6 +140,8 @@ param(
     [switch]$TweakDisableHibernation,
     [switch]$TweakPreventSleep,
     [switch]$TweakDisableSmartAppControl,
+    [string]$CustomizeTweaks = '',
+    [string]$DnsPreset = '',
     [switch]$FixSystemRepair,
     [switch]$FixNetworkReset,
     [switch]$FixWindowsUpdateReset,
@@ -505,6 +518,223 @@ function Disable-SmartAppControl {
     }
 }
 
+# Registry values sourced verbatim from ChrisTitusTech/winutil's config/tweaks.json
+# (WPFToggle* entries under the "Customize Preferences" category), fetched live from
+# github.com/ChrisTitusTech/winutil main branch. One-directional: applying only ever
+# writes the "enabled" value below - there is no undo/revert path from this tool.
+$script:tweakDefs = @{
+    'BSoDVerbose'              = @{
+        Label   = 'BSoD Verbose Mode'
+        Entries = @(
+            @{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'; Name = 'DisplayParameters'; Value = 1; Type = 'DWord' }
+            @{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'; Name = 'DisableEmoticon'; Value = 1; Type = 'DWord' }
+        )
+    }
+    'BatteryPercentage'        = @{
+        Label   = 'System Tray Battery Percentage'
+        Entries = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'IsBatteryPercentageEnabled'; Value = 1; Type = 'DWord' })
+    }
+    'DarkTheme'                = @{
+        Label           = 'Dark Theme for Windows'
+        Entries         = @(
+            @{ Path = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'; Name = 'AppsUseLightTheme'; Value = 0; Type = 'DWord' }
+            @{ Path = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'; Name = 'SystemUsesLightTheme'; Value = 0; Type = 'DWord' }
+        )
+        ExplorerRestart = $true
+    }
+    'LongPaths'                = @{
+        Label   = 'Enable Long Paths'
+        Entries = @(@{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'; Name = 'LongPathsEnabled'; Value = 1; Type = 'DWord' })
+    }
+    'ShowFileExt'              = @{
+        Label           = 'File Explorer File Extensions'
+        Entries         = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'HideFileExt'; Value = 0; Type = 'DWord' })
+        ExplorerRestart = $true
+    }
+    'ShowHiddenFiles'          = @{
+        Label           = 'File Explorer Hidden Files'
+        Entries         = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'Hidden'; Value = 1; Type = 'DWord' })
+        ExplorerRestart = $true
+    }
+    'GameMode'                 = @{
+        Label   = 'Game Mode'
+        Entries = @(
+            @{ Path = 'HKCU:\Software\Microsoft\GameBar'; Name = 'AllowAutoGameMode'; Value = 1; Type = 'DWord' }
+            @{ Path = 'HKCU:\Software\Microsoft\GameBar'; Name = 'AutoGameModeEnabled'; Value = 1; Type = 'DWord' }
+        )
+    }
+    'DisableLockScreen'        = @{
+        Label   = 'Lock Screen - Disable'
+        Entries = @(@{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'; Name = 'NoLockScreen'; Value = 1; Type = 'DWord' })
+    }
+    'LogonAcrylicBlur'         = @{
+        Label   = 'Logon Screen Acrylic Blur'
+        Entries = @(@{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'; Name = 'DisableAcrylicBackgroundOnLogon'; Value = 0; Type = 'DWord' })
+    }
+    'LogonVerbose'             = @{
+        Label   = 'Logon Verbose Mode'
+        Entries = @(@{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'; Name = 'VerboseStatus'; Value = 1; Type = 'DWord' })
+    }
+    'NewOutlook'               = @{
+        Label   = 'Microsoft Outlook New Version'
+        Entries = @(
+            @{ Path = 'HKCU:\SOFTWARE\Microsoft\Office\16.0\Outlook\Preferences'; Name = 'UseNewOutlook'; Value = 1; Type = 'DWord' }
+            @{ Path = 'HKCU:\Software\Microsoft\Office\16.0\Outlook\Options\General'; Name = 'HideNewOutlookToggle'; Value = 0; Type = 'DWord' }
+            @{ Path = 'HKCU:\Software\Policies\Microsoft\Office\16.0\Outlook\Options\General'; Name = 'DoNewOutlookAutoMigration'; Value = 0; Type = 'DWord' }
+            @{ Path = 'HKCU:\Software\Policies\Microsoft\Office\16.0\Outlook\Preferences'; Name = 'NewOutlookMigrationUserSetting'; Value = 0; Type = 'DWord' }
+        )
+    }
+    'MouseAcceleration'        = @{
+        Label   = 'Mouse Acceleration'
+        Entries = @(
+            @{ Path = 'HKCU:\Control Panel\Mouse'; Name = 'MouseSpeed'; Value = 1; Type = 'DWord' }
+            @{ Path = 'HKCU:\Control Panel\Mouse'; Name = 'MouseThreshold1'; Value = 6; Type = 'DWord' }
+            @{ Path = 'HKCU:\Control Panel\Mouse'; Name = 'MouseThreshold2'; Value = 10; Type = 'DWord' }
+        )
+    }
+    'NumLockOnStartup'         = @{
+        Label   = 'Num Lock on Startup'
+        Entries = @(
+            @{ Path = 'HKU:\.Default\Control Panel\Keyboard'; Name = 'InitialKeyboardIndicators'; Value = '2'; Type = 'String' }
+            @{ Path = 'HKCU:\Control Panel\Keyboard'; Name = 'InitialKeyboardIndicators'; Value = '2'; Type = 'String' }
+        )
+        NeedsHKU = $true
+    }
+    'S0SleepNetwork'           = @{
+        Label   = 'S0 Sleep Network Connectivity'
+        Entries = @(@{ Path = 'HKCU:\SOFTWARE\Policies\Microsoft\Power\PowerSettings\f15576e8-98b7-4186-b944-eafa664402d9'; Name = 'ACSettingIndex'; Value = 1; Type = 'DWord' })
+    }
+    'S3Sleep'                  = @{
+        Label   = 'S3 Sleep'
+        Entries = @(@{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Power'; Name = 'PlatformAoAcOverride'; Value = 0; Type = 'DWord' })
+    }
+    'ScrollbarsAlwaysVisible'  = @{
+        Label   = 'Scrollbars Always Visible'
+        Entries = @(@{ Path = 'HKCU:\Control Panel\Accessibility'; Name = 'DynamicScrollbars'; Value = 0; Type = 'DWord' })
+    }
+    'SettingsHomePage'         = @{
+        Label   = 'Settings Home Page'
+        Entries = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer'; Name = 'SettingsPageVisibility'; Value = 'show:home'; Type = 'String' })
+    }
+    'StartMenuBingSearch'      = @{
+        Label   = 'Start Menu Bing Search'
+        Entries = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search'; Name = 'BingSearchEnabled'; Value = 1; Type = 'DWord' })
+    }
+    'StartMenuRecommendations' = @{
+        Label           = 'Start Menu Recommendations'
+        Entries         = @(
+            @{ Path = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Start'; Name = 'HideRecommendedSection'; Value = 0; Type = 'DWord' }
+            @{ Path = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Education'; Name = 'IsEducationEnvironment'; Value = 0; Type = 'DWord' }
+            @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'; Name = 'HideRecommendedSection'; Value = 0; Type = 'DWord' }
+        )
+        ExplorerRestart = $true
+    }
+    'StickyKeys'               = @{
+        Label   = 'Sticky Keys'
+        Entries = @(@{ Path = 'HKCU:\Control Panel\Accessibility\StickyKeys'; Name = 'Flags'; Value = 506; Type = 'DWord' })
+    }
+    'TaskbarCenteredIcons'     = @{
+        Label           = 'Taskbar Centered Icons'
+        Entries         = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'TaskbarAl'; Value = 1; Type = 'DWord' })
+        ExplorerRestart = $true
+    }
+    'TaskbarSearchIcon'        = @{
+        Label   = 'Taskbar Search Icon'
+        Entries = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search'; Name = 'SearchboxTaskbarMode'; Value = 1; Type = 'DWord' })
+    }
+    'TaskbarTaskViewIcon'      = @{
+        Label   = 'Taskbar Task View Icon'
+        Entries = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'ShowTaskViewButton'; Value = 1; Type = 'DWord' })
+    }
+    'WindowSnapping'           = @{
+        Label   = 'Window Snapping'
+        Entries = @(@{ Path = 'HKCU:\Control Panel\Desktop'; Name = 'WindowArrangementActive'; Value = '1'; Type = 'String' })
+    }
+}
+
+function Invoke-CustomizeTweaks {
+    param([string[]]$Keys)
+
+    $restartExplorer = $false
+    foreach ($key in $Keys) {
+        if (-not $script:tweakDefs.ContainsKey($key)) { Write-Log "Unknown tweak key: $key" 'WARN'; continue }
+        $def = $script:tweakDefs[$key]
+        Invoke-Step "Applying tweak: $($def.Label)" {
+            try {
+                if ($def.NeedsHKU -and -not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
+                    New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS -Scope Script -ErrorAction Stop | Out-Null
+                }
+                foreach ($entry in $def.Entries) {
+                    New-Item -Path $entry.Path -Force -ErrorAction SilentlyContinue | Out-Null
+                    Set-ItemProperty -Path $entry.Path -Name $entry.Name -Value $entry.Value -Type $entry.Type -ErrorAction Stop
+                }
+                Write-Log "Applied: $($def.Label)"
+            } catch {
+                Write-Log "Could not apply '$($def.Label)': $($_.Exception.Message)" 'WARN'
+            }
+        }
+        if ($def.ExplorerRestart) { $restartExplorer = $true }
+    }
+
+    if ($restartExplorer) {
+        Invoke-Step 'Restarting Explorer to apply visual changes' {
+            Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 1
+            Start-Process explorer.exe
+        }
+    }
+}
+
+# IP addresses sourced verbatim from ChrisTitusTech/winutil's config/dns.json (main branch).
+# DNS-over-HTTPS registration is intentionally not configured here - only the plain
+# resolver IPv4/IPv6 addresses are set, which is what "change the DNS" means day to day.
+$script:dnsPresets = @{
+    'Google'                             = @{ V4 = @('8.8.8.8', '8.8.4.4'); V6 = @('2001:4860:4860::8888', '2001:4860:4860::8844') }
+    'Cloudflare'                         = @{ V4 = @('1.1.1.1', '1.0.0.1'); V6 = @('2606:4700:4700::1111', '2606:4700:4700::1001') }
+    'Cloudflare_Malware'                 = @{ V4 = @('1.1.1.2', '1.0.0.2'); V6 = @('2606:4700:4700::1112', '2606:4700:4700::1002') }
+    'Cloudflare_Malware_Adult'           = @{ V4 = @('1.1.1.3', '1.0.0.3'); V6 = @('2606:4700:4700::1113', '2606:4700:4700::1003') }
+    'Open_DNS'                           = @{ V4 = @('208.67.222.222', '208.67.220.220'); V6 = @('2620:119:35::35', '2620:119:53::53') }
+    'Quad9'                              = @{ V4 = @('9.9.9.9', '149.112.112.112'); V6 = @('2620:fe::fe', '2620:fe::9') }
+    'AdGuard_Ads_Trackers'               = @{ V4 = @('94.140.14.14', '94.140.15.15'); V6 = @('2a10:50c0::ad1:ff', '2a10:50c0::ad2:ff') }
+    'AdGuard_Ads_Trackers_Malware_Adult' = @{ V4 = @('94.140.14.15', '94.140.15.16'); V6 = @('2a10:50c0::bad1:ff', '2a10:50c0::bad2:ff') }
+}
+
+function Set-DnsPreset {
+    param([string]$Preset)
+
+    if (-not $Preset -or $Preset -eq 'Default') {
+        Write-Log 'DNS preset is Default - no change made.'
+        return
+    }
+
+    Invoke-Step "Setting DNS to '$Preset' on all active network adapters" {
+        try {
+            $adapters = Get-NetAdapter -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' }
+            if (-not $adapters) { Write-Log 'No active network adapters found - nothing to change.' 'WARN'; return }
+
+            foreach ($adapter in $adapters) {
+                if ($Preset -eq 'DHCP') {
+                    Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ResetServerAddresses -ErrorAction Stop
+                    & netsh interface ip set dnsservers name="$($adapter.Name)" source=dhcp | Out-Null
+                    & netsh interface ipv6 set dnsservers name="$($adapter.Name)" source=dhcp | Out-Null
+                    Write-Log "  $($adapter.Name): DNS reset to DHCP"
+                } elseif ($script:dnsPresets.ContainsKey($Preset)) {
+                    $p = $script:dnsPresets[$Preset]
+                    Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ServerAddresses ($p.V4 + $p.V6) -ErrorAction Stop
+                    Write-Log "  $($adapter.Name): DNS set to $Preset ($($p.V4 -join ', '))"
+                } else {
+                    Write-Log "Unknown DNS preset: $Preset" 'WARN'
+                    return
+                }
+            }
+            Clear-DnsClientCache -ErrorAction SilentlyContinue
+            Write-Log "DNS updated on $($adapters.Count) adapter(s)."
+        } catch {
+            Write-Log "Could not set DNS: $($_.Exception.Message)" 'WARN'
+        }
+    }
+}
+
 # ============================================================================
 # FIXES - standalone one-click troubleshooting actions. Not bundled into a
 # normal debloat/Office run; each is only invoked when its own flag is passed.
@@ -723,6 +953,8 @@ if ($TweakReduceTelemetry) { Set-TelemetryReduced }
 if ($TweakDisableHibernation) { Disable-Hibernation }
 if ($TweakPreventSleep) { Set-SleepNever }
 if ($TweakDisableSmartAppControl) { Disable-SmartAppControl }
+if ($CustomizeTweaks) { Invoke-CustomizeTweaks -Keys ($CustomizeTweaks -split ',' | Where-Object { $_ }) }
+if ($DnsPreset) { Set-DnsPreset -Preset $DnsPreset }
 
 if (-not $SkipDebloat) {
     Remove-OemBloatware

@@ -941,6 +941,32 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
                 <Button Name="BtnPanelTimeDate" Content="Time and Date" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
                 <Button Name="BtnPanelFirewall" Content="Windows Defender Firewall" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
                 <Button Name="BtnPanelSystemRestore" Content="Windows Restore" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
+
+                <TextBlock Style="{StaticResource Header}" Text="Customize Preferences" Margin="0,14,0,0"/>
+                <TextBlock Style="{StaticResource Hint}" Text="One-way: applies the &quot;on&quot; value only, no undo. Explorer restarts once at the end if needed."
+                           TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
+                <StackPanel Name="TweaksPanel"/>
+                <Button Name="BtnApplyTweaks" Content="Apply Selected Tweaks" HorizontalAlignment="Stretch" Margin="0,6,0,4"
+                        BorderBrush="{StaticResource GreenBrush}"/>
+
+                <TextBlock Style="{StaticResource Header}" Text="DNS" Margin="0,14,0,4"/>
+                <DockPanel Margin="0,0,0,6">
+                  <TextBlock Text="Set DNS to:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                  <ComboBox Name="DnsPresetCombo" Width="240" SelectedIndex="0">
+                    <ComboBoxItem Content="Default"/>
+                    <ComboBoxItem Content="DHCP"/>
+                    <ComboBoxItem Content="Google"/>
+                    <ComboBoxItem Content="Cloudflare"/>
+                    <ComboBoxItem Content="Cloudflare_Malware"/>
+                    <ComboBoxItem Content="Cloudflare_Malware_Adult"/>
+                    <ComboBoxItem Content="Open_DNS"/>
+                    <ComboBoxItem Content="Quad9"/>
+                    <ComboBoxItem Content="AdGuard_Ads_Trackers"/>
+                    <ComboBoxItem Content="AdGuard_Ads_Trackers_Malware_Adult"/>
+                  </ComboBox>
+                </DockPanel>
+                <Button Name="BtnApplyDns" Content="Apply DNS" HorizontalAlignment="Stretch" Margin="0,0,0,4"
+                        ToolTip="Applies to all network adapters currently Up. Default makes no change."/>
               </StackPanel>
             </ScrollViewer>
           </Border>
@@ -1078,6 +1104,84 @@ foreach ($p in $quickPanels) {
         }
     }.GetNewClosure())
 }
+
+# Customize Preferences - same Key strings as Deploy-DellOfficeSetup.ps1's $tweakDefs.
+$tweaksPanel = $window.FindName('TweaksPanel')
+$btnApplyTweaks = $window.FindName('BtnApplyTweaks')
+$dnsPresetCombo = $window.FindName('DnsPresetCombo')
+$btnApplyDns = $window.FindName('BtnApplyDns')
+
+$tweakList = @(
+    @{ Key = 'DarkTheme'; Label = 'Dark Theme for Windows'; Tip = 'Dark Mode for the system and applications.' }
+    @{ Key = 'ShowFileExt'; Label = 'File Explorer File Extensions'; Tip = 'Shows file extensions in Explorer (.exe, .png, etc.)' }
+    @{ Key = 'ShowHiddenFiles'; Label = 'File Explorer Hidden Files'; Tip = 'Reveals hidden files in Explorer.' }
+    @{ Key = 'LongPaths'; Label = 'Enable Long Paths'; Tip = 'Allows file paths longer than 260 characters in Explorer.' }
+    @{ Key = 'GameMode'; Label = 'Game Mode'; Tip = 'Prioritizes gaming performance by allocating system resources to games.' }
+    @{ Key = 'MouseAcceleration'; Label = 'Mouse Acceleration'; Tip = 'Cursor movement is affected by the speed of physical mouse movements.' }
+    @{ Key = 'NumLockOnStartup'; Label = 'Num Lock on Startup'; Tip = 'Turns Num Lock on when the computer starts.' }
+    @{ Key = 'WindowSnapping'; Label = 'Window Snapping'; Tip = 'Enables the window snapping feature when dragging windows.' }
+    @{ Key = 'ScrollbarsAlwaysVisible'; Label = 'Scrollbars Always Visible'; Tip = 'Scrollbars are always visible instead of auto-hiding.' }
+    @{ Key = 'StickyKeys'; Label = 'Sticky Keys'; Tip = 'Enables Sticky Keys (activates by pressing Shift 5 times).' }
+    @{ Key = 'TaskbarCenteredIcons'; Label = 'Taskbar Centered Icons'; Tip = 'Centers Taskbar icons instead of left-aligning them.' }
+    @{ Key = 'TaskbarSearchIcon'; Label = 'Taskbar Search Icon'; Tip = 'Shows the Search button on the Taskbar.' }
+    @{ Key = 'TaskbarTaskViewIcon'; Label = 'Taskbar Task View Icon'; Tip = 'Shows the Task View button on the Taskbar.' }
+    @{ Key = 'StartMenuBingSearch'; Label = 'Start Menu Bing Search'; Tip = 'Enables Bing web search results in Windows Search.' }
+    @{ Key = 'StartMenuRecommendations'; Label = 'Start Menu Recommendations'; Tip = 'Enables the Recommended section in the Start Menu. WARNING: also affects Windows Spotlight on the Lock Screen.' }
+    @{ Key = 'SettingsHomePage'; Label = 'Settings Home Page'; Tip = 'Shows the Home page in the Windows Settings app.' }
+    @{ Key = 'BatteryPercentage'; Label = 'System Tray Battery Percentage'; Tip = 'Shows numeric battery percentage next to the battery icon in the system tray.' }
+    @{ Key = 'BSoDVerbose'; Label = 'BSoD Verbose Mode'; Tip = 'Gives more information when you blue screen.' }
+    @{ Key = 'DisableLockScreen'; Label = 'Lock Screen - Disable'; Tip = 'Skips the lock screen entirely, goes directly to sign-in on boot and wake.' }
+    @{ Key = 'LogonAcrylicBlur'; Label = 'Logon Screen Acrylic Blur'; Tip = 'Enables the acrylic blur effect on the login screen background.' }
+    @{ Key = 'LogonVerbose'; Label = 'Logon Verbose Mode'; Tip = 'Shows detailed messages during startup/shutdown.' }
+    @{ Key = 'NewOutlook'; Label = 'Microsoft Outlook New Version'; Tip = 'Forces the new Outlook application to be used.' }
+    @{ Key = 'S0SleepNetwork'; Label = 'S0 Sleep Network Connectivity'; Tip = 'Keeps network connectivity during S0 (modern standby) low-power idle.' }
+    @{ Key = 'S3Sleep'; Label = 'S3 Sleep'; Tip = 'Switches from Modern Standby to S3 Sleep (cuts power to the CPU, keeps RAM refreshed).' }
+)
+
+$script:tweakCheckBoxes = @{}
+foreach ($t in $tweakList) {
+    $row = New-Object System.Windows.Controls.StackPanel
+    $row.Orientation = 'Horizontal'
+    $row.Margin = '0,3,0,3'
+
+    $cb = New-Object System.Windows.Controls.CheckBox
+    $cb.Style = $window.Resources['ToggleSwitchStyle']
+    $cb.VerticalAlignment = 'Center'
+    $row.Children.Add($cb) | Out-Null
+
+    $label = New-Object System.Windows.Controls.TextBlock
+    $label.Text = $t.Label
+    $label.VerticalAlignment = 'Center'
+    $label.Margin = '8,0,0,0'
+    $row.Children.Add($label) | Out-Null
+
+    $hint = New-Object System.Windows.Controls.TextBlock
+    $hint.Style = $window.Resources['Hint']
+    $hint.ToolTip = $t.Tip
+    $row.Children.Add($hint) | Out-Null
+
+    $tweaksPanel.Children.Add($row) | Out-Null
+    $script:tweakCheckBoxes[$t.Key] = $cb
+}
+
+$btnApplyTweaks.Add_Click({
+    $keys = $script:tweakCheckBoxes.Keys | Where-Object { $script:tweakCheckBoxes[$_].IsChecked }
+    if (-not $keys) {
+        [System.Windows.MessageBox]::Show('No tweaks selected.', 'Gr3y Tools', 'OK', 'Information') | Out-Null
+        return
+    }
+    Start-FixJob -FixArgs @('-CustomizeTweaks', ($keys -join ',')) -Label 'Apply Tweaks'
+})
+
+$btnApplyDns.Add_Click({
+    $preset = $dnsPresetCombo.SelectedItem.Content
+    if ($preset -eq 'Default') {
+        [System.Windows.MessageBox]::Show('DNS preset is Default - nothing to apply.', 'Gr3y Tools', 'OK', 'Information') | Out-Null
+        return
+    }
+    $result = [System.Windows.MessageBox]::Show("Set DNS to '$preset' on every active network adapter? This can disrupt connectivity if the resolver is unreachable.", 'Confirm DNS Change', 'YesNo', 'Warning')
+    if ($result -eq 'Yes') { Start-FixJob -FixArgs @('-DnsPreset', $preset) -Label "Set DNS to $preset" }
+})
 
 $greenBrush = $window.Resources['GreenBrush']
 $redBrush = $window.Resources['RedBrush']
@@ -1339,14 +1443,14 @@ $script:fixErrFile = $null
 $script:fixLogOffset = 0
 $script:fixStartTime = $null
 
-$fixButtons = @($btnFixSystemRepair, $btnFixNetworkReset, $btnFixWindowsUpdate, $btnFixWinGet)
+$fixButtons = @($btnFixSystemRepair, $btnFixNetworkReset, $btnFixWindowsUpdate, $btnFixWinGet, $btnApplyTweaks, $btnApplyDns)
 
 function Start-FixJob {
-    param([string]$FixFlag, [string]$Label)
+    param([string[]]$FixArgs, [string]$Label)
     if ($script:fixProc -and -not $script:fixProc.HasExited) { return }
 
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $deployScript,
-                 '-NoReboot', '-SkipDebloat', '-SkipOfficeRemoval', '-SkipOfficeInstall', $FixFlag)
+                 '-NoReboot', '-SkipDebloat', '-SkipOfficeRemoval', '-SkipOfficeInstall') + $FixArgs
 
     $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
     $script:fixLogFile = Join-Path $workDir "gui_fix_$stamp.out.log"
@@ -1363,19 +1467,19 @@ function Start-FixJob {
     $script:fixStartTime = Get-Date
 }
 
-$btnFixSystemRepair.Add_Click({ Start-FixJob -FixFlag '-FixSystemRepair' -Label 'System File Repair' })
+$btnFixSystemRepair.Add_Click({ Start-FixJob -FixArgs @('-FixSystemRepair') -Label 'System File Repair' })
 
 $btnFixNetworkReset.Add_Click({
     $result = [System.Windows.MessageBox]::Show('This resets Winsock and TCP/IP and requires a reboot afterward to fully take effect. Continue?', 'Confirm Network Reset', 'YesNo', 'Warning')
-    if ($result -eq 'Yes') { Start-FixJob -FixFlag '-FixNetworkReset' -Label 'Network Reset' }
+    if ($result -eq 'Yes') { Start-FixJob -FixArgs @('-FixNetworkReset') -Label 'Network Reset' }
 })
 
 $btnFixWindowsUpdate.Add_Click({
     $result = [System.Windows.MessageBox]::Show('This stops Windows Update-related services and clears their cache. Continue?', 'Confirm Windows Update Reset', 'YesNo', 'Warning')
-    if ($result -eq 'Yes') { Start-FixJob -FixFlag '-FixWindowsUpdateReset' -Label 'Windows Update Reset' }
+    if ($result -eq 'Yes') { Start-FixJob -FixArgs @('-FixWindowsUpdateReset') -Label 'Windows Update Reset' }
 })
 
-$btnFixWinGet.Add_Click({ Start-FixJob -FixFlag '-FixWinGetReinstall' -Label 'Reinstall winget' })
+$btnFixWinGet.Add_Click({ Start-FixJob -FixArgs @('-FixWinGetReinstall') -Label 'Reinstall winget' })
 
 $btnStopFixes.Add_Click({
     $result = [System.Windows.MessageBox]::Show('Stop the running fix? Interrupting sfc/DISM mid-scan is safe (just leaves the check unverified) - a network/Windows Update reset should finish quickly on its own instead.', 'Confirm Stop', 'YesNo', 'Warning')
