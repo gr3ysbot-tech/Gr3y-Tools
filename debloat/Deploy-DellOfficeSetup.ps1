@@ -1383,14 +1383,14 @@ function Invoke-CustomizeTweaks {
 # DNS-over-HTTPS registration is intentionally not configured here - only the plain
 # resolver IPv4/IPv6 addresses are set, which is what "change the DNS" means day to day.
 $script:dnsPresets = @{
-    'Google'                             = @{ V4 = @('8.8.8.8', '8.8.4.4'); V6 = @('2001:4860:4860::8888', '2001:4860:4860::8844') }
-    'Cloudflare'                         = @{ V4 = @('1.1.1.1', '1.0.0.1'); V6 = @('2606:4700:4700::1111', '2606:4700:4700::1001') }
-    'Cloudflare_Malware'                 = @{ V4 = @('1.1.1.2', '1.0.0.2'); V6 = @('2606:4700:4700::1112', '2606:4700:4700::1002') }
-    'Cloudflare_Malware_Adult'           = @{ V4 = @('1.1.1.3', '1.0.0.3'); V6 = @('2606:4700:4700::1113', '2606:4700:4700::1003') }
-    'Open_DNS'                           = @{ V4 = @('208.67.222.222', '208.67.220.220'); V6 = @('2620:119:35::35', '2620:119:53::53') }
-    'Quad9'                              = @{ V4 = @('9.9.9.9', '149.112.112.112'); V6 = @('2620:fe::fe', '2620:fe::9') }
-    'AdGuard_Ads_Trackers'               = @{ V4 = @('94.140.14.14', '94.140.15.15'); V6 = @('2a10:50c0::ad1:ff', '2a10:50c0::ad2:ff') }
-    'AdGuard_Ads_Trackers_Malware_Adult' = @{ V4 = @('94.140.14.15', '94.140.15.16'); V6 = @('2a10:50c0::bad1:ff', '2a10:50c0::bad2:ff') }
+    'Google'                             = @{ V4 = @('8.8.8.8', '8.8.4.4'); V6 = @('2001:4860:4860::8888', '2001:4860:4860::8844'); DohTemplate = 'https://dns.google/dns-query' }
+    'Cloudflare'                         = @{ V4 = @('1.1.1.1', '1.0.0.1'); V6 = @('2606:4700:4700::1111', '2606:4700:4700::1001'); DohTemplate = 'https://cloudflare-dns.com/dns-query' }
+    'Cloudflare_Malware'                 = @{ V4 = @('1.1.1.2', '1.0.0.2'); V6 = @('2606:4700:4700::1112', '2606:4700:4700::1002'); DohTemplate = 'https://security.cloudflare-dns.com/dns-query' }
+    'Cloudflare_Malware_Adult'           = @{ V4 = @('1.1.1.3', '1.0.0.3'); V6 = @('2606:4700:4700::1113', '2606:4700:4700::1003'); DohTemplate = 'https://family.cloudflare-dns.com/dns-query' }
+    'Open_DNS'                           = @{ V4 = @('208.67.222.222', '208.67.220.220'); V6 = @('2620:119:35::35', '2620:119:53::53'); DohTemplate = 'https://doh.opendns.com/dns-query' }
+    'Quad9'                              = @{ V4 = @('9.9.9.9', '149.112.112.112'); V6 = @('2620:fe::fe', '2620:fe::9'); DohTemplate = 'https://dns.quad9.net/dns-query' }
+    'AdGuard_Ads_Trackers'               = @{ V4 = @('94.140.14.14', '94.140.15.15'); V6 = @('2a10:50c0::ad1:ff', '2a10:50c0::ad2:ff'); DohTemplate = 'https://dns.adguard-dns.com/dns-query' }
+    'AdGuard_Ads_Trackers_Malware_Adult' = @{ V4 = @('94.140.14.15', '94.140.15.16'); V6 = @('2a10:50c0::bad1:ff', '2a10:50c0::bad2:ff'); DohTemplate = 'https://family.adguard-dns.com/dns-query' }
 }
 
 function Set-DnsPreset {
@@ -1444,6 +1444,27 @@ function Set-DnsPreset {
             }
             Clear-DnsClientCache -ErrorAction SilentlyContinue
             Write-Log "DNS updated on $($adapters.Count) adapter(s)."
+
+            # DoH registration is system-wide (Add-DnsClientDohServerAddress has no
+            # -InterfaceIndex) so this runs once per preset, not once per adapter like the
+            # IP address loop above. Add-DnsClientDohServerAddress only exists on
+            # Windows 11+ - absent on Windows 10, where DNS is still set above, just not
+            # upgraded to DoH.
+            if ($script:dnsPresets.ContainsKey($Preset) -and $script:dnsPresets[$Preset].DohTemplate) {
+                if (Get-Command Add-DnsClientDohServerAddress -ErrorAction SilentlyContinue) {
+                    $p = $script:dnsPresets[$Preset]
+                    foreach ($ip in ($p.V4 + $p.V6)) {
+                        try {
+                            Add-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $p.DohTemplate -AllowFallbackToUdp $false -AutoUpgrade $true -ErrorAction Stop | Out-Null
+                            Write-Log "  Registered DoH for $ip -> $($p.DohTemplate)"
+                        } catch {
+                            Write-Log "  Could not register DoH for $ip (may already be registered): $($_.Exception.Message)" 'WARN'
+                        }
+                    }
+                } else {
+                    Write-Log 'Add-DnsClientDohServerAddress is not available on this OS (Windows 11+ only) - DNS servers were set, but DNS-over-HTTPS was not registered.' 'WARN'
+                }
+            }
         } catch {
             Write-Log "Could not set DNS: $($_.Exception.Message)" 'WARN'
         }
