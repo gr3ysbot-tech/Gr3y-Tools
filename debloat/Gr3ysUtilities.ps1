@@ -894,7 +894,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                 <DockPanel LastChildFill="False" Margin="0,0,0,1">
                   <CheckBox DockPanel.Dock="Left" Name="OptSkipDebloat" Content="Skip OEM debloat"/>
                   <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
-                             ToolTip="Skips Phase 1 entirely: no OEM/McAfee app removal and no scheduled task or service changes."/>
+                             ToolTip="Skips Phase 1 entirely: no OEM/McAfee app removal and no scheduled task or service changes. Leave unchecked to remove them - that removal is one-way and is NOT covered by Revert Last Run (Config tab)."/>
                 </DockPanel>
                 <DockPanel LastChildFill="False" Margin="22,0,0,1">
                   <CheckBox DockPanel.Dock="Left" Name="OptDell" Content="Debloat Dell software" IsChecked="True"/>
@@ -915,7 +915,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                 <DockPanel LastChildFill="False" Margin="0,0,0,1">
                   <CheckBox DockPanel.Dock="Left" Name="OptSkipOfficeRemoval" Content="Skip removing existing Office"/>
                   <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
-                             ToolTip="Leaves any existing Office / Microsoft 365 install in place instead of removing it first."/>
+                             ToolTip="Leaves any existing Office / Microsoft 365 install in place instead of removing it first. Leave unchecked to remove it - that removal is one-way and is NOT covered by Revert Last Run (Config tab)."/>
                 </DockPanel>
                 <DockPanel LastChildFill="False" Margin="0,0,0,1">
                   <CheckBox DockPanel.Dock="Left" Name="OptSkipOfficeInstall" Content="Skip installing Microsoft 365 Apps"/>
@@ -957,7 +957,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                   <CheckBox Name="OptTweakDisableSAC" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
                   <TextBlock Text="Disable Smart App Control" VerticalAlignment="Center" Margin="8,0,0,0"/>
                   <TextBlock Name="TextSacState" Style="{StaticResource Hint}" Margin="6,0,0,0" VerticalAlignment="Center"/>
-                  <TextBlock Style="{StaticResource Hint}" ToolTip="Smart App Control hard-blocks unsigned/low-reputation installers on a clean Windows 11 22H2+ machine, with no user override - several Install Apps catalog entries will otherwise fail. WARNING: this is one-way on a real machine - once off, it cannot be turned back on without reinstalling Windows. Off by default."/>
+                  <TextBlock Style="{StaticResource Hint}" ToolTip="Smart App Control hard-blocks unsigned/low-reputation installers on a clean Windows 11 22H2+ machine, with no user override - several Install Apps catalog entries will otherwise fail. WARNING: this is one-way on a real machine - once off, it cannot be turned back on without reinstalling Windows, and it is NOT covered by Revert Last Run (Config tab). Off by default."/>
                 </StackPanel>
               </StackPanel>
             </Border>
@@ -1070,6 +1070,8 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                             ToolTip="Clears the update cache and restarts related services - standard fix for a stuck Windows Update."/>
                     <Button Name="BtnFixWinGet" Content="WinGet - Reinstall" HorizontalAlignment="Stretch" Margin="0,0,0,4"
                             ToolTip="Re-registers the App Installer package - fixes a missing/broken winget."/>
+                    <Button Name="BtnRevertLastRun" Content="Revert Last Run" HorizontalAlignment="Stretch" Margin="0,0,0,4"
+                            ToolTip="Undoes tweak/DNS/telemetry/power changes from the most recent run, using the undo snapshot it saved automatically. Does NOT cover OEM/AppX/Office removal or Smart App Control - those are one-way by design."/>
                   </StackPanel>
                 </Grid>
 
@@ -1282,6 +1284,7 @@ $btnFixSystemRepair = $window.FindName('BtnFixSystemRepair')
 $btnFixNetworkReset = $window.FindName('BtnFixNetworkReset')
 $btnFixWindowsUpdate = $window.FindName('BtnFixWindowsUpdate')
 $btnFixWinGet = $window.FindName('BtnFixWinGet')
+$btnRevertLastRun = $window.FindName('BtnRevertLastRun')
 $fixesStatusText = $window.FindName('FixesStatusText')
 $fixesLogBox = $window.FindName('FixesLogBox')
 $btnStopFixes = $window.FindName('BtnStopFixes')
@@ -1756,7 +1759,7 @@ $script:fixErrFile = $null
 $script:fixLogOffset = 0
 $script:fixStartTime = $null
 
-$fixButtons = @($btnFixSystemRepair, $btnFixNetworkReset, $btnFixWindowsUpdate, $btnFixWinGet, $btnApplyTweaks, $btnApplyDns)
+$fixButtons = @($btnFixSystemRepair, $btnFixNetworkReset, $btnFixWindowsUpdate, $btnFixWinGet, $btnApplyTweaks, $btnApplyDns, $btnRevertLastRun)
 
 function Start-FixJob {
     param([string[]]$FixArgs, [string]$Label)
@@ -1797,6 +1800,20 @@ $btnFixWindowsUpdate.Add_Click({
 })
 
 $btnFixWinGet.Add_Click({ Start-FixJob -FixArgs @('-FixWinGetReinstall') -Label 'Reinstall winget' })
+
+$btnRevertLastRun.Add_Click({
+    $undoFile = Get-ChildItem -Path $workDir -Filter 'undo_*.json' -ErrorAction SilentlyContinue |
+        Sort-Object CreationTime -Descending | Select-Object -First 1
+    if (-not $undoFile) {
+        [System.Windows.MessageBox]::Show('No undo snapshot found - no run in this work directory has applied a tweak, DNS, telemetry or power change yet.', 'Gr3y Tools', 'OK', 'Information') | Out-Null
+        return
+    }
+    $result = [System.Windows.MessageBox]::Show(
+        "Revert changes from the most recent run?`r`n`r`nSnapshot: $($undoFile.Name)`r`nCaptured: $($undoFile.CreationTime)`r`n`r`nThis undoes tweak/DNS/telemetry/power changes only. OEM/AppX/Office removal and Smart App Control are one-way and are never covered by this.",
+        'Confirm Revert Last Run', 'YesNo', 'Warning')
+    if ($result -ne 'Yes') { return }
+    Start-FixJob -FixArgs @('-Undo', $undoFile.FullName) -Label 'Revert Last Run'
+})
 
 $btnStopFixes.Add_Click({
     $result = [System.Windows.MessageBox]::Show('Stop the running fix? Interrupting sfc/DISM mid-scan is safe (just leaves the check unverified) - a network/Windows Update reset should finish quickly on its own instead.', 'Confirm Stop', 'YesNo', 'Warning')

@@ -72,6 +72,13 @@
     (or removes the registry value entirely, where that's what turning it off means).
     Restarts Explorer once at the end if any selected tweak needs it.
 
+.PARAMETER Undo
+    Path to an undo_<hostname>_<stamp>.json file (see C:\ProgramData\DellOfficeDeploy,
+    written automatically by any run that applied a tweak, DNS, telemetry or power
+    change). Walks it in reverse and exits - no other phase runs in the same invocation.
+    OEM/AppX/Office removal and Smart App Control are one-way and were never captured,
+    so Revert can't undo those regardless of which undo file is used.
+
 .PARAMETER TargetProfile
     Current, Default, or Both (default). Every HKCU-scoped tweak entry always applies to
     the current (elevated) user's own hive; Default/Both additionally mirror it into
@@ -174,7 +181,8 @@ param(
     [switch]$FixSystemRepair,
     [switch]$FixNetworkReset,
     [switch]$FixWindowsUpdateReset,
-    [switch]$FixWinGetReinstall
+    [switch]$FixWinGetReinstall,
+    [string]$Undo = ''
 )
 
 $ErrorActionPreference = 'Continue'
@@ -627,6 +635,193 @@ function Disable-OemScheduledTasksAndServices {
 }
 
 # ============================================================================
+# UNDO SNAPSHOT - captures live "before" state ahead of any tweak, DNS, service or
+# power change, so a later -Undo <file> pass can walk it in reverse. Deliberately does
+# NOT cover OEM/AppX/Office removal or Smart App Control - those are one-way by design
+# and are labeled as such in the GUI rather than implying Revert could undo them.
+# ============================================================================
+
+$script:undoSnapshot = $null
+$script:undoSnapshotPath = $null
+
+function Initialize-UndoSnapshot {
+    if ($script:undoSnapshot) { return }
+    $script:undoSnapshot = [ordered]@{
+        hostname  = $env:COMPUTERNAME
+        timestamp = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
+        registry  = New-Object System.Collections.Generic.List[object]
+        services  = New-Object System.Collections.Generic.List[object]
+        dns       = New-Object System.Collections.Generic.List[object]
+        power     = $null
+    }
+}
+
+function Add-UndoRegistryEntry {
+    param([string]$Path, [string]$Name, [string]$Type)
+    Initialize-UndoSnapshot
+    # First-seen state only - a second tweak touching the same value later in the same
+    # run must not overwrite the snapshot with an already-modified "before".
+    if ($script:undoSnapshot.registry | Where-Object { $_.path -eq $Path -and $_.name -eq $Name }) { return }
+    $existing = Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue
+    if ($null -eq $existing) {
+        $script:undoSnapshot.registry.Add([ordered]@{ path = $Path; name = $Name; hadValue = $false; value = $null; type = $Type })
+    } else {
+        $script:undoSnapshot.registry.Add([ordered]@{ path = $Path; name = $Name; hadValue = $true; value = $existing.$Name; type = $Type })
+    }
+}
+
+function Add-UndoServiceEntry {
+    param([string]$Name)
+    Initialize-UndoSnapshot
+    if ($script:undoSnapshot.services | Where-Object { $_.name -eq $Name }) { return }
+    $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if ($svc) {
+        $script:undoSnapshot.services.Add([ordered]@{ name = $Name; startType = $svc.StartType.ToString(); status = $svc.Status.ToString() })
+    }
+}
+
+function Add-UndoDnsEntry {
+    param($Adapter)
+    Initialize-UndoSnapshot
+    if ($script:undoSnapshot.dns | Where-Object { $_.interfaceIndex -eq $Adapter.InterfaceIndex }) { return }
+    $ipv4Servers = (Get-DnsClientServerAddress -InterfaceIndex $Adapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses
+    $ipv6Servers = (Get-DnsClientServerAddress -InterfaceIndex $Adapter.InterfaceIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue).ServerAddresses
+    $dhcpEnabled = (Get-NetIPInterface -InterfaceIndex $Adapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).Dhcp -eq 'Enabled'
+    $script:undoSnapshot.dns.Add([ordered]@{
+        interfaceIndex = $Adapter.InterfaceIndex
+        interfaceName  = $Adapter.Name
+        dhcp           = $dhcpEnabled
+        serversV4      = @($ipv4Servers)
+        serversV6      = @($ipv6Servers)
+    })
+}
+
+function Add-UndoPowerEntry {
+    Initialize-UndoSnapshot
+    if ($script:undoSnapshot.power) { return }
+    $schemeOutput = powercfg /getactivescheme 2>&1 | Out-String
+    $schemeGuid = [regex]::Match($schemeOutput, 'Power Scheme GUID:\s*([0-9a-fA-F-]+)').Groups[1].Value
+    $queryOutput = powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE 2>&1 | Out-String
+    $acIndex = [regex]::Match($queryOutput, 'Current AC Power Setting Index:\s*(0x[0-9a-fA-F]+)').Groups[1].Value
+    $dcIndex = [regex]::Match($queryOutput, 'Current DC Power Setting Index:\s*(0x[0-9a-fA-F]+)').Groups[1].Value
+    $script:undoSnapshot.power = [ordered]@{
+        activeScheme      = $schemeGuid
+        standbyTimeoutAC  = $acIndex
+        standbyTimeoutDC  = $dcIndex
+        hibernateEnabled  = (Test-Path (Join-Path $env:SystemDrive 'hiberfil.sys'))
+    }
+}
+
+function Save-UndoSnapshot {
+    if (-not $script:undoSnapshot) { return }
+    $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    $path = Join-Path $workDir "undo_$($env:COMPUTERNAME)_$stamp.json"
+    try {
+        $script:undoSnapshot | ConvertTo-Json -Depth 6 | Set-Content -Path $path -Encoding UTF8
+        Write-Log "Undo snapshot saved: $path"
+        # Human-readable secondary backup, in addition to the JSON the Revert flow
+        # actually reads - reg.exe export needs a whole KEY (not a single value), so this
+        # exports each unique key that had at least one captured value.
+        $uniqueKeys = $script:undoSnapshot.registry.path | Select-Object -Unique
+        foreach ($regPath in $uniqueKeys) {
+            $regExportArg = $regPath -replace '^HKLM:', 'HKLM' -replace '^HKCU:', 'HKCU' -replace '^HKU:', 'HKU' -replace '\\', '\'
+            $safeName = ($regPath -replace '[\\:]', '_')
+            $exportPath = Join-Path $workDir "undo_$($env:COMPUTERNAME)_$stamp`_$safeName.reg"
+            & reg.exe export $regExportArg $exportPath /y 2>&1 | Out-Null
+        }
+    } catch {
+        Write-Log "Could not save the undo snapshot: $($_.Exception.Message)" 'WARN'
+    }
+}
+
+function Invoke-UndoSnapshot {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) {
+        Write-Log "Undo file not found: $Path" 'ERROR'
+        return
+    }
+    Write-Log "--- Reverting from undo snapshot: $Path ---"
+    try {
+        $snapshot = Get-Content -Path $Path -Raw | ConvertFrom-Json
+    } catch {
+        Write-Log "Could not parse undo file: $($_.Exception.Message)" 'ERROR'
+        return
+    }
+
+    # Reverse order - later entries in the file were captured (and so applied) later in
+    # the original run, so undo them first.
+    $registryEntries = @($snapshot.registry)
+    [array]::Reverse($registryEntries)
+    foreach ($entry in $registryEntries) {
+        Invoke-Step "Reverting registry: $($entry.path)\$($entry.name)" {
+            try {
+                if (-not $entry.hadValue) {
+                    Remove-ItemProperty -Path $entry.path -Name $entry.name -ErrorAction SilentlyContinue
+                } else {
+                    New-Item -Path $entry.path -Force -ErrorAction SilentlyContinue | Out-Null
+                    Set-ItemProperty -Path $entry.path -Name $entry.name -Value $entry.value -Type $entry.type -ErrorAction Stop
+                }
+            } catch {
+                Write-Log "Could not revert $($entry.path)\$($entry.name): $($_.Exception.Message)" 'WARN'
+            }
+        }
+    }
+
+    foreach ($svcEntry in $snapshot.services) {
+        Invoke-Step "Reverting service: $($svcEntry.name) -> StartType=$($svcEntry.startType), Status=$($svcEntry.status)" {
+            try {
+                Set-Service -Name $svcEntry.name -StartupType $svcEntry.startType -ErrorAction Stop
+                if ($svcEntry.status -eq 'Running') {
+                    Start-Service -Name $svcEntry.name -ErrorAction SilentlyContinue
+                } else {
+                    Stop-Service -Name $svcEntry.name -Force -ErrorAction SilentlyContinue
+                }
+            } catch {
+                Write-Log "Could not revert service $($svcEntry.name): $($_.Exception.Message)" 'WARN'
+            }
+        }
+    }
+
+    foreach ($dnsEntry in $snapshot.dns) {
+        Invoke-Step "Reverting DNS on $($dnsEntry.interfaceName)" {
+            try {
+                if ($dnsEntry.dhcp) {
+                    Set-DnsClientServerAddress -InterfaceIndex $dnsEntry.interfaceIndex -ResetServerAddresses -ErrorAction Stop
+                } elseif ($dnsEntry.serversV4 -or $dnsEntry.serversV6) {
+                    Set-DnsClientServerAddress -InterfaceIndex $dnsEntry.interfaceIndex -ServerAddresses (@($dnsEntry.serversV4) + @($dnsEntry.serversV6)) -ErrorAction Stop
+                }
+            } catch {
+                Write-Log "Could not revert DNS on $($dnsEntry.interfaceName): $($_.Exception.Message)" 'WARN'
+            }
+        }
+    }
+
+    if ($snapshot.power) {
+        Invoke-Step 'Reverting power scheme, sleep timeout and hibernate state' {
+            try {
+                if ($snapshot.power.activeScheme) { powercfg /setactive $snapshot.power.activeScheme 2>&1 | Out-Null }
+                if ($snapshot.power.standbyTimeoutAC) {
+                    powercfg /setacvalueindex SCHEME_CURRENT SUB_SLEEP STANDBYIDLE $snapshot.power.standbyTimeoutAC 2>&1 | Out-Null
+                }
+                if ($snapshot.power.standbyTimeoutDC) {
+                    powercfg /setdcvalueindex SCHEME_CURRENT SUB_SLEEP STANDBYIDLE $snapshot.power.standbyTimeoutDC 2>&1 | Out-Null
+                }
+                powercfg /setactive SCHEME_CURRENT 2>&1 | Out-Null
+                if ($snapshot.power.hibernateEnabled) {
+                    powercfg /hibernate on 2>&1 | Out-Null
+                } else {
+                    powercfg /hibernate off 2>&1 | Out-Null
+                }
+            } catch {
+                Write-Log "Could not revert power settings: $($_.Exception.Message)" 'WARN'
+            }
+        }
+    }
+
+    Write-Log 'Revert complete. Note: OEM/AppX/Office removal and Smart App Control are one-way and are never covered by an undo snapshot.'
+}
+
+# ============================================================================
 # TWEAKS - opt-in preference changes, bundled into a normal run alongside debloat
 # ============================================================================
 
@@ -656,6 +851,12 @@ function Set-TelemetryReduced {
             return
         }
         try {
+            Add-UndoRegistryEntry -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' -Name 'AllowTelemetry' -Type 'DWord'
+            Add-UndoRegistryEntry -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name 'EnableActivityFeed' -Type 'DWord'
+            Add-UndoRegistryEntry -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name 'PublishUserActivities' -Type 'DWord'
+            Add-UndoRegistryEntry -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name 'UploadUserActivities' -Type 'DWord'
+            Add-UndoServiceEntry -Name 'DiagTrack'
+
             New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' -Force -ErrorAction SilentlyContinue | Out-Null
             Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' -Name 'AllowTelemetry' -Value 0 -Type DWord -ErrorAction SilentlyContinue
 
@@ -676,12 +877,14 @@ function Set-TelemetryReduced {
 
 function Disable-Hibernation {
     Invoke-Step 'Disabling hibernation (frees hiberfil.sys disk space)' {
+        Add-UndoPowerEntry
         powercfg /hibernate off 2>&1 | ForEach-Object { Write-Log "powercfg: $_" }
     }
 }
 
 function Set-SleepNever {
     Invoke-Step 'Setting sleep to Never on AC and battery (display timeout left as-is)' {
+        Add-UndoPowerEntry
         powercfg /change standby-timeout-ac 0 2>&1 | ForEach-Object { Write-Log "powercfg: $_" }
         powercfg /change standby-timeout-dc 0 2>&1 | ForEach-Object { Write-Log "powercfg: $_" }
         Write-Log 'Sleep timeout set to Never (AC and battery). The screen will still lock on its own timeout for security - only system sleep was disabled, so the machine stays reachable for remote support/management.'
@@ -860,6 +1063,7 @@ function Invoke-CustomizeTweaks {
                 }
                 foreach ($entry in $def.entries) {
                     $value = if ($direction -eq 'on') { $entry.onValue } else { $entry.offValue }
+                    Add-UndoRegistryEntry -Path $entry.path -Name $entry.name -Type $entry.type
                     if ($value -eq '<RemoveEntry>') {
                         Remove-ItemProperty -Path $entry.path -Name $entry.name -ErrorAction SilentlyContinue
                     } else {
@@ -964,6 +1168,7 @@ function Set-DnsPreset {
                 foreach ($prevEntry in $previous) {
                     Write-Log "  $($adapter.Name) previous $($prevEntry.AddressFamily) servers: $($prevEntry.ServerAddresses -join ', ')"
                 }
+                Add-UndoDnsEntry -Adapter $adapter
 
                 if ($Preset -eq 'DHCP') {
                     Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ResetServerAddresses -ErrorAction Stop
@@ -1355,7 +1560,14 @@ $languageLines
 # MAIN
 # ============================================================================
 
-Write-Log "Starting run. DryRun=$DryRun CreateRestorePoint=$CreateRestorePoint SkipDebloat=$SkipDebloat SkipOfficeRemoval=$SkipOfficeRemoval SkipOfficeInstall=$SkipOfficeInstall TargetProfile=$TargetProfile"
+Write-Log "Starting run. DryRun=$DryRun CreateRestorePoint=$CreateRestorePoint SkipDebloat=$SkipDebloat SkipOfficeRemoval=$SkipOfficeRemoval SkipOfficeInstall=$SkipOfficeInstall TargetProfile=$TargetProfile Undo=$Undo"
+
+if ($Undo) {
+    Invoke-UndoSnapshot -Path $Undo
+    Write-Log "Run complete. Log saved to $logPath"
+    Stop-Transcript | Out-Null
+    exit 0
+}
 
 if ($CreateRestorePoint) { New-PreDeploySystemRestorePoint }
 
@@ -1390,6 +1602,8 @@ if ($FixSystemRepair) { Invoke-SystemRepair }
 if ($FixNetworkReset) { Invoke-NetworkReset }
 if ($FixWindowsUpdateReset) { Invoke-WindowsUpdateReset }
 if ($FixWinGetReinstall) { Invoke-WinGetReinstall }
+
+if (-not $DryRun) { Save-UndoSnapshot }
 
 if ($script:errorCount -gt 0) {
     Write-Log "Run complete with $script:errorCount warning(s)/error(s) - check the log above for details. Log saved to $logPath"
