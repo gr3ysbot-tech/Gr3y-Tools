@@ -819,6 +819,11 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
                   <TextBlock Text="Prevent sleep (keep machine reachable)" VerticalAlignment="Center" Margin="8,0,0,0"/>
                   <TextBlock Style="{StaticResource Hint}" ToolTip="Sets system sleep to Never on AC and battery so the machine stays reachable. Display timeout is untouched, so the screen still locks."/>
                 </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,3,0,3">
+                  <CheckBox Name="OptTweakDisableSAC" Style="{StaticResource ToggleSwitchStyle}" VerticalAlignment="Center"/>
+                  <TextBlock Text="Disable Smart App Control" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                  <TextBlock Style="{StaticResource Hint}" ToolTip="Smart App Control hard-blocks unsigned/low-reputation installers on a clean Windows 11 22H2+ machine, with no user override - several Install Apps catalog entries will otherwise fail. WARNING: this is one-way on a real machine - once off, it cannot be turned back on without reinstalling Windows. Off by default."/>
+                </StackPanel>
               </StackPanel>
             </Border>
           </Grid>
@@ -962,6 +967,13 @@ $optSkipOfficeInstall = $window.FindName('OptSkipOfficeInstall')
 $optTweakTelemetry = $window.FindName('OptTweakTelemetry')
 $optTweakHibernation = $window.FindName('OptTweakHibernation')
 $optTweakPreventSleep = $window.FindName('OptTweakPreventSleep')
+$optTweakDisableSAC = $window.FindName('OptTweakDisableSAC')
+$optTweakDisableSAC.Add_Checked({
+    $result = [System.Windows.MessageBox]::Show(
+        "Smart App Control blocks unsigned/low-reputation installers with no user override, so this lets more of the Install Apps catalog install cleanly.`r`n`r`nWARNING: this is one-way on a real machine - once turned off, Smart App Control cannot be turned back on without reinstalling Windows.`r`n`r`nEnable this tweak?",
+        'Confirm: Disable Smart App Control', 'YesNo', 'Warning')
+    if ($result -eq 'No') { $optTweakDisableSAC.IsChecked = $false }
+})
 $optChannel = $window.FindName('OptChannel')
 $btnScan = $window.FindName('BtnScan')
 $btnStart = $window.FindName('BtnStart')
@@ -1196,6 +1208,7 @@ $btnStart.Add_Click({
     if ($optTweakTelemetry.IsChecked) { $argList += '-TweakReduceTelemetry' }
     if ($optTweakHibernation.IsChecked) { $argList += '-TweakDisableHibernation' }
     if ($optTweakPreventSleep.IsChecked) { $argList += '-TweakPreventSleep' }
+    if ($optTweakDisableSAC.IsChecked) { $argList += '-TweakDisableSmartAppControl' }
     $channel = $optChannel.SelectedItem.Content
     $argList += @('-OfficeChannel', $channel)
 

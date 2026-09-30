@@ -48,6 +48,14 @@
     for security. Off by default - on battery this trades battery life for
     availability, so only enable it where that tradeoff makes sense.
 
+.PARAMETER TweakDisableSmartAppControl
+    Turn off Windows Smart App Control, which on a clean Windows 11 22H2+
+    image hard-blocks unsigned/low-reputation installers with no user-facing
+    override - several apps in the Install Apps catalog will otherwise fail
+    to install. Off by default: this is a one-way change on a real machine
+    (Smart App Control cannot be turned back on without reinstalling Windows),
+    so only enable it where that tradeoff is acceptable.
+
 .PARAMETER FixSystemRepair
     Run sfc /scannow then DISM /Online /Cleanup-Image /RestoreHealth. Can take
     10-20+ minutes. Off by default - intended to be triggered standalone from the
@@ -120,6 +128,7 @@ param(
     [switch]$TweakReduceTelemetry,
     [switch]$TweakDisableHibernation,
     [switch]$TweakPreventSleep,
+    [switch]$TweakDisableSmartAppControl,
     [switch]$FixSystemRepair,
     [switch]$FixNetworkReset,
     [switch]$FixWindowsUpdateReset,
@@ -474,6 +483,28 @@ function Set-SleepNever {
     }
 }
 
+function Disable-SmartAppControl {
+    Invoke-Step 'Disabling Smart App Control (one-way until a clean Windows reinstall)' {
+        try {
+            $ciPolicyPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy'
+            $current = (Get-ItemProperty -Path $ciPolicyPath -Name 'VerifiedAndReputablePolicyState' -ErrorAction SilentlyContinue).VerifiedAndReputablePolicyState
+            if ($null -eq $current) {
+                Write-Log 'Smart App Control policy value not present - likely already off or not available on this Windows edition/build. Nothing to do.'
+                return
+            }
+            if ($current -eq 0) {
+                Write-Log 'Smart App Control is already off.'
+                return
+            }
+            New-Item -Path $ciPolicyPath -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path $ciPolicyPath -Name 'VerifiedAndReputablePolicyState' -Value 0 -Type DWord -ErrorAction Stop
+            Write-Log 'Smart App Control disabled. Takes full effect after the next reboot. This cannot be turned back on without reinstalling Windows.'
+        } catch {
+            Write-Log "Could not disable Smart App Control: $($_.Exception.Message)" 'WARN'
+        }
+    }
+}
+
 # ============================================================================
 # FIXES - standalone one-click troubleshooting actions. Not bundled into a
 # normal debloat/Office run; each is only invoked when its own flag is passed.
@@ -691,6 +722,7 @@ if ($CreateRestorePoint) { New-PreDeploySystemRestorePoint }
 if ($TweakReduceTelemetry) { Set-TelemetryReduced }
 if ($TweakDisableHibernation) { Disable-Hibernation }
 if ($TweakPreventSleep) { Set-SleepNever }
+if ($TweakDisableSmartAppControl) { Disable-SmartAppControl }
 
 if (-not $SkipDebloat) {
     Remove-OemBloatware

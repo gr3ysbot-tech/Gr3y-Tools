@@ -36,7 +36,6 @@
     {"name": "Crystal Disk Mark", "category": "Utilities", "wingetId": "CrystalDewWorld.CrystalDiskMark"},
     {"name": "Deskflow", "category": "Utilities", "wingetId": "Deskflow.Deskflow"},
     {"name": "Dropbox", "category": "Utilities", "wingetId": "Dropbox.Dropbox"},
-    {"name": "Ente Auth", "category": "Utilities", "wingetId": "ente-io.auth-desktop"},
     {"name": "Everything", "category": "Utilities", "wingetId": "voidtools.Everything"},
     {"name": "Files", "category": "Utilities", "wingetId": "FilesCommunity.Files"},
     {"name": "F.lux", "category": "Utilities", "wingetId": "flux.flux"},
