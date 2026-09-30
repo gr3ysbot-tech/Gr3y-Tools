@@ -403,6 +403,20 @@
         {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge", "name": "TabServicesEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
         {"path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\EdgeUpdate", "name": "CreateDesktopShortcutDefault", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"}
       ]
+    },
+    {
+      "key": "OfficeFirstRunPrivacyOff",
+      "label": "Disable Office First-Run Prompts and Diagnostic Data",
+      "tip": "Suppresses Office's First Run Opt-in Wizard and 'First things first' recommended-settings prompt, sets diagnostic data to the lowest level (Neither), and opts out of feedback requests, in-product surveys, and the Watson-based proofing tools data collection. Applies per-user (HKCU) - only affects Office once it's installed. Opt-in and reversible. Every value verified against admx.help's real Office 2016/365 ADMX definitions (office\\16.0\\common\\clienttelemetry, common\\feedback, common\\ptwatson, common\\general) - note OptInDisable lives under the policy-backed Common\\General key while ShownFirstRunOptin is a separate, non-policy Common\\General key with the same name.",
+      "scope": "HKCU",
+      "entries": [
+        {"path": "HKCU:\\Software\\Policies\\Microsoft\\office\\16.0\\common\\clienttelemetry", "name": "SendTelemetry", "type": "DWord", "onValue": "3", "offValue": "<RemoveEntry>"},
+        {"path": "HKCU:\\Software\\Policies\\Microsoft\\office\\16.0\\common\\feedback", "name": "Enabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKCU:\\Software\\Policies\\Microsoft\\office\\16.0\\common\\feedback", "name": "SurveyEnabled", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKCU:\\Software\\Policies\\Microsoft\\office\\16.0\\common\\ptwatson", "name": "PTWOptIn", "type": "DWord", "onValue": "0", "offValue": "<RemoveEntry>"},
+        {"path": "HKCU:\\Software\\Policies\\Microsoft\\office\\16.0\\common\\general", "name": "OptInDisable", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"},
+        {"path": "HKCU:\\Software\\Microsoft\\Office\\16.0\\Common\\General", "name": "ShownFirstRunOptin", "type": "DWord", "onValue": "1", "offValue": "<RemoveEntry>"}
+      ]
     }
   ]
 }
