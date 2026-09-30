@@ -1217,6 +1217,15 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                 <Button Name="BtnPanelDsregStatus" Content="Show Join/MDM Status" Width="260" Margin="0,0,10,8"/>
                 <Button Name="BtnPanelAdminPowerShell" Content="Admin PowerShell Here" Width="260" Margin="0,0,10,8"/>
               </WrapPanel>
+
+              <TextBlock Style="{StaticResource Header}" Text="BitLocker" Margin="0,16,0,0"/>
+              <TextBlock Style="{StaticResource Hint}" Text="Read-only: shows current protection status per drive and lets you view or save any existing recovery keys. Never enables, disables, or changes encryption on any drive."
+                         TextWrapping="Wrap" Margin="0,0,0,8" Opacity="0.7"/>
+              <WrapPanel Margin="0,0,0,8">
+                <Button Name="BtnBitLockerScan" Content="Scan BitLocker Status" Width="220" Margin="0,0,10,0"/>
+                <Button Name="BtnBitLockerSave" Content="Save Recovery Keys to File..." Width="220" Margin="0,0,10,0" IsEnabled="False"/>
+              </WrapPanel>
+              <TextBox Name="BitLockerResultsBox" Style="{StaticResource LogBox}" Height="180" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontSize="11"/>
             </StackPanel>
           </ScrollViewer>
         </Border>
@@ -1562,6 +1571,100 @@ $btnPanelAdminPowerShell.Add_Click({
         Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoExit' -WorkingDirectory $workDir
     } catch {
         [System.Windows.MessageBox]::Show("Could not open PowerShell: $($_.Exception.Message)", 'Gr3y Tools', 'OK', 'Error') | Out-Null
+    }
+})
+
+function Get-BitLockerKeyData {
+    # Read-only - never enables, disables, or changes encryption state on any volume.
+    # Duplicated from Deploy-DellOfficeSetup.ps1's copy of the same function (this file
+    # is self-contained by design, matching the existing Get-SafeFileNamePart/
+    # Get-LogSummary duplication pattern). Callers must never pass RecoveryPassword to a
+    # log/transcript - only to this tab's own in-memory display or the Save-to-file button.
+    try {
+        $volumes = Get-BitLockerVolume -ErrorAction Stop
+    } catch {
+        return [PSCustomObject]@{ Error = $_.Exception.Message; Volumes = @() }
+    }
+    $result = New-Object System.Collections.Generic.List[object]
+    foreach ($vol in $volumes) {
+        $recoveryKeys = @($vol.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' } | ForEach-Object {
+            [PSCustomObject]@{ KeyProtectorId = $_.KeyProtectorId; RecoveryPassword = $_.RecoveryPassword }
+        })
+        $result.Add([PSCustomObject]@{
+            MountPoint           = $vol.MountPoint
+            VolumeType           = $vol.VolumeType
+            ProtectionStatus     = $vol.ProtectionStatus
+            VolumeStatus         = $vol.VolumeStatus
+            EncryptionPercentage = $vol.EncryptionPercentage
+            RecoveryKeys         = $recoveryKeys
+        })
+    }
+    return [PSCustomObject]@{ Error = $null; Volumes = $result }
+}
+
+$btnBitLockerScan = $window.FindName('BtnBitLockerScan')
+$btnBitLockerSave = $window.FindName('BtnBitLockerSave')
+$bitLockerResultsBox = $window.FindName('BitLockerResultsBox')
+$script:bitLockerScanResults = $null
+
+$btnBitLockerScan.Add_Click({
+    $bitLockerResultsBox.Text = 'Scanning...'
+    $btnBitLockerSave.IsEnabled = $false
+    $data = Get-BitLockerKeyData
+    if ($data.Error) {
+        $bitLockerResultsBox.Text = "Could not read BitLocker status: $($data.Error)`r`n`r`nThis requires the BitLocker module (Windows 10/11 Pro, Enterprise or Education) and elevation - this app should already be running elevated."
+        $script:bitLockerScanResults = $null
+        return
+    }
+    if ($data.Volumes.Count -eq 0) {
+        $bitLockerResultsBox.Text = 'No volumes reported by Get-BitLockerVolume.'
+        $script:bitLockerScanResults = $null
+        return
+    }
+    $lines = New-Object System.Collections.Generic.List[string]
+    $anyKeys = $false
+    foreach ($v in $data.Volumes) {
+        $lines.Add("$($v.MountPoint)  [$($v.VolumeType)]  Protection: $($v.ProtectionStatus)  Status: $($v.VolumeStatus)  Encrypted: $($v.EncryptionPercentage)%")
+        if ($v.RecoveryKeys.Count -gt 0) {
+            $anyKeys = $true
+            foreach ($k in $v.RecoveryKeys) {
+                $lines.Add("    Recovery Key ($($k.KeyProtectorId)):")
+                $lines.Add("    $($k.RecoveryPassword)")
+            }
+        } else {
+            $lines.Add('    (no recovery password protector found)')
+        }
+        $lines.Add('')
+    }
+    $bitLockerResultsBox.Text = $lines -join "`r`n"
+    $script:bitLockerScanResults = $data.Volumes
+    $btnBitLockerSave.IsEnabled = $anyKeys
+})
+
+$btnBitLockerSave.Add_Click({
+    if (-not $script:bitLockerScanResults) { return }
+    $dialog = New-Object Microsoft.Win32.SaveFileDialog
+    $dialog.FileName = "bitlocker-recovery_$(Get-MachineTag)_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+    $dialog.InitialDirectory = [Environment]::GetFolderPath('Desktop')
+    $dialog.Filter = 'Text files (*.txt)|*.txt|All files (*.*)|*.*'
+    if ($dialog.ShowDialog()) {
+        $content = New-Object System.Collections.Generic.List[string]
+        $content.Add("BitLocker recovery keys for $env:COMPUTERNAME - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+        $content.Add('This file contains decryption secrets - store or destroy it securely.')
+        $content.Add('')
+        foreach ($v in $script:bitLockerScanResults) {
+            foreach ($k in $v.RecoveryKeys) {
+                $content.Add("Drive $($v.MountPoint) [$($v.VolumeType)] - Key Protector ID $($k.KeyProtectorId)")
+                $content.Add("Recovery Key: $($k.RecoveryPassword)")
+                $content.Add('')
+            }
+        }
+        try {
+            ($content -join "`r`n") | Set-Content -Path $dialog.FileName -Encoding UTF8 -ErrorAction Stop
+            [System.Windows.MessageBox]::Show("Saved to $($dialog.FileName)`r`n`r`nThis file contains BitLocker recovery keys in plain text - store or destroy it securely.", 'Gr3y Tools', 'OK', 'Information') | Out-Null
+        } catch {
+            [System.Windows.MessageBox]::Show("Could not save: $($_.Exception.Message)", 'Gr3y Tools', 'OK', 'Error') | Out-Null
+        }
     }
 })
 

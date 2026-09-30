@@ -2394,6 +2394,22 @@ function Get-ValidationChecks {
         $checks.Add([PSCustomObject]@{ Check = 'Secure Boot'; Status = 'UNKNOWN'; Detail = 'Not UEFI, or could not be checked' })
     }
 
+    try {
+        # Status only - protection state and whether a recovery password protector
+        # exists. Never the recovery password value itself, which only ever goes into
+        # bitlocker-recovery.txt (a separate file in this same handoff folder).
+        $osVol = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
+        $hasRecoveryProtector = [bool]($osVol.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' })
+        $isProtected = $osVol.ProtectionStatus -eq 'On'
+        $checks.Add([PSCustomObject]@{
+            Check  = 'BitLocker'
+            Status = if ($isProtected -and $hasRecoveryProtector) { 'OK' } else { 'ATTENTION' }
+            Detail = "ProtectionStatus=$($osVol.ProtectionStatus), EncryptionPercentage=$($osVol.EncryptionPercentage), RecoveryPasswordProtector=$hasRecoveryProtector"
+        })
+    } catch {
+        $checks.Add([PSCustomObject]@{ Check = 'BitLocker'; Status = 'UNKNOWN'; Detail = $_.Exception.Message })
+    }
+
     $pendingReboot = $false
     $pendingReasons = New-Object System.Collections.Generic.List[string]
     if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') { $pendingReboot = $true; $pendingReasons.Add('CBS') }
@@ -2428,6 +2444,34 @@ function Get-ValidationChecks {
     }
 
     return $checks
+}
+
+function Get-BitLockerKeyData {
+    # Read-only - never enables, disables, or changes encryption state on any volume.
+    # Returns one object per volume with its protection status and any RecoveryPassword
+    # key protectors found. Callers must never pass the RecoveryPassword value to
+    # Write-Log - it only ever goes into a dedicated, ACL-restricted file
+    # (bitlocker-recovery.txt) or the GUI's own in-memory display, never the run log.
+    try {
+        $volumes = Get-BitLockerVolume -ErrorAction Stop
+    } catch {
+        return [PSCustomObject]@{ Error = $_.Exception.Message; Volumes = @() }
+    }
+    $result = New-Object System.Collections.Generic.List[object]
+    foreach ($vol in $volumes) {
+        $recoveryKeys = @($vol.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' } | ForEach-Object {
+            [PSCustomObject]@{ KeyProtectorId = $_.KeyProtectorId; RecoveryPassword = $_.RecoveryPassword }
+        })
+        $result.Add([PSCustomObject]@{
+            MountPoint           = $vol.MountPoint
+            VolumeType           = $vol.VolumeType
+            ProtectionStatus     = $vol.ProtectionStatus
+            VolumeStatus         = $vol.VolumeStatus
+            EncryptionPercentage = $vol.EncryptionPercentage
+            RecoveryKeys         = $recoveryKeys
+        })
+    }
+    return [PSCustomObject]@{ Error = $null; Volumes = $result }
 }
 
 function Get-MachineInventory {
@@ -2495,6 +2539,42 @@ function New-ValidationHandoffPackage {
         ($validationLines -join "`r`n") | Set-Content -Path (Join-Path $handoffDir 'validation.txt') -Encoding UTF8
 
         Copy-Item -Path $logPath -Destination (Join-Path $handoffDir (Split-Path -Leaf $logPath)) -Force -ErrorAction SilentlyContinue
+
+        # bitlocker-recovery.txt - written only when a recovery password protector
+        # actually exists, and only the recovery keys themselves, never logged via
+        # Write-Log. ProgramData is world-readable by default, so this file's
+        # permissions are restricted to Administrators/SYSTEM right after writing it -
+        # this repo's handoff folder isn't meant to be a place a standard user could read
+        # a decryption secret out of.
+        $bitLockerData = Get-BitLockerKeyData
+        if (-not $bitLockerData.Error) {
+            $anyRecoveryKeys = [bool]($bitLockerData.Volumes | Where-Object { $_.RecoveryKeys.Count -gt 0 })
+            if ($anyRecoveryKeys) {
+                $bitLockerLines = New-Object System.Collections.Generic.List[string]
+                $bitLockerLines.Add("BitLocker recovery keys for $env:COMPUTERNAME - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+                $bitLockerLines.Add('This file contains decryption secrets - store or destroy it securely.')
+                $bitLockerLines.Add('')
+                foreach ($vol in $bitLockerData.Volumes) {
+                    foreach ($key in $vol.RecoveryKeys) {
+                        $bitLockerLines.Add("Drive $($vol.MountPoint) [$($vol.VolumeType)] - Key Protector ID $($key.KeyProtectorId)")
+                        $bitLockerLines.Add("Recovery Key: $($key.RecoveryPassword)")
+                        $bitLockerLines.Add('')
+                    }
+                }
+                $bitLockerPath = Join-Path $handoffDir 'bitlocker-recovery.txt'
+                ($bitLockerLines -join "`r`n") | Set-Content -Path $bitLockerPath -Encoding UTF8
+                try {
+                    & icacls $bitLockerPath '/inheritance:r' '/grant:r' '*S-1-5-32-544:F' 'SYSTEM:F' 2>&1 | Out-Null
+                } catch {
+                    Write-Log "Could not restrict permissions on bitlocker-recovery.txt: $($_.Exception.Message)" 'WARN'
+                }
+                Write-Log "BitLocker recovery key(s) for $($bitLockerData.Volumes.Count) volume(s) written to bitlocker-recovery.txt (not logged here)."
+            } else {
+                Write-Log 'No BitLocker recovery password protectors found - bitlocker-recovery.txt not created.'
+            }
+        } else {
+            Write-Log "Could not read BitLocker status for the handoff package: $($bitLockerData.Error)" 'WARN'
+        }
 
         $attentionCount = @($checks | Where-Object { $_.Status -eq 'ATTENTION' }).Count
         $htmlChecks = $checks | Select-Object Check, Status, Detail | ConvertTo-Html -Fragment -PreContent '<h2>Validation Checks</h2>'
