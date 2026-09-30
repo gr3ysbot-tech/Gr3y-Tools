@@ -914,17 +914,35 @@ $catalog = Get-Content -Path $catalogPath -Raw | ConvertFrom-Json
             <ColumnDefinition Width="*"/>
           </Grid.ColumnDefinitions>
           <Border Grid.Column="0" Style="{StaticResource Panel}">
-            <StackPanel>
-              <TextBlock Style="{StaticResource Header}" Text="Fixes"/>
-              <Button Name="BtnFixSystemRepair" Content="System File Repair - Run" HorizontalAlignment="Stretch" Margin="0,0,0,4"
-                      ToolTip="Runs sfc /scannow then DISM RestoreHealth. Can take 10-20+ minutes."/>
-              <Button Name="BtnFixNetworkReset" Content="Network - Reset" HorizontalAlignment="Stretch" Margin="0,0,0,4"
-                      ToolTip="Resets Winsock and TCP/IP, flushes DNS. Requires a reboot after."/>
-              <Button Name="BtnFixWindowsUpdate" Content="Windows Update - Reset" HorizontalAlignment="Stretch" Margin="0,0,0,4"
-                      ToolTip="Clears the update cache and restarts related services - standard fix for a stuck Windows Update."/>
-              <Button Name="BtnFixWinGet" Content="WinGet - Reinstall" HorizontalAlignment="Stretch" Margin="0,0,0,4"
-                      ToolTip="Re-registers the App Installer package - fixes a missing/broken winget."/>
-            </StackPanel>
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel>
+                <TextBlock Style="{StaticResource Header}" Text="Fixes"/>
+                <Button Name="BtnFixSystemRepair" Content="System File Repair - Run" HorizontalAlignment="Stretch" Margin="0,0,0,4"
+                        ToolTip="Runs sfc /scannow then DISM RestoreHealth. Can take 10-20+ minutes."/>
+                <Button Name="BtnFixNetworkReset" Content="Network - Reset" HorizontalAlignment="Stretch" Margin="0,0,0,4"
+                        ToolTip="Resets Winsock and TCP/IP, flushes DNS. Requires a reboot after."/>
+                <Button Name="BtnFixWindowsUpdate" Content="Windows Update - Reset" HorizontalAlignment="Stretch" Margin="0,0,0,4"
+                        ToolTip="Clears the update cache and restarts related services - standard fix for a stuck Windows Update."/>
+                <Button Name="BtnFixWinGet" Content="WinGet - Reinstall" HorizontalAlignment="Stretch" Margin="0,0,0,4"
+                        ToolTip="Re-registers the App Installer package - fixes a missing/broken winget."/>
+
+                <TextBlock Style="{StaticResource Header}" Text="Quick Panels" Margin="0,14,0,0"/>
+                <Button Name="BtnPanelCompMgmt" Content="Computer Management" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
+                <Button Name="BtnPanelControlPanel" Content="Control Panel" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
+                <Button Name="BtnPanelMouse" Content="Mouse Properties" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
+                <Button Name="BtnPanelNetwork" Content="Network Connections" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
+                <Button Name="BtnPanelPower" Content="Power Panel" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
+                <Button Name="BtnPanelPrinters" Content="Printer Panel" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
+                <Button Name="BtnPanelProgramsFeatures" Content="Programs and Features" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
+                <Button Name="BtnPanelRegion" Content="Region" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
+                <Button Name="BtnPanelSecurityMaintenance" Content="Security and Maintenance" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
+                <Button Name="BtnPanelSound" Content="Sound Settings" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
+                <Button Name="BtnPanelSystemProps" Content="System Properties" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
+                <Button Name="BtnPanelTimeDate" Content="Time and Date" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
+                <Button Name="BtnPanelFirewall" Content="Windows Defender Firewall" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
+                <Button Name="BtnPanelSystemRestore" Content="Windows Restore" HorizontalAlignment="Stretch" Margin="0,0,0,4"/>
+              </StackPanel>
+            </ScrollViewer>
           </Border>
           <Grid Grid.Column="2">
             <Grid.RowDefinitions>
@@ -1030,6 +1048,36 @@ $btnFixWinGet = $window.FindName('BtnFixWinGet')
 $fixesStatusText = $window.FindName('FixesStatusText')
 $fixesLogBox = $window.FindName('FixesLogBox')
 $btnStopFixes = $window.FindName('BtnStopFixes')
+
+# Quick Panels - direct shortcuts to built-in Windows applets, no job/log involved.
+$quickPanels = @(
+    @{ Btn = $window.FindName('BtnPanelCompMgmt');           File = 'compmgmt.msc'; Args = $null }
+    @{ Btn = $window.FindName('BtnPanelControlPanel');       File = 'control.exe';  Args = $null }
+    @{ Btn = $window.FindName('BtnPanelMouse');              File = 'control.exe';  Args = 'main.cpl' }
+    @{ Btn = $window.FindName('BtnPanelNetwork');            File = 'control.exe';  Args = 'ncpa.cpl' }
+    @{ Btn = $window.FindName('BtnPanelPower');              File = 'control.exe';  Args = 'powercfg.cpl' }
+    @{ Btn = $window.FindName('BtnPanelPrinters');           File = 'control.exe';  Args = 'printers' }
+    @{ Btn = $window.FindName('BtnPanelProgramsFeatures');   File = 'control.exe';  Args = 'appwiz.cpl' }
+    @{ Btn = $window.FindName('BtnPanelRegion');             File = 'control.exe';  Args = 'intl.cpl' }
+    @{ Btn = $window.FindName('BtnPanelSecurityMaintenance');File = 'control.exe';  Args = '/name Microsoft.ActionCenter' }
+    @{ Btn = $window.FindName('BtnPanelSound');              File = 'control.exe';  Args = 'mmsys.cpl' }
+    @{ Btn = $window.FindName('BtnPanelSystemProps');        File = 'control.exe';  Args = 'sysdm.cpl' }
+    @{ Btn = $window.FindName('BtnPanelTimeDate');           File = 'control.exe';  Args = 'timedate.cpl' }
+    @{ Btn = $window.FindName('BtnPanelFirewall');           File = 'control.exe';  Args = 'firewall.cpl' }
+    @{ Btn = $window.FindName('BtnPanelSystemRestore');      File = 'rstrui.exe';   Args = $null }
+)
+foreach ($p in $quickPanels) {
+    $panelFile = $p.File
+    $panelArgs = $p.Args
+    $p.Btn.Add_Click({
+        try {
+            if ($panelArgs) { Start-Process -FilePath $panelFile -ArgumentList $panelArgs }
+            else { Start-Process -FilePath $panelFile }
+        } catch {
+            [System.Windows.MessageBox]::Show("Could not open this panel: $($_.Exception.Message)", 'Gr3y Tools', 'OK', 'Error') | Out-Null
+        }
+    }.GetNewClosure())
+}
 
 $greenBrush = $window.Resources['GreenBrush']
 $redBrush = $window.Resources['RedBrush']
