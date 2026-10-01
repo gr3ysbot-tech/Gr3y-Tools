@@ -1328,6 +1328,15 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
               <Button Name="BtnApplyOemUpdates" Content="Apply OEM Driver/BIOS Updates" Width="240" HorizontalAlignment="Left"/>
 
               <Separator Margin="0,10,0,10"/>
+              <TextBlock Style="{StaticResource Header}" Text="BitLocker Enable"/>
+              <TextBlock Style="{StaticResource Hint}" Text="Opt-in only - this tool never disables or decrypts BitLocker anywhere (see the Panels tab for read-only status/recovery-key viewing). Enable BitLocker turns on XtsAes256 used-space-only encryption with a TPM protector plus a recovery password protector, only if a ready TPM is present and protection is currently Off; on an Entra-joined device the recovery password is also backed up to Entra ID automatically, otherwise it goes into the handoff package only. Prevent Automatic Device Encryption is the opposite case - for a machine staying on local accounts, it stops Windows silently turning encryption on by itself at first Microsoft-account sign-in (24H2), which could otherwise leave the only recovery key in a personal account. Use one or the other, not usually both. Run after OEM Driver/BIOS Updates and after Entra join."
+                         TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
+              <WrapPanel>
+                <Button Name="BtnEnableBitLocker" Content="Enable BitLocker" Width="180" Margin="0,0,10,0"/>
+                <Button Name="BtnPreventAutoEncryption" Content="Prevent Automatic Device Encryption" Width="260"/>
+              </WrapPanel>
+
+              <Separator Margin="0,10,0,10"/>
               <TextBlock Style="{StaticResource Header}" Text="Windows Update to Completion"/>
               <TextBlock Style="{StaticResource Hint}" Text="Searches, downloads and installs all available Windows updates, looping until none remain (up to 4 passes). If a reboot is needed mid-way, schedules itself to resume automatically after restart - the status below tracks progress across reboots."
                          TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
@@ -1753,6 +1762,8 @@ $btnApplyOneDriveKfm = $window.FindName('BtnApplyOneDriveKfm')
 $btnApplyRegionalBaseline = $window.FindName('BtnApplyRegionalBaseline')
 $optProvisionPreventSleep = $window.FindName('OptProvisionPreventSleep')
 $btnApplyOemUpdates = $window.FindName('BtnApplyOemUpdates')
+$btnEnableBitLocker = $window.FindName('BtnEnableBitLocker')
+$btnPreventAutoEncryption = $window.FindName('BtnPreventAutoEncryption')
 $btnRunWindowsUpdate = $window.FindName('BtnRunWindowsUpdate')
 $textWindowsUpdateResume = $window.FindName('TextWindowsUpdateResume')
 $textBreakGlassAdminName = $window.FindName('TextBreakGlassAdminName')
@@ -1902,7 +1913,7 @@ $script:provisionErrFile = $null
 $script:provisionLogOffset = 0
 $script:provisionStartTime = $null
 
-$provisionButtons = @($btnRenameComputer, $btnApplyOneDriveKfm, $btnApplyRegionalBaseline, $btnApplyOemUpdates, $btnRunWindowsUpdate, $btnCreateBreakGlassAdmin, $btnRemoveLocalAdmins, $btnGenerateHandoff, $btnPostProvisioningCleanup)
+$provisionButtons = @($btnRenameComputer, $btnApplyOneDriveKfm, $btnApplyRegionalBaseline, $btnApplyOemUpdates, $btnEnableBitLocker, $btnPreventAutoEncryption, $btnRunWindowsUpdate, $btnCreateBreakGlassAdmin, $btnRemoveLocalAdmins, $btnGenerateHandoff, $btnPostProvisioningCleanup)
 
 function Start-ProvisionJob {
     param([string[]]$ProvisionArgs, [string]$Label)
@@ -1973,6 +1984,22 @@ $btnApplyOemUpdates.Add_Click({
         'Confirm OEM Updates', 'YesNo', 'Warning')
     if ($result -ne 'Yes') { return }
     Start-ProvisionJob -ProvisionArgs @('-ApplyOemUpdates') -Label 'Apply OEM Driver/BIOS Updates'
+})
+
+$btnEnableBitLocker.Add_Click({
+    $result = [System.Windows.MessageBox]::Show(
+        "Enable BitLocker on C:?`r`n`r`nOnly proceeds if a ready TPM is present and protection is currently Off. Uses XtsAes256, used-space-only, a TPM protector, and a recovery password protector. On an Entra-joined device the recovery password is backed up to Entra ID automatically; otherwise it is only written to the handoff package below (generate that before handing the machine off - there is no other copy). This tool never disables or decrypts BitLocker - that would need to be done separately if it's ever genuinely required.",
+        'Confirm Enable BitLocker', 'YesNo', 'Warning')
+    if ($result -ne 'Yes') { return }
+    Start-ProvisionJob -ProvisionArgs @('-EnableBitLocker') -Label 'Enable BitLocker'
+})
+
+$btnPreventAutoEncryption.Add_Click({
+    $result = [System.Windows.MessageBox]::Show(
+        "Prevent automatic device encryption on this machine?`r`n`r`nFor a machine staying on local accounts - stops Windows silently turning BitLocker on by itself at first Microsoft-account sign-in (24H2), which could otherwise leave the only recovery key in a personal Microsoft account instead of this tenant.",
+        'Confirm Prevent Automatic Device Encryption', 'YesNo', 'Warning')
+    if ($result -ne 'Yes') { return }
+    Start-ProvisionJob -ProvisionArgs @('-PreventAutomaticDeviceEncryption') -Label 'Prevent Automatic Device Encryption'
 })
 
 $btnRunWindowsUpdate.Add_Click({

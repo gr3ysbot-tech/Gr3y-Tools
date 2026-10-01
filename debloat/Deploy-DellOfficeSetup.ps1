@@ -157,6 +157,17 @@
     Account name for -CreateBreakGlassAdmin. Defaults to Gr3yBreakGlass. Never the
     built-in Administrator account name.
 
+.PARAMETER EnableBitLocker
+    Enables BitLocker on C: (XtsAes256, used-space-only, TPM protector) and adds a
+    recovery password protector, only if a ready TPM is present and protection is
+    currently Off. On an Entra-joined device, backs the recovery password up to Entra ID.
+    Never disables or decrypts - that is out of scope for this tool by design.
+
+.PARAMETER PreventAutomaticDeviceEncryption
+    Sets HKLM\SYSTEM\CurrentControlSet\Control\BitLocker PreventDeviceEncryption=1, so
+    Windows does not silently turn on device encryption at first Microsoft-account
+    sign-in (relevant on 24H2) for a machine that is staying on local accounts.
+
 .PARAMETER FixSystemRepair
     Run sfc /scannow then DISM /Online /Cleanup-Image /RestoreHealth. Can take
     10-20+ minutes. Off by default - intended to be triggered standalone from the
@@ -268,7 +279,9 @@ param(
     [int]$LockTimeoutSec = 900,
     [string]$RemoveLocalAdmins = '',
     [switch]$CreateBreakGlassAdmin,
-    [string]$BreakGlassAdminName = 'Gr3yBreakGlass'
+    [string]$BreakGlassAdminName = 'Gr3yBreakGlass',
+    [switch]$EnableBitLocker,
+    [switch]$PreventAutomaticDeviceEncryption
 )
 
 $ErrorActionPreference = 'Continue'
@@ -2717,6 +2730,85 @@ function Get-BitLockerKeyData {
     return [PSCustomObject]@{ Error = $null; Volumes = $result }
 }
 
+function Enable-BitLockerProtection {
+    # Opt-in only, and deliberately not undo-tracked - improvement-plan.md 2.5 scopes
+    # this feature as "status, enable, escrow (never disable)". Disabling/decrypting a
+    # drive is destructive enough that it must always be a separate, deliberate action
+    # taken with BitLocker's own tools, never an automatic side effect of reverting
+    # something else via Revert Last Run.
+    param([string]$MountPoint = 'C:')
+    Invoke-Step "Enabling BitLocker on $MountPoint" {
+        try {
+            $tpm = Get-Tpm -ErrorAction Stop
+            if (-not $tpm.TpmReady) {
+                Write-Log "TPM is not ready (TpmReady=$($tpm.TpmReady)) - BitLocker needs a ready TPM for the protector this tool uses. Skipping." 'WARN'
+                return
+            }
+        } catch {
+            Write-Log "Could not read TPM status: $($_.Exception.Message) - skipping BitLocker enable." 'WARN'
+            return
+        }
+
+        try {
+            $volume = Get-BitLockerVolume -MountPoint $MountPoint -ErrorAction Stop
+        } catch {
+            Write-Log "Could not read BitLocker status for $MountPoint`: $($_.Exception.Message)" 'WARN'
+            return
+        }
+        if ($volume.ProtectionStatus -eq 'On') {
+            Write-Log "BitLocker protection is already On for $MountPoint - nothing to do."
+            return
+        }
+
+        try {
+            # Enable-BitLocker takes exactly one key-protector switch per call (TpmProtector
+            # and RecoveryPasswordProtector are separate, mutually exclusive parameter
+            # sets, confirmed against Microsoft's own BitLocker module reference) - the
+            # recovery password protector is added in a second, separate call, matching
+            # the plan's own two-step sequence.
+            Enable-BitLocker -MountPoint $MountPoint -EncryptionMethod XtsAes256 -UsedSpaceOnly -TpmProtector -SkipHardwareTest -ErrorAction Stop | Out-Null
+            Add-BitLockerKeyProtector -MountPoint $MountPoint -RecoveryPasswordProtector -ErrorAction Stop | Out-Null
+            Write-Log "BitLocker enabled on $MountPoint (XtsAes256, used-space-only, TPM protector + recovery password protector added)."
+        } catch {
+            Write-Log "Could not enable BitLocker on $MountPoint`: $($_.Exception.Message)" 'WARN'
+            return
+        }
+
+        $dsregOutput = & dsregcmd /status 2>&1 | Out-String
+        if ($dsregOutput -match 'AzureAdJoined\s*:\s*YES') {
+            try {
+                $refreshed = Get-BitLockerVolume -MountPoint $MountPoint -ErrorAction Stop
+                $recoveryProtector = $refreshed.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' } | Select-Object -First 1
+                if ($recoveryProtector) {
+                    BackupToAAD-BitLockerKeyProtector -MountPoint $MountPoint -KeyProtectorId $recoveryProtector.KeyProtectorId -ErrorAction Stop
+                    Write-Log 'Recovery password backed up to Entra ID (BackupToAAD-BitLockerKeyProtector).'
+                } else {
+                    Write-Log 'Could not find the recovery password protector to back up to Entra ID.' 'WARN'
+                }
+            } catch {
+                Write-Log "Could not back up the recovery password to Entra ID: $($_.Exception.Message) - the key still exists locally and will be included in the handoff package." 'WARN'
+            }
+        } else {
+            Write-Log 'This machine is not Entra-joined - the recovery password has no central (Entra ID) backup. It will be included in the handoff package - store that securely.' 'WARN'
+        }
+        Write-Log 'Encryption continues in the background - re-run Scan BitLocker Status or check Get-BitLockerVolume to monitor progress. This is never reversed automatically; use the BitLocker control panel or manage-bde if decryption is ever genuinely needed.'
+    }
+}
+
+function Set-PreventAutomaticDeviceEncryption {
+    Invoke-Step 'Preventing automatic device encryption' {
+        try {
+            $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker'
+            New-Item -Path $path -Force -ErrorAction SilentlyContinue | Out-Null
+            Add-UndoRegistryEntry -Path $path -Name 'PreventDeviceEncryption' -Type 'DWord'
+            Set-ItemProperty -Path $path -Name 'PreventDeviceEncryption' -Value 1 -Type DWord -ErrorAction Stop
+            Write-Log 'Automatic device encryption prevented (PreventDeviceEncryption=1) - Windows will not silently turn on BitLocker at first Microsoft-account sign-in (relevant on 24H2, for machines staying on local accounts rather than Entra/Microsoft accounts).'
+        } catch {
+            Write-Log "Could not set PreventDeviceEncryption: $($_.Exception.Message)" 'WARN'
+        }
+    }
+}
+
 function Get-MachineInventory {
     $bios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction SilentlyContinue
     $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
@@ -3007,6 +3099,8 @@ if ($ApplyOneDriveKfm) { Set-OneDriveKfm -TenantId $EntraTenantId -Desktop $KfmD
 if ($ApplyRegionalBaseline) { Set-RegionalPowerLockBaseline -TimeZoneId $TimeZoneId -GeoId $GeoId -CultureName $CultureName -PowerPlanName $PowerPlanName -LockTimeoutSec $LockTimeoutSec }
 if ($RemoveLocalAdmins) { Remove-LocalAdministratorMembers -Names ($RemoveLocalAdmins -split ',' | Where-Object { $_ }) }
 if ($CreateBreakGlassAdmin) { New-BreakGlassLocalAdmin -AccountName $BreakGlassAdminName }
+if ($EnableBitLocker) { Enable-BitLockerProtection }
+if ($PreventAutomaticDeviceEncryption) { Set-PreventAutomaticDeviceEncryption }
 
 if (-not $DryRun) { Save-UndoSnapshot }
 
