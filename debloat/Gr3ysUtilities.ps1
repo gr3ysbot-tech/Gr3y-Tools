@@ -1123,7 +1123,8 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                 <TextBlock Style="{StaticResource Header}" Text="Customize Preferences" Margin="0,14,0,0"/>
                 <TextBlock Style="{StaticResource Hint}" Text="Each switch reflects the machine's current setting. Toggle what you want and Apply only sends what changed. Explorer restarts once at the end if needed."
                            TextWrapping="Wrap" Margin="0,0,0,4" Opacity="0.7"/>
-                <Button Name="BtnScanTweaks" Content="Scan Current State" HorizontalAlignment="Left" Margin="0,0,0,6"
+                <Button Name="BtnScanTweaks" Content="Scan Current State" HorizontalAlignment="Stretch" Margin="0,0,0,8"
+                        BorderBrush="{StaticResource OrangeBrush}"
                         ToolTip="Re-reads every switch's live registry/BCD state and refreshes the checkboxes below to match - useful after a manual change, a Revert Last Run, or just to double-check before Apply. Also lists what's currently enabled in the log below."/>
                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                   <TextBlock Text="Apply to:" VerticalAlignment="Center" Margin="0,0,8,0"/>
