@@ -337,7 +337,7 @@ function Write-Log {
     Write-Host $line
 }
 
-Write-Log "Gr3yLabs Tools $(if ($Version) { "v$Version" } else { '(unversioned - launched directly, not via debloat.ps1)' })$(if ($Commit) { " ($Commit)" } else { '' }) | Worker PID: $PID | Profile: $env:USERNAME"
+Write-Log "Gr3yLabs Support $(if ($Version) { "v$Version" } else { '(unversioned - launched directly, not via debloat.ps1)' })$(if ($Commit) { " ($Commit)" } else { '' }) | Worker PID: $PID | Profile: $env:USERNAME"
 Write-Log "Machine: $machineHost | $machineManufacturer $machineModel | Serial/Service Tag: $machineSerial"
 if ($osInfo) {
     Write-Log "OS: $($osInfo.Caption) (Build $($osInfo.BuildNumber)) | Logged-in user: $env:USERNAME"

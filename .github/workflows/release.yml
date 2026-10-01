@@ -76,7 +76,7 @@ jobs:
           # Release zip - the debloat\ folder as shipped, matching what debloat.ps1 pulls
           # file-by-file from the pinned commit (this zip is a convenience for anyone who
           # wants an offline copy, not itself part of the bootstrap flow).
-          $zipName = "Gr3yLabsTools-v$version.zip"
+          $zipName = "Gr3yLabsSupport-v$version.zip"
           Compress-Archive -Path 'debloat\*' -DestinationPath $zipName -Force
 
           # Windows PowerShell (not pwsh) needs an explicit UTF-8 encoding here - a bare

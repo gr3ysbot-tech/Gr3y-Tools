@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Gr3y Tools - one-line launcher for Gr3yLabs Tools: Dell/Lenovo debloat,
+    Gr3y Tools - one-line launcher for Gr3yLabs Support: Dell/Lenovo debloat,
     Microsoft 365 Apps for business deploy, and a categorized app install catalog.
 
 .DESCRIPTION
@@ -58,7 +58,7 @@ Get-ChildItem -Path $env:TEMP -Directory -Filter 'Gr3yTools_*' -ErrorAction Sile
     Where-Object { $_.CreationTime -lt (Get-Date).AddDays(-7) } |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-Write-Host "Gr3yLabs Tools - Dell/Lenovo debloat + Office deploy + app installer" -ForegroundColor Cyan
+Write-Host "Gr3yLabs Support - Dell/Lenovo debloat + Office deploy + app installer" -ForegroundColor Cyan
 if ($PSVersionTable.PSEdition -eq 'Core') {
     Write-Host "Running under PowerShell 7 - that's fine for this part. Only the GUI itself needs Windows PowerShell 5.1, which is where it launches below." -ForegroundColor Yellow
 }
@@ -130,7 +130,7 @@ if (-not (Test-Gr3yToolsIsAdmin)) {
     return
 }
 
-Write-Host "Starting Gr3yLabs Tools..." -ForegroundColor Green
+Write-Host "Starting Gr3yLabs Support..." -ForegroundColor Green
 # Always launch as its own -ExecutionPolicy Bypass process, regardless of what policy the
 # CURRENT session has - a plain "& script.ps1" call would inherit whatever policy this
 # session already has (Restricted by default on an unmodified/clean machine - exactly
@@ -138,5 +138,5 @@ Write-Host "Starting Gr3yLabs Tools..." -ForegroundColor Green
 try {
     Start-Process -FilePath 'powershell.exe' -Wait -ArgumentList $guiArgs -ErrorAction Stop
 } catch {
-    Write-Host "Could not launch Gr3yLabs Tools: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Could not launch Gr3yLabs Support: $($_.Exception.Message)" -ForegroundColor Red
 }

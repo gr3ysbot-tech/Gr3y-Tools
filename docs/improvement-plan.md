@@ -23,9 +23,10 @@ owner asks for them.
   loose copy; keep it in sync too if it exists, but the two above are what matter.)
 - Docs written for the owner live in `docs\` in the repo and are mirrored to the OneDrive
   kit `docs\` folder.
-- The file name `Gr3ysUtilities.ps1` stays as-is. The displayed product name is "Gr3yLabs Tools"
-  (renamed from "Gr3y Support" 2026-09-30; older references to "Gr3y Support" elsewhere in this
-  document describe the product under its previous name).
+- The file name `Gr3ysUtilities.ps1` stays as-is. The displayed product name is "Gr3yLabs Support"
+  (renamed from "Gr3y Support" 2026-09-30, briefly "Gr3yLabs Tools" before settling on this name
+  2026-10-01; older references to "Gr3y Support" elsewhere in this document describe the product
+  under its previous name).
 - The "Gr3y Network Tools" website (`network-toolkit` repo, Synology NAS, Portainer) is a
   separate project. Do not deploy or touch it as part of this plan.
 

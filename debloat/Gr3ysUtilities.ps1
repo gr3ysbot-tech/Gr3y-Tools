@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Gr3yLabs Tools - native Windows GUI for Dell/Lenovo debloat, Microsoft 365 Apps
+    Gr3yLabs Support - native Windows GUI for Dell/Lenovo debloat, Microsoft 365 Apps
     for business deploy, and a categorized app install catalog.
 
 .DESCRIPTION
@@ -436,7 +436,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
 [xml]$xamlDoc = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Gr3yLabs Tools" Height="820" Width="1150" MinHeight="640" MinWidth="980"
+        Title="Gr3yLabs Support" Height="820" Width="1150" MinHeight="640" MinWidth="980"
         WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize"
         AllowsTransparency="False" Background="#232629"
         FontFamily="Segoe UI" FontSize="12"
@@ -835,7 +835,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
 
       <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
         <Image Name="LogoImage" Width="26" Height="26" Margin="14,0,8,0" VerticalAlignment="Center" Visibility="Collapsed"/>
-        <TextBlock Text="Gr3yLabs Tools" FontFamily="Consolas" FontSize="16" FontWeight="Bold"
+        <TextBlock Text="Gr3yLabs Support" FontFamily="Consolas" FontSize="16" FontWeight="Bold"
                    Foreground="{StaticResource HeaderBrush}" VerticalAlignment="Center" Margin="0,0,16,0"/>
       </StackPanel>
 
@@ -1398,7 +1398,7 @@ try {
 }
 
 if ($Version) {
-    $window.Title = "Gr3yLabs Tools v$Version" + $(if ($Commit) { " ($Commit)" } else { '' })
+    $window.Title = "Gr3yLabs Support v$Version" + $(if ($Commit) { " ($Commit)" } else { '' })
 }
 
 # Logo is optional - ships as a 6th hash-pinned file alongside the 5 tracked ones (see
