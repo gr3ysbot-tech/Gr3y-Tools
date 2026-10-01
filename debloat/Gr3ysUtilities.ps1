@@ -1284,7 +1284,9 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
               <Separator Margin="0,10,0,10"/>
               <TextBlock Style="{StaticResource Header}" Text="Hostname Rename"/>
               <TextBlock Style="{StaticResource Hint}" Text="Renames from the pattern above and this machine's BIOS serial number. Does not restart - a reboot is required to take effect. Do this before Entra join."
-                         TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
+                         TextWrapping="Wrap" Margin="0,0,0,4" Opacity="0.7"/>
+              <TextBlock Style="{StaticResource Hint}" Text="{}{SERIAL} becomes the BIOS serial number. Only letters, digits and hyphens survive - spaces, underscores and other punctuation are stripped - then the result is cut to 15 characters (NetBIOS limit). Examples: ACME-{SERIAL}, Client01-{SERIAL}-WKS, HQ{SERIAL}."
+                         TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.55" FontStyle="Italic"/>
               <WrapPanel>
                 <TextBlock Text="Computed name: " VerticalAlignment="Center"/>
                 <TextBlock Name="TextComputedHostname" Text="(enter a pattern above)" VerticalAlignment="Center" FontWeight="Bold" Margin="0,0,16,0"/>
