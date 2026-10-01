@@ -735,11 +735,6 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
         </Setter.Value>
       </Setter>
     </Style>
-    <Style x:Key="SearchBox" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
-      <Setter Property="BorderBrush" Value="{StaticResource TextBrush}"/>
-      <Setter Property="Padding" Value="6,0,24,0"/>
-      <Setter Property="VerticalContentAlignment" Value="Center"/>
-    </Style>
     <Style x:Key="LogBox" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
       <Setter Property="Background" Value="{StaticResource LogBgBrush}"/>
       <Setter Property="BorderBrush" Value="{StaticResource PanelBorderBrush}"/>
@@ -850,14 +845,6 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
           <TextBlock Name="SacStatusText" Text="Smart App Control: -" FontSize="11" Foreground="{StaticResource MutedBrush}"/>
         </Border>
       </StackPanel>
-
-      <Grid Grid.Column="2" Margin="12,0,12,0" VerticalAlignment="Center" WindowChrome.IsHitTestVisibleInChrome="True">
-        <TextBox Name="SearchBox" Height="25" Style="{StaticResource SearchBox}"/>
-        <TextBlock Name="SearchHint" Text="Search apps..." Foreground="{StaticResource MutedBrush}"
-                   Margin="8,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
-        <Path Data="M4,4 m-3,0 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0 M6.2,6.2 L9.5,9.5" Stroke="{StaticResource TextBrush}" StrokeThickness="1.2"
-              Width="10" Height="10" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0" IsHitTestVisible="False"/>
-      </Grid>
 
       <Button Grid.Column="3" Name="BtnOpenLogs" Style="{StaticResource WindowButton}" ToolTip="Open the log folder"
               WindowChrome.IsHitTestVisibleInChrome="True">
@@ -1529,7 +1516,6 @@ $navInstall = $window.FindName('NavInstall')
 $navFixes = $window.FindName('NavFixes')
 $navPanels = $window.FindName('NavPanels')
 $navProvisioning = $window.FindName('NavProvisioning')
-$searchHint = $window.FindName('SearchHint')
 $btnOpenLogs = $window.FindName('BtnOpenLogs')
 $btnWinMin = $window.FindName('BtnWinMin')
 $btnWinMax = $window.FindName('BtnWinMax')
@@ -1538,7 +1524,6 @@ $iconMax = $window.FindName('IconMax')
 $iconRestore = $window.FindName('IconRestore')
 
 # --- Tab 2 controls ---
-$searchBox = $window.FindName('SearchBox')
 $catBusinessBaselineBtn = $window.FindName('CatBusinessBaseline')
 $catAllBtn = $window.FindName('CatAll')
 $catBrowsersBtn = $window.FindName('CatBrowsers')
@@ -2457,16 +2442,13 @@ function Update-SelectedCount {
 $script:activeCategory = 'Business Baseline'
 
 function Update-AppVisibility {
-    $searchText = $searchBox.Text.Trim().ToLower()
     foreach ($block in $script:categoryBlocks) {
         $anyVisible = $false
         foreach ($entry in ($script:appEntries | Where-Object { $_.Category -eq $block.Category })) {
-            $categoryMatches =
+            $visible =
                 if ($script:activeCategory -eq 'All') { $true }
                 elseif ($script:activeCategory -eq 'Business Baseline') { $entry.Msp }
                 else { $block.Category -eq $script:activeCategory }
-            $nameMatches = (-not $searchText) -or ($entry.Name.ToLower().Contains($searchText))
-            $visible = $categoryMatches -and $nameMatches
             $entry.Row.Visibility = if ($visible) { 'Visible' } else { 'Collapsed' }
             if ($visible) { $anyVisible = $true }
         }
@@ -2476,11 +2458,6 @@ function Update-AppVisibility {
     }
 }
 
-$searchBox.Add_TextChanged({
-    $searchHint.Visibility = if ($searchBox.Text) { 'Collapsed' } else { 'Visible' }
-    if ($searchBox.Text -and $mainTabs.SelectedIndex -ne 1) { Set-ActiveTab -Index 1 }
-    Update-AppVisibility
-})
 $catBusinessBaselineBtn.Add_Click({ $script:activeCategory = 'Business Baseline'; Update-AppVisibility })
 $catAllBtn.Add_Click({ $script:activeCategory = 'All'; Update-AppVisibility })
 $catBrowsersBtn.Add_Click({ $script:activeCategory = 'Browsers'; Update-AppVisibility })

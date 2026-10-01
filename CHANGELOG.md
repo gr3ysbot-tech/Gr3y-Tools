@@ -23,8 +23,8 @@ The current state of `main` reflects the full implementation of
 - Microsoft 365 Apps for business deployment via the Office Deployment Tool,
   with `ExcludeApp` checkboxes and Shared Computer Activation.
 - A winget-backed app catalog (Browsers, Microsoft Tools, Documents,
-  Communications, Utilities, Non-Silent Installs) with search, category
-  filters, and a Select-All confirmation guard.
+  Communications, Utilities, Non-Silent Installs) with category filters
+  (Business Baseline default) and a Select-All confirmation guard.
 - 46 opt-in, reversible registry tweaks (telemetry, Copilot/Recall/AI,
   Edge/Office first-run nags, Defender hardening, DNS-over-HTTPS presets,
   small office quality-of-life toggles, and more) driven by `tweaks.json`.

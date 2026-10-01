@@ -7,9 +7,8 @@ no keeping a USB kit in sync across every laptop.
 ## Gr3yLabs Support - Debloat + Office Deploy + App Installer + Provisioning
 
 A native Windows GUI (WPF, no browser involved): a custom dark window chrome
-with the tabs, a search box, and window controls built into the title bar
-itself, and a dense two-column layout instead of a typical "settings app"
-look. Five tabs:
+with the tabs and window controls built into the title bar itself, and a
+dense two-column layout instead of a typical "settings app" look. Five tabs:
 
 - **Debloat + Office** - removes Dell/Lenovo OEM bloatware, McAfee trialware, and
   the Windows 11 built-in consumer Teams/Chat AppX package (not the real work/
@@ -26,11 +25,14 @@ look. Five tabs:
   across many different client laptops).
 - **Install Apps** - a categorized app catalog (Browsers, Microsoft
   Tools, Documents, Communications, Utilities, Non-Silent Installs) backed by
-  winget, with search, category filters, select-all/clear (with a confirmation
-  when selecting across every category at once), and install/uninstall/
-  upgrade-all actions. Entries known to be unsigned/low-reputation are flagged and
-  trigger a warning before install if Smart App Control is On. The catalog lives
-  in [`debloat/apps-catalog.json`](debloat/apps-catalog.json) - edit that file to
+  winget, with category filters (Business Baseline - apps generally
+  appropriate for a client machine - is the default view; All shows
+  everything, including things like Tor Browser and qBittorrent), select-all/
+  clear (with a confirmation when selecting across every category at once),
+  and install/uninstall/upgrade-all actions. Entries known to be unsigned/
+  low-reputation are flagged and trigger a warning before install if Smart App
+  Control is On. The catalog lives in
+  [`debloat/apps-catalog.json`](debloat/apps-catalog.json) - edit that file to
   add, remove, or rename entries; every future run picks up the change
   automatically, no code edits needed.
 - **Config** - one-click Fixes (System File Repair, Network Reset, Windows Update
