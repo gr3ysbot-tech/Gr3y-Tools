@@ -1,8 +1,9 @@
 # What This Changes
 
 Generated from `debloat/bloat-patterns.json`, `debloat/apps-catalog.json` and
-`debloat/tweaks.json` by `debloat/Generate-ChangesReference.ps1`. Regenerate after
-editing any of those files - this is not yet run automatically in CI.
+`debloat/tweaks.json` by `debloat/Generate-ChangesReference.ps1`. Regenerated
+automatically by release.yml against each tagged release and committed back to
+main - no manual step needed for a day-to-day edit to those files.
 
 ## OEM Bloatware Removal
 
@@ -260,13 +261,9 @@ Customize Preferences panel writes back the Off column exactly.
 | Firefox ESR | Browsers | `Mozilla.Firefox.ESR` |  |
 | Tor Browser | Browsers | `TorProject.TorBrowser` |  |
 | Slack | Communications | `SlackTechnologies.Slack` |  |
-| Thunderbird | Communications | `Mozilla.Thunderbird` |  |
 | Zoom | Communications | `Zoom.Zoom` |  |
 | Adobe Acrobat Reader | Documents | `Adobe.Acrobat.Reader.64-bit` |  |
-| Foxit PDF Reader | Documents | `Foxit.FoxitReader` |  |
 | LibreOffice | Documents | `TheDocumentFoundation.LibreOffice` |  |
-| NAPS2 | Documents | `Cyanfish.NAPS2` |  |
-| PDF-XChange Editor | Documents | `TrackerSoftware.PDF-XChangeEditor` |  |
 | PDF24 Creator | Documents | `geeksoftwareGmbH.PDF24Creator` |  |
 | SumatraPDF | Documents | `SumatraPDF.SumatraPDF` |  |
 | .NET Desktop Runtime 10 | Microsoft Tools | `Microsoft.DotNet.DesktopRuntime.10` |  |
@@ -288,11 +285,11 @@ Customize Preferences panel writes back the Off column exactly.
 | FreeFileSync | Non-Silent Installs | *(direct download, no winget package)* |  |
 | 1Password | Utilities | `AgileBits.1Password` |  |
 | 7-Zip | Utilities | `7zip.7zip` |  |
+| Adobe Creative Cloud | Utilities | `Adobe.CreativeCloud` |  |
 | Advanced IP Scanner | Utilities | `Famatech.AdvancedIPScanner` |  |
 | AnyDesk | Utilities | `AnyDesk.AnyDesk` |  |
 | AutoHotkey | Utilities | `AutoHotkey.AutoHotkey` |  |
 | Bitwarden | Utilities | `Bitwarden.Bitwarden` |  |
-| BlurAutoClicker | Utilities | `Blur009.BlurAutoClicker` | Yes |
 | Cloudflare WARP | Utilities | `Cloudflare.Warp` |  |
 | CPU-Z | Utilities | `CPUID.CPU-Z` |  |
 | Crystal Disk Info | Utilities | `CrystalDewWorld.CrystalDiskInfo` |  |
@@ -308,10 +305,10 @@ Customize Preferences panel writes back the Off column exactly.
 | MiniTool Partition Wizard | Utilities | `MiniTool.PartitionWizard.Free` |  |
 | MSEdgeRedirect | Utilities | `rcmaehl.MSEdgeRedirect` |  |
 | NanaZip | Utilities | `M2Team.NanaZip` |  |
+| Nmap | Utilities | `Insecure.Nmap` |  |
 | Notepad++ | Utilities | `Notepad++.Notepad++` |  |
 | NVCleanstall | Utilities | `TechPowerUp.NVCleanstall` |  |
 | OFGB (Oh Frick Go Back) | Utilities | `xM4ddy.OFGB` |  |
-| OPAutoClicker | Utilities | `OPAutoClicker.OPAutoClicker` | Yes |
 | OpenRGB | Utilities | `OpenRGB.OpenRGB` |  |
 | Oracle VirtualBox | Utilities | `Oracle.VirtualBox` |  |
 | Parsec | Utilities | `Parsec.Parsec` |  |

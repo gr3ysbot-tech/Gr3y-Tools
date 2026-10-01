@@ -106,8 +106,13 @@ jobs:
         run: |
           # actions/checkout left latest.json freshly written at the TAGGED commit's
           # state (detached HEAD) - save its content before switching branches, since
-          # checking out main discards that uncommitted change otherwise.
+          # checking out main discards that uncommitted change otherwise. Also regenerate
+          # docs/what-this-changes.md from this same tagged commit's source JSON files
+          # while still on it, so main's copy never drifts out of sync the way it did
+          # before this step existed (it had to be fixed by hand).
           $latestJsonContent = Get-Content -Path 'latest.json' -Raw
+          .\debloat\Generate-ChangesReference.ps1
+          $changesRefContent = Get-Content -Path 'docs\what-this-changes.md' -Raw
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -116,12 +121,13 @@ jobs:
           git pull origin main
 
           Set-Content -Path 'latest.json' -Value $latestJsonContent -NoNewline -Encoding ASCII
-          git add latest.json
+          Set-Content -Path 'docs\what-this-changes.md' -Value $changesRefContent -NoNewline -Encoding ASCII
+          git add latest.json 'docs\what-this-changes.md'
           $status = git status --porcelain
           if ($status) {
             $shortSha = "${{ github.sha }}".Substring(0, 7)
-            git commit -m "Point latest.json at ${{ github.ref_name }} ($shortSha)"
+            git commit -m "Point latest.json at ${{ github.ref_name }} ($shortSha) and regenerate what-this-changes.md"
             git push origin main
           } else {
-            Write-Host "latest.json already up to date - nothing to commit."
+            Write-Host "latest.json and docs/what-this-changes.md already up to date - nothing to commit."
           }

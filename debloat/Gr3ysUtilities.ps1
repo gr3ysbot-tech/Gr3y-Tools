@@ -1038,6 +1038,8 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
       <TabItem Header="Install Apps">
         <DockPanel>
           <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+            <Button Name="CatBusinessBaseline" Content="Business Baseline"
+                    ToolTip="Default view - hides apps not generally appropriate for a client machine (Tor Browser, qBittorrent, OpenRGB, and similar). Pick All to see everything."/>
             <Button Name="CatAll" Content="All"/>
             <Button Name="CatBrowsers" Content="Browsers"/>
             <Button Name="CatMsTools" Content="Microsoft Tools"/>
@@ -1507,6 +1509,7 @@ $iconRestore = $window.FindName('IconRestore')
 
 # --- Tab 2 controls ---
 $searchBox = $window.FindName('SearchBox')
+$catBusinessBaselineBtn = $window.FindName('CatBusinessBaseline')
 $catAllBtn = $window.FindName('CatAll')
 $catBrowsersBtn = $window.FindName('CatBrowsers')
 $catMsToolsBtn = $window.FindName('CatMsTools')
@@ -2267,7 +2270,10 @@ foreach ($cat in $categories) {
         }
 
         $wrap.Children.Add($row) | Out-Null
-        $entry = [PSCustomObject]@{ CheckBox = $cb; Row = $row; Name = $app.name; Category = $cat.Name; WingetId = $app.wingetId; DownloadUrl = $app.downloadUrl; DynamicDownloadPage = $app.dynamicDownloadPage; SacRisk = [bool]$app.sacRisk }
+        # Msp defaults to true (business-appropriate) when the catalog entry omits the
+        # field - only the handful of entries explicitly flagged "msp": false (Tor
+        # Browser, qBittorrent, OpenRGB and similar) are excluded from Business Baseline.
+        $entry = [PSCustomObject]@{ CheckBox = $cb; Row = $row; Name = $app.name; Category = $cat.Name; WingetId = $app.wingetId; DownloadUrl = $app.downloadUrl; DynamicDownloadPage = $app.dynamicDownloadPage; SacRisk = [bool]$app.sacRisk; Msp = ($app.msp -ne $false) }
         $script:appEntries.Add($entry)
         # Checked/Unchecked (not Click) since they fire off IsChecked itself changing,
         # regardless of interaction method - Click alone was observed to not reliably
@@ -2284,14 +2290,20 @@ function Update-SelectedCount {
     $selectedCountText.Text = "Selected: $count"
 }
 
-$script:activeCategory = 'All'
+# Business Baseline is the default filter (improvement-plan.md 3.11) - a client-laptop
+# tech sees the safe-for-business subset first and has to deliberately switch to All to
+# reach things like Tor Browser or qBittorrent, rather than seeing everything by default.
+$script:activeCategory = 'Business Baseline'
 
 function Update-AppVisibility {
     $searchText = $searchBox.Text.Trim().ToLower()
     foreach ($block in $script:categoryBlocks) {
-        $categoryMatches = ($script:activeCategory -eq 'All') -or ($block.Category -eq $script:activeCategory)
         $anyVisible = $false
         foreach ($entry in ($script:appEntries | Where-Object { $_.Category -eq $block.Category })) {
+            $categoryMatches =
+                if ($script:activeCategory -eq 'All') { $true }
+                elseif ($script:activeCategory -eq 'Business Baseline') { $entry.Msp }
+                else { $block.Category -eq $script:activeCategory }
             $nameMatches = (-not $searchText) -or ($entry.Name.ToLower().Contains($searchText))
             $visible = $categoryMatches -and $nameMatches
             $entry.Row.Visibility = if ($visible) { 'Visible' } else { 'Collapsed' }
@@ -2308,6 +2320,7 @@ $searchBox.Add_TextChanged({
     if ($searchBox.Text -and $mainTabs.SelectedIndex -ne 1) { Set-ActiveTab -Index 1 }
     Update-AppVisibility
 })
+$catBusinessBaselineBtn.Add_Click({ $script:activeCategory = 'Business Baseline'; Update-AppVisibility })
 $catAllBtn.Add_Click({ $script:activeCategory = 'All'; Update-AppVisibility })
 $catBrowsersBtn.Add_Click({ $script:activeCategory = 'Browsers'; Update-AppVisibility })
 $catMsToolsBtn.Add_Click({ $script:activeCategory = 'Microsoft Tools'; Update-AppVisibility })
@@ -2315,6 +2328,11 @@ $catDocumentsBtn.Add_Click({ $script:activeCategory = 'Documents'; Update-AppVis
 $catCommunicationsBtn.Add_Click({ $script:activeCategory = 'Communications'; Update-AppVisibility })
 $catUtilitiesBtn.Add_Click({ $script:activeCategory = 'Utilities'; Update-AppVisibility })
 $catNonSilentBtn.Add_Click({ $script:activeCategory = 'Non-Silent Installs'; Update-AppVisibility })
+
+# Apply the Business Baseline default filter now - every row defaults to Visible when
+# created above, which matched the old 'All' default but would otherwise show the full
+# unfiltered catalog (Tor Browser, qBittorrent, etc.) until the tech clicked something.
+Update-AppVisibility
 
 $btnSelectAll.Add_Click({
     # With the "All" filter active, Select All used to tick everything in the entire

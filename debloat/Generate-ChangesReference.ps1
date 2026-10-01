@@ -5,10 +5,11 @@
 
 .DESCRIPTION
     A single reference table of every registry path/value, service, scheduled task and
-    AppX/Win32 pattern this tool can touch, and whether each is reversible. Run this by
-    hand after editing any of the three source JSON files to keep the generated reference
-    in sync. Not yet wired into an automated release workflow (planned as part of a future
-    CI/release pipeline) - this is a manual step for now.
+    AppX/Win32 pattern this tool can touch, and whether each is reversible. release.yml
+    runs this automatically against each tagged release's source JSON files and commits
+    the result back to main, so day-to-day edits to the three source JSON files don't need
+    a manual regeneration - only run this by hand if you want to preview the output before
+    tagging a release.
 
 .PARAMETER RepoRoot
     Path to the repository root. Defaults to the parent of this script's own directory
@@ -46,8 +47,9 @@ $lines = New-Object System.Collections.Generic.List[string]
 $lines.Add('# What This Changes')
 $lines.Add('')
 $lines.Add('Generated from `debloat/bloat-patterns.json`, `debloat/apps-catalog.json` and')
-$lines.Add('`debloat/tweaks.json` by `debloat/Generate-ChangesReference.ps1`. Regenerate after')
-$lines.Add('editing any of those files - this is not yet run automatically in CI.')
+$lines.Add('`debloat/tweaks.json` by `debloat/Generate-ChangesReference.ps1`. Regenerated')
+$lines.Add('automatically by release.yml against each tagged release and committed back to')
+$lines.Add('main - no manual step needed for a day-to-day edit to those files.')
 $lines.Add('')
 
 $lines.Add('## OEM Bloatware Removal')
@@ -122,5 +124,9 @@ $lines.Add('')
 
 $outputDir = Split-Path -Parent $OutputPath
 if (-not (Test-Path $outputDir)) { New-Item -ItemType Directory -Path $outputDir -Force | Out-Null }
-($lines -join "`n") | Set-Content -Path $OutputPath -Encoding UTF8 -NoNewline
+# ASCII, not UTF8 - Windows PowerShell 5.1's -Encoding UTF8 writes a BOM, and every
+# source field this table pulls from (app/category/tweak names, registry paths) is
+# ASCII already, so there's no reason to risk it (same fix already applied to
+# latest.json in release.yml after a real BOM shipped in the v1.0.0 release).
+($lines -join "`n") | Set-Content -Path $OutputPath -Encoding ASCII -NoNewline
 Write-Host "Generated $OutputPath ($($lines.Count) lines)"
