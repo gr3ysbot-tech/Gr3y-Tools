@@ -263,6 +263,7 @@ Customize Preferences panel writes back the Off column exactly.
 | Slack | Communications | `SlackTechnologies.Slack` |  |
 | Zoom | Communications | `Zoom.Zoom` |  |
 | Adobe Acrobat Reader | Documents | `Adobe.Acrobat.Reader.64-bit` |  |
+| Adobe Creative Cloud | Documents | `Adobe.CreativeCloud` |  |
 | LibreOffice | Documents | `TheDocumentFoundation.LibreOffice` |  |
 | PDF24 Creator | Documents | `geeksoftwareGmbH.PDF24Creator` |  |
 | SumatraPDF | Documents | `SumatraPDF.SumatraPDF` |  |
@@ -285,7 +286,6 @@ Customize Preferences panel writes back the Off column exactly.
 | FreeFileSync | Non-Silent Installs | *(direct download, no winget package)* |  |
 | 1Password | Utilities | `AgileBits.1Password` |  |
 | 7-Zip | Utilities | `7zip.7zip` |  |
-| Adobe Creative Cloud | Utilities | `Adobe.CreativeCloud` |  |
 | Advanced IP Scanner | Utilities | `Famatech.AdvancedIPScanner` |  |
 | AnyDesk | Utilities | `AnyDesk.AnyDesk` |  |
 | AutoHotkey | Utilities | `AutoHotkey.AutoHotkey` |  |

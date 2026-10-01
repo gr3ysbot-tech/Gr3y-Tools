@@ -9,6 +9,7 @@
     {"name": "Tor Browser", "category": "Browsers", "wingetId": "TorProject.TorBrowser", "url": "https://www.torproject.org/", "msp": false},
 
     {"name": "Adobe Acrobat Reader", "category": "Documents", "wingetId": "Adobe.Acrobat.Reader.64-bit", "url": "https://acrobat.adobe.com/"},
+    {"name": "Adobe Creative Cloud", "category": "Documents", "wingetId": "Adobe.CreativeCloud", "url": "https://creativecloud.adobe.com/"},
     {"name": "SumatraPDF", "category": "Documents", "wingetId": "SumatraPDF.SumatraPDF", "url": "https://www.sumatrapdfreader.org/"},
     {"name": "PDF24 Creator", "category": "Documents", "wingetId": "geeksoftwareGmbH.PDF24Creator", "url": "https://www.pdf24.org/"},
     {"name": "LibreOffice", "category": "Documents", "wingetId": "TheDocumentFoundation.LibreOffice", "url": "https://www.libreoffice.org/"},
@@ -35,7 +36,6 @@
 
     {"name": "1Password", "category": "Utilities", "wingetId": "AgileBits.1Password", "url": "https://1password.com/downloads/windows"},
     {"name": "7-Zip", "category": "Utilities", "wingetId": "7zip.7zip", "url": "https://7-zip.org/download.html"},
-    {"name": "Adobe Creative Cloud", "category": "Utilities", "wingetId": "Adobe.CreativeCloud", "url": "https://creativecloud.adobe.com/"},
     {"name": "AnyDesk", "category": "Utilities", "wingetId": "AnyDesk.AnyDesk", "url": "https://anydesk.com/"},
     {"name": "AutoHotkey", "category": "Utilities", "wingetId": "AutoHotkey.AutoHotkey", "url": "https://www.autohotkey.com/"},
     {"name": "Bitwarden", "category": "Utilities", "wingetId": "Bitwarden.Bitwarden", "url": "https://bitwarden.com/"},
