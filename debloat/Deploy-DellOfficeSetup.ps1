@@ -140,6 +140,23 @@
 .PARAMETER DnsForce
     Applies -DnsPreset even on a domain-joined machine. Off by default - see DnsPreset.
 
+.PARAMETER RemoveLocalAdmins
+    Comma-separated account names to remove from the local Administrators group (e.g. the
+    end user's account after an Entra join). Refuses to remove the built-in RID-500
+    Administrator account, an unresolved Entra role SID, or whichever account would be the
+    last enabled administrator remaining on the machine.
+
+.PARAMETER CreateBreakGlassAdmin
+    Creates a local administrator account (-BreakGlassAdminName) with a random 24+
+    character password, disables Guest, and - only on an Entra-joined device - configures
+    Windows LAPS to manage and rotate that account's password going forward. On a non-
+    Entra-joined device the password has no central backup; it is written once, to an
+    ACL-restricted credential file in the work directory, and never to the log.
+
+.PARAMETER BreakGlassAdminName
+    Account name for -CreateBreakGlassAdmin. Defaults to Gr3yBreakGlass. Never the
+    built-in Administrator account name.
+
 .PARAMETER FixSystemRepair
     Run sfc /scannow then DISM /Online /Cleanup-Image /RestoreHealth. Can take
     10-20+ minutes. Off by default - intended to be triggered standalone from the
@@ -248,7 +265,10 @@ param(
     [string]$GeoId = '',
     [string]$CultureName = '',
     [string]$PowerPlanName = '',
-    [int]$LockTimeoutSec = 900
+    [int]$LockTimeoutSec = 900,
+    [string]$RemoveLocalAdmins = '',
+    [switch]$CreateBreakGlassAdmin,
+    [string]$BreakGlassAdminName = 'Gr3yBreakGlass'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -1991,6 +2011,191 @@ function Set-OneDriveKfm {
     }
 }
 
+function Get-LocalAdministratorsReport {
+    # Read-only. Flags enough detail for a caller to decide what's safe to offer for
+    # removal - never decides that itself. Shared by the GUI's in-process scan and
+    # Remove-LocalAdministratorMembers' own re-check before acting.
+    $result = New-Object System.Collections.Generic.List[object]
+    try {
+        $members = Get-LocalGroupMember -Group 'Administrators' -ErrorAction Stop
+    } catch {
+        return [PSCustomObject]@{ Error = $_.Exception.Message; Members = @() }
+    }
+    $localUsers = @{}
+    try {
+        Get-LocalUser -ErrorAction Stop | ForEach-Object { $localUsers[$_.SID.Value] = $_ }
+    } catch {}
+
+    foreach ($m in $members) {
+        $sidValue = if ($m.SID) { $m.SID.Value } else { $null }
+        # A resolved principal's Name looks like "AzureAD\user@domain.com" or
+        # "COMPUTERNAME\localaccount". An Entra ID role/group assignment that
+        # Get-LocalGroupMember can't resolve to a friendly name falls back to the raw SID
+        # string as Name itself (a known gap - see PowerShell/PowerShell#15585). Detecting
+        # on the Name's shape, not the SID's numeric authority prefix: a normal signed-in
+        # Entra USER's SID also lives under the same S-1-12-1 Azure AD authority, so
+        # matching on the prefix would wrongly exclude real user accounts too (caught by
+        # this function's own mocked test suite before this code ever ran for real).
+        $isUnresolvedEntraRoleSid = [bool]($m.Name -match '^S-1-')
+        $isBuiltInAdministrator = [bool]($sidValue -and ($sidValue -like '*-500'))
+        $localUser = if ($sidValue -and $localUsers.ContainsKey($sidValue)) { $localUsers[$sidValue] } else { $null }
+        $isEnabled = if ($localUser) { [bool]$localUser.Enabled } else { $true }
+
+        $result.Add([PSCustomObject]@{
+            Name             = $m.Name
+            Sid              = $sidValue
+            PrincipalSource  = "$($m.PrincipalSource)"
+            ObjectClass      = "$($m.ObjectClass)"
+            IsBuiltInAdministrator = $isBuiltInAdministrator
+            IsUnresolvedEntraRoleSid = $isUnresolvedEntraRoleSid
+            IsEnabled        = $isEnabled
+            Removable        = (-not $isBuiltInAdministrator) -and (-not $isUnresolvedEntraRoleSid) -and ($m.ObjectClass -eq 'User')
+        })
+    }
+    return [PSCustomObject]@{ Error = $null; Members = $result }
+}
+
+function Remove-LocalAdministratorMembers {
+    param([string[]]$Names)
+    Invoke-Step "Removing $($Names.Count) account(s) from the local Administrators group" {
+        if (-not $Names -or $Names.Count -eq 0) { return }
+        $report = Get-LocalAdministratorsReport
+        if ($report.Error) {
+            Write-Log "Could not enumerate local Administrators group: $($report.Error)" 'WARN'
+            return
+        }
+        $enabledCount = @($report.Members | Where-Object { $_.IsEnabled }).Count
+        foreach ($name in $Names) {
+            $target = $report.Members | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+            if (-not $target) {
+                Write-Log "'$name' is not currently a member of Administrators - skipping." 'WARN'
+                continue
+            }
+            if (-not $target.Removable) {
+                Write-Log "Skipping '$name' - not eligible for removal (built-in Administrator account or an unresolved Entra role SID)." 'WARN'
+                continue
+            }
+            if ($target.IsEnabled -and ($enabledCount - 1) -lt 1) {
+                Write-Log "Refusing to remove '$name' - this would leave zero enabled administrators on this machine." 'WARN'
+                continue
+            }
+            try {
+                Remove-LocalGroupMember -Group 'Administrators' -Member $name -ErrorAction Stop
+                Write-Log "Removed '$name' from the local Administrators group."
+                if ($target.IsEnabled) { $enabledCount-- }
+            } catch {
+                Write-Log "Could not remove '$name' from Administrators: $($_.Exception.Message)" 'WARN'
+            }
+        }
+        # Same ProviderID filter as the telemetry tweak's MDM check (1.1/3.3) - every
+        # subkey under Enrollments shows EnrollmentState=1 regardless of real management
+        # state; 'MS DM Server' is Intune's own registered provider id.
+        $enrollmentsKey = 'HKLM:\SOFTWARE\Microsoft\Enrollments'
+        $isIntuneEnrolled = (Test-Path $enrollmentsKey) -and [bool](Get-ChildItem -Path $enrollmentsKey -ErrorAction SilentlyContinue | ForEach-Object {
+            Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue
+        } | Where-Object { $_.ProviderID -eq 'MS DM Server' })
+        if ($isIntuneEnrolled) {
+            Write-Log 'This machine is Intune-enrolled - an Entra ID Administrators role assignment or an Intune/Autopilot policy may re-add an account independently of this change.' 'WARN'
+        }
+    }
+}
+
+function New-BreakGlassLocalAdmin {
+    param([string]$AccountName = 'Gr3yBreakGlass')
+    Invoke-Step "Creating break-glass local administrator account ($AccountName)" {
+        try {
+            $existing = Get-LocalUser -Name $AccountName -ErrorAction SilentlyContinue
+            if ($existing) {
+                Write-Log "Local account '$AccountName' already exists - leaving its password alone (delete the account first for a fresh one)." 'WARN'
+            } else {
+                # 24 random characters from a mixed charset - comfortably over both the
+                # plan's 20+ char minimum and Windows LAPS' own PasswordLength=20 policy
+                # set below. RandomNumberGenerator, not Get-Random - this is a credential.
+                $chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%^&*'
+                $bytes = New-Object byte[] 24
+                [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+                $password = -join ($bytes | ForEach-Object { $chars[$_ % $chars.Length] })
+                $secure = ConvertTo-SecureString -String $password -AsPlainText -Force
+                New-LocalUser -Name $AccountName -Password $secure -PasswordNeverExpires -AccountNeverExpires -ErrorAction Stop | Out-Null
+                Add-LocalGroupMember -Group 'Administrators' -Member $AccountName -ErrorAction Stop
+                Write-Log "Created local administrator '$AccountName' with a random password (not logged here)."
+
+                $dsregOutput = & dsregcmd /status 2>&1 | Out-String
+                $isAzureAdJoined = $dsregOutput -match 'AzureAdJoined\s*:\s*YES'
+
+                # Written immediately, in this same step, because a generated local-account
+                # password cannot be read back from Windows later the way a BitLocker
+                # recovery key can (Get-BitLockerKeyData re-reads live state at handoff
+                # time; there is no equivalent re-read for a local account's password) -
+                # same icacls ACL hardening as bitlocker-recovery.txt, same "never
+                # Write-Log the secret itself" rule.
+                $credLines = New-Object System.Collections.Generic.List[string]
+                $credLines.Add("Break-glass local administrator for $env:COMPUTERNAME - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+                $credLines.Add('This file contains a credential - store or destroy it securely.')
+                $credLines.Add('')
+                $credLines.Add("Account: $AccountName")
+                $credLines.Add("Password: $password")
+                if ($isAzureAdJoined) {
+                    $credLines.Add('')
+                    $credLines.Add('This machine is Entra-joined - Windows LAPS is configured to manage and rotate this')
+                    $credLines.Add('password going forward (see below). This initial password should still be treated as')
+                    $credLines.Add('sensitive until LAPS has rotated it at least once.')
+                } else {
+                    $credLines.Add('')
+                    $credLines.Add('This machine is NOT Entra-joined, so Windows LAPS cannot back this password up or')
+                    $credLines.Add('rotate it. This file is the only copy - there is no central recovery.')
+                }
+                $credPath = Join-Path $workDir "breakglass-admin_$(Get-SafeFileNamePart $env:COMPUTERNAME)_$(Get-SafeFileNamePart $machineSerial).txt"
+                ($credLines -join "`r`n") | Set-Content -Path $credPath -Encoding UTF8
+                try {
+                    & icacls $credPath '/inheritance:r' '/grant:r' '*S-1-5-32-544:F' 'SYSTEM:F' 2>&1 | Out-Null
+                } catch {
+                    Write-Log "Could not restrict permissions on $(Split-Path -Leaf $credPath): $($_.Exception.Message)" 'WARN'
+                }
+                Write-Log "Credential written to $credPath (ACL-restricted to Administrators/SYSTEM) - not logged here."
+            }
+
+            try {
+                Disable-LocalUser -Name 'Guest' -ErrorAction Stop
+                Write-Log 'Guest account disabled.'
+            } catch {
+                Write-Log "Could not disable the Guest account (may already be disabled or absent): $($_.Exception.Message)" 'WARN'
+            }
+
+            if (-not $existing) {
+                $dsregOutput2 = & dsregcmd /status 2>&1 | Out-String
+                if ($dsregOutput2 -match 'AzureAdJoined\s*:\s*YES') {
+                    # Never the built-in RID-500 Administrator per the plan's explicit
+                    # caution - AdministratorAccountName is always this break-glass
+                    # account's own name, never that built-in account.
+                    $lapsPath = 'HKLM:\SOFTWARE\Microsoft\Policies\LAPS'
+                    New-Item -Path $lapsPath -Force -ErrorAction SilentlyContinue | Out-Null
+                    Set-ItemProperty -Path $lapsPath -Name 'BackupDirectory' -Value 1 -Type DWord -ErrorAction Stop
+                    Set-ItemProperty -Path $lapsPath -Name 'AdministratorAccountName' -Value $AccountName -Type String -ErrorAction Stop
+                    Set-ItemProperty -Path $lapsPath -Name 'PasswordLength' -Value 20 -Type DWord -ErrorAction Stop
+                    Set-ItemProperty -Path $lapsPath -Name 'PasswordComplexity' -Value 4 -Type DWord -ErrorAction Stop
+                    Set-ItemProperty -Path $lapsPath -Name 'PasswordAgeDays' -Value 30 -Type DWord -ErrorAction Stop
+                    Write-Log "Windows LAPS policy set to manage '$AccountName' (backs up to Entra ID, 20-char complex password, 30-day rotation)."
+                    if (Get-Command Invoke-LapsPolicyProcessing -ErrorAction SilentlyContinue) {
+                        try {
+                            Invoke-LapsPolicyProcessing -ErrorAction Stop | Out-Null
+                            Write-Log 'Ran Invoke-LapsPolicyProcessing - LAPS takes over rotating this password from here on its own schedule.'
+                        } catch {
+                            Write-Log "Invoke-LapsPolicyProcessing failed: $($_.Exception.Message) - the policy is set and LAPS should still pick it up on its own schedule." 'WARN'
+                        }
+                    } else {
+                        Write-Log 'Invoke-LapsPolicyProcessing is not available on this machine (needs the Windows LAPS client - built into 22H2+, or installed separately on older builds) - the policy is set but has no effect until that is present.' 'WARN'
+                    }
+                } else {
+                    Write-Log 'This machine is not Entra-joined - Windows LAPS cannot back up to Entra ID, so the generated password is only in this run''s credential file. There is no central recovery copy.' 'WARN'
+                }
+            }
+        } catch {
+            Write-Log "Could not create the break-glass administrator account: $($_.Exception.Message)" 'WARN'
+        }
+    }
+}
+
 function Get-DcuExitCodeMeaning {
     param([int]$ExitCode)
     switch ($ExitCode) {
@@ -2800,6 +3005,8 @@ if ($GenerateHandoff) { New-ValidationHandoffPackage -ClientCode $ClientCode }
 if ($PostProvisioningCleanup) { Invoke-PostProvisioningCleanup }
 if ($ApplyOneDriveKfm) { Set-OneDriveKfm -TenantId $EntraTenantId -Desktop $KfmDesktop -Documents $KfmDocuments -Pictures $KfmPictures }
 if ($ApplyRegionalBaseline) { Set-RegionalPowerLockBaseline -TimeZoneId $TimeZoneId -GeoId $GeoId -CultureName $CultureName -PowerPlanName $PowerPlanName -LockTimeoutSec $LockTimeoutSec }
+if ($RemoveLocalAdmins) { Remove-LocalAdministratorMembers -Names ($RemoveLocalAdmins -split ',' | Where-Object { $_ }) }
+if ($CreateBreakGlassAdmin) { New-BreakGlassLocalAdmin -AccountName $BreakGlassAdminName }
 
 if (-not $DryRun) { Save-UndoSnapshot }
 

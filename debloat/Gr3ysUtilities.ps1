@@ -1337,6 +1337,26 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
               </WrapPanel>
 
               <Separator Margin="0,10,0,10"/>
+              <TextBlock Style="{StaticResource Header}" Text="Break-Glass Administrator"/>
+              <TextBlock Style="{StaticResource Hint}" Text="Creates a local administrator account with a random 24+ character password and disables Guest. On an Entra-joined device, also configures Windows LAPS to manage and rotate this account's password going forward. The initial password is written once to an access-restricted file in the work directory (never to the log) - on a non-Entra-joined device that file is the only copy, since LAPS has nowhere to back it up to."
+                         TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
+              <WrapPanel>
+                <TextBlock Text="Account name:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <TextBox Name="TextBreakGlassAdminName" Width="160" Text="Gr3yBreakGlass" Margin="0,0,12,0"/>
+                <Button Name="BtnCreateBreakGlassAdmin" Content="Create Break-Glass Admin" Width="200"/>
+              </WrapPanel>
+
+              <Separator Margin="0,10,0,10"/>
+              <TextBlock Style="{StaticResource Header}" Text="Local Administrators Cleanup"/>
+              <TextBlock Style="{StaticResource Hint}" Text="Lists everyone currently in the local Administrators group. Scan, pick who to remove (e.g. the end user's account after an Entra join), then Remove Selected. The built-in Administrator account, unresolved Entra role assignments, and whichever account would be the last enabled administrator are never offered or removed."
+                         TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
+              <WrapPanel Margin="0,0,0,6">
+                <Button Name="BtnScanLocalAdmins" Content="Scan Administrators Group" Width="220" Margin="0,0,10,0"/>
+                <Button Name="BtnRemoveLocalAdmins" Content="Remove Selected" Width="150" IsEnabled="False"/>
+              </WrapPanel>
+              <StackPanel Name="LocalAdminsPanel"/>
+
+              <Separator Margin="0,10,0,10"/>
               <TextBlock Style="{StaticResource Header}" Text="Validation and Handoff Package"/>
               <TextBlock Style="{StaticResource Hint}" Text="Read-only checks (activation, Defender, firewall, pending reboot, disk space) plus a machine inventory, written as a handoff folder with an HTML report that opens automatically."
                          TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
@@ -1735,6 +1755,11 @@ $optProvisionPreventSleep = $window.FindName('OptProvisionPreventSleep')
 $btnApplyOemUpdates = $window.FindName('BtnApplyOemUpdates')
 $btnRunWindowsUpdate = $window.FindName('BtnRunWindowsUpdate')
 $textWindowsUpdateResume = $window.FindName('TextWindowsUpdateResume')
+$textBreakGlassAdminName = $window.FindName('TextBreakGlassAdminName')
+$btnCreateBreakGlassAdmin = $window.FindName('BtnCreateBreakGlassAdmin')
+$btnScanLocalAdmins = $window.FindName('BtnScanLocalAdmins')
+$btnRemoveLocalAdmins = $window.FindName('BtnRemoveLocalAdmins')
+$localAdminsPanel = $window.FindName('LocalAdminsPanel')
 $btnGenerateHandoff = $window.FindName('BtnGenerateHandoff')
 $btnPostProvisioningCleanup = $window.FindName('BtnPostProvisioningCleanup')
 $provisioningStatusText = $window.FindName('ProvisioningStatusText')
@@ -1877,7 +1902,7 @@ $script:provisionErrFile = $null
 $script:provisionLogOffset = 0
 $script:provisionStartTime = $null
 
-$provisionButtons = @($btnRenameComputer, $btnApplyOneDriveKfm, $btnApplyRegionalBaseline, $btnApplyOemUpdates, $btnRunWindowsUpdate, $btnGenerateHandoff, $btnPostProvisioningCleanup)
+$provisionButtons = @($btnRenameComputer, $btnApplyOneDriveKfm, $btnApplyRegionalBaseline, $btnApplyOemUpdates, $btnRunWindowsUpdate, $btnCreateBreakGlassAdmin, $btnRemoveLocalAdmins, $btnGenerateHandoff, $btnPostProvisioningCleanup)
 
 function Start-ProvisionJob {
     param([string[]]$ProvisionArgs, [string]$Label)
@@ -1959,6 +1984,114 @@ $btnRunWindowsUpdate.Add_Click({
     $result = [System.Windows.MessageBox]::Show($msg, 'Confirm Windows Update', 'YesNo', 'Warning')
     if ($result -ne 'Yes') { return }
     Start-ProvisionJob -ProvisionArgs @('-RunWindowsUpdate') -Label 'Patch to Current'
+})
+
+$btnCreateBreakGlassAdmin.Add_Click({
+    $accountName = $textBreakGlassAdminName.Text.Trim()
+    if (-not $accountName) {
+        [System.Windows.MessageBox]::Show('Enter an account name above first.', 'Gr3y Tools', 'OK', 'Warning') | Out-Null
+        return
+    }
+    $result = [System.Windows.MessageBox]::Show(
+        "Create local administrator '$accountName' with a random password?`r`n`r`nOn an Entra-joined device, Windows LAPS is configured to manage and rotate this account's password from here. On a non-Entra-joined device the password has no central backup - it is written once to a restricted file in the work directory and nowhere else.",
+        'Confirm Break-Glass Admin', 'YesNo', 'Warning')
+    if ($result -ne 'Yes') { return }
+    Start-ProvisionJob -ProvisionArgs @('-CreateBreakGlassAdmin', '-BreakGlassAdminName', $accountName) -Label 'Create Break-Glass Admin'
+})
+
+function Get-LocalAdministratorsReport {
+    # Read-only. Duplicated from Deploy-DellOfficeSetup.ps1's copy (this file is
+    # self-contained by design, matching the existing Get-SafeFileNamePart/
+    # Get-BitLockerKeyData duplication pattern) so the Scan button here can run
+    # synchronously in-process instead of needing a worker job just to list members.
+    # Remove-LocalAdministratorMembers (the actual removal) still only exists in the
+    # worker, run as a provisioning job like every other system-modifying action.
+    $result = New-Object System.Collections.Generic.List[object]
+    try {
+        $members = Get-LocalGroupMember -Group 'Administrators' -ErrorAction Stop
+    } catch {
+        return [PSCustomObject]@{ Error = $_.Exception.Message; Members = @() }
+    }
+    $localUsers = @{}
+    try {
+        Get-LocalUser -ErrorAction Stop | ForEach-Object { $localUsers[$_.SID.Value] = $_ }
+    } catch {}
+    foreach ($m in $members) {
+        $sidValue = if ($m.SID) { $m.SID.Value } else { $null }
+        $isUnresolvedEntraRoleSid = [bool]($m.Name -match '^S-1-')
+        $isBuiltInAdministrator = [bool]($sidValue -and ($sidValue -like '*-500'))
+        $localUser = if ($sidValue -and $localUsers.ContainsKey($sidValue)) { $localUsers[$sidValue] } else { $null }
+        $isEnabled = if ($localUser) { [bool]$localUser.Enabled } else { $true }
+        $result.Add([PSCustomObject]@{
+            Name = $m.Name
+            IsBuiltInAdministrator = $isBuiltInAdministrator
+            IsUnresolvedEntraRoleSid = $isUnresolvedEntraRoleSid
+            IsEnabled = $isEnabled
+            Removable = (-not $isBuiltInAdministrator) -and (-not $isUnresolvedEntraRoleSid) -and ($m.ObjectClass -eq 'User')
+        })
+    }
+    return [PSCustomObject]@{ Error = $null; Members = $result }
+}
+
+$script:localAdminEntries = New-Object System.Collections.Generic.List[object]
+
+$btnScanLocalAdmins.Add_Click({
+    $localAdminsPanel.Children.Clear()
+    $script:localAdminEntries.Clear()
+    $btnRemoveLocalAdmins.IsEnabled = $false
+    $report = Get-LocalAdministratorsReport
+    if ($report.Error) {
+        $msg = New-Object System.Windows.Controls.TextBlock
+        $msg.Text = "Could not read the Administrators group: $($report.Error)"
+        $msg.Foreground = $redBrush
+        $localAdminsPanel.Children.Add($msg) | Out-Null
+        return
+    }
+    foreach ($m in $report.Members) {
+        $row = New-Object System.Windows.Controls.StackPanel
+        $row.Orientation = 'Horizontal'
+        $row.Margin = '0,1'
+        $cb = New-Object System.Windows.Controls.CheckBox
+        $cb.Content = $m.Name
+        $cb.IsEnabled = $m.Removable
+        $row.Children.Add($cb) | Out-Null
+        if (-not $m.Removable) {
+            $reason =
+                if ($m.IsBuiltInAdministrator) { '(built-in Administrator account - never removable here)' }
+                elseif ($m.IsUnresolvedEntraRoleSid) { '(unresolved Entra role assignment - left alone)' }
+                else { '(not an individual user account)' }
+            $note = New-Object System.Windows.Controls.TextBlock
+            $note.Text = $reason
+            $note.Margin = '6,0,0,0'
+            $note.Opacity = 0.6
+            $note.VerticalAlignment = 'Center'
+            $row.Children.Add($note) | Out-Null
+        } elseif (-not $m.IsEnabled) {
+            $note = New-Object System.Windows.Controls.TextBlock
+            $note.Text = '(disabled)'
+            $note.Margin = '6,0,0,0'
+            $note.Opacity = 0.6
+            $note.VerticalAlignment = 'Center'
+            $row.Children.Add($note) | Out-Null
+        }
+        $localAdminsPanel.Children.Add($row) | Out-Null
+        $script:localAdminEntries.Add([PSCustomObject]@{ CheckBox = $cb; Name = $m.Name; Removable = $m.Removable })
+    }
+    $btnRemoveLocalAdmins.IsEnabled = [bool]($report.Members | Where-Object { $_.Removable })
+})
+
+$btnRemoveLocalAdmins.Add_Click({
+    $selected = @($script:localAdminEntries | Where-Object { $_.CheckBox.IsChecked })
+    if ($selected.Count -eq 0) {
+        [System.Windows.MessageBox]::Show('Check at least one account first.', 'Gr3y Tools', 'OK', 'Warning') | Out-Null
+        return
+    }
+    $names = $selected.Name
+    $result = [System.Windows.MessageBox]::Show(
+        "Remove the following from the local Administrators group?`r`n`r`n$($names -join "`r`n")`r`n`r`nThis cannot be undone by Revert Last Run. The worker refuses individual accounts that would leave zero enabled administrators on this machine.",
+        'Confirm Remove From Administrators', 'YesNo', 'Warning')
+    if ($result -ne 'Yes') { return }
+    Start-ProvisionJob -ProvisionArgs @('-RemoveLocalAdmins', ($names -join ',')) -Label 'Remove From Local Administrators'
 })
 
 $btnGenerateHandoff.Add_Click({
