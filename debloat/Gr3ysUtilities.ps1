@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Gr3y Support - native Windows GUI for Dell/Lenovo debloat, Microsoft 365 Apps
+    Gr3yLabs Tools - native Windows GUI for Dell/Lenovo debloat, Microsoft 365 Apps
     for business deploy, and a categorized app install catalog.
 
 .DESCRIPTION
@@ -85,6 +85,7 @@ $scriptDir = Split-Path -Parent $PSCommandPath
 $deployScript = Join-Path $scriptDir 'Deploy-DellOfficeSetup.ps1'
 $catalogPath = Join-Path $scriptDir 'apps-catalog.json'
 $patternsPath = Join-Path $scriptDir 'bloat-patterns.json'
+$logoPath = Join-Path $scriptDir 'gr3ylabs-logo.png'
 $workDir = Join-Path $env:ProgramData 'DellOfficeDeploy'
 New-Item -ItemType Directory -Path $workDir -Force | Out-Null
 
@@ -435,7 +436,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
 [xml]$xamlDoc = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Gr3y Support" Height="820" Width="1150" MinHeight="640" MinWidth="980"
+        Title="Gr3yLabs Tools" Height="820" Width="1150" MinHeight="640" MinWidth="980"
         WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize"
         AllowsTransparency="False" Background="#232629"
         FontFamily="Segoe UI" FontSize="12"
@@ -832,8 +833,11 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
         <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
 
-      <TextBlock Grid.Column="0" Text="Gr3y Support" FontFamily="Consolas" FontSize="16" FontWeight="Bold"
-                 Foreground="{StaticResource HeaderBrush}" VerticalAlignment="Center" Margin="14,0,16,0"/>
+      <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+        <Image Name="LogoImage" Width="26" Height="26" Margin="14,0,8,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+        <TextBlock Text="Gr3yLabs Tools" FontFamily="Consolas" FontSize="16" FontWeight="Bold"
+                   Foreground="{StaticResource HeaderBrush}" VerticalAlignment="Center" Margin="0,0,16,0"/>
+      </StackPanel>
 
       <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
         <Button Name="NavDebloat" Style="{StaticResource NavButton}" Tag="selected" Content="Debloat + Office" WindowChrome.IsHitTestVisibleInChrome="True"/>
@@ -1363,7 +1367,28 @@ try {
 }
 
 if ($Version) {
-    $window.Title = "Gr3y Support v$Version" + $(if ($Commit) { " ($Commit)" } else { '' })
+    $window.Title = "Gr3yLabs Tools v$Version" + $(if ($Commit) { " ($Commit)" } else { '' })
+}
+
+# Logo is optional - ships as a 6th hash-pinned file alongside the 5 tracked ones (see
+# latest.json/debloat.ps1), but an older cached copy or a hand-run local checkout might
+# not have it yet. Skip silently rather than block the GUI from launching over a missing
+# cosmetic asset.
+if (Test-Path $logoPath) {
+    try {
+        $logoBitmap = New-Object System.Windows.Media.Imaging.BitmapImage
+        $logoBitmap.BeginInit()
+        $logoBitmap.UriSource = [Uri]$logoPath
+        $logoBitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+        $logoBitmap.EndInit()
+        $logoBitmap.Freeze()
+        $window.Icon = $logoBitmap
+        $logoImage = $window.FindName('LogoImage')
+        if ($logoImage) {
+            $logoImage.Source = $logoBitmap
+            $logoImage.Visibility = 'Visible'
+        }
+    } catch {}
 }
 
 # The XAML's Height="820" isn't clamped to the work area - on a 1366x768 laptop, or a

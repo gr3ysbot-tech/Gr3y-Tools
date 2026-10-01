@@ -60,7 +60,7 @@ jobs:
           # latest.json - only the files debloat.ps1's own bootstrap actually downloads
           # and runs (not every file under debloat\, e.g. not WebApp.ps1 or the dev-only
           # Generate-ChangesReference.ps1/tests - matches the existing manifest shape).
-          $trackedNames = @('Deploy-DellOfficeSetup.ps1', 'Gr3ysUtilities.ps1', 'apps-catalog.json', 'bloat-patterns.json', 'tweaks.json')
+          $trackedNames = @('Deploy-DellOfficeSetup.ps1', 'Gr3ysUtilities.ps1', 'apps-catalog.json', 'bloat-patterns.json', 'tweaks.json', 'gr3ylabs-logo.png')
           $filesObj = [ordered]@{}
           foreach ($name in $trackedNames) {
               $path = Join-Path 'debloat' $name
@@ -76,7 +76,7 @@ jobs:
           # Release zip - the debloat\ folder as shipped, matching what debloat.ps1 pulls
           # file-by-file from the pinned commit (this zip is a convenience for anyone who
           # wants an offline copy, not itself part of the bootstrap flow).
-          $zipName = "Gr3ySupport-v$version.zip"
+          $zipName = "Gr3yLabsTools-v$version.zip"
           Compress-Archive -Path 'debloat\*' -DestinationPath $zipName -Force
 
           # Windows PowerShell (not pwsh) needs an explicit UTF-8 encoding here - a bare
