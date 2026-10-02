@@ -3381,9 +3381,8 @@ function Show-NoGuiExportDialog {
 
 $btnNoGuiExport.Add_Click({ Show-NoGuiExportDialog })
 
-# PLACEHOLDER - matches Export-InstalledApps.ps1's own $RelayUrl default. Update both
-# together once cloudflare/export-relay-worker.js is deployed (see cloudflare/README.md).
-$script:ExportRelayUrl = 'https://REPLACE-WITH-YOUR-WORKER-URL.workers.dev'
+# Matches Export-InstalledApps.ps1's own $RelayUrl default - keep both in sync.
+$script:ExportRelayUrl = 'https://gr3y-export-relay.gr3y-b8f.workers.dev'
 
 function New-PairingCode {
     # Unambiguous alphabet (no 0/O, 1/I/L) - meant to be read aloud over a phone or typed

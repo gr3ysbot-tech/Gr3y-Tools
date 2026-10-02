@@ -45,11 +45,7 @@
 param(
     [string]$OutputPath,
     [string]$Code,
-    # PLACEHOLDER - update once the Worker in cloudflare/export-relay-worker.js is
-    # deployed (see cloudflare/README.md) and its real *.workers.dev URL is known. Left
-    # obviously fake on purpose rather than a guessed-but-plausible URL, so -Code fails
-    # loudly instead of silently posting to a made-up endpoint.
-    [string]$RelayUrl = 'https://REPLACE-WITH-YOUR-WORKER-URL.workers.dev'
+    [string]$RelayUrl = 'https://gr3y-export-relay.gr3y-b8f.workers.dev'
 )
 
 function Get-UninstallEntries {
