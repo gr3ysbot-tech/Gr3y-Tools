@@ -49,3 +49,45 @@ jobs:
         with:
           name: pester-results
           path: pester-results.xml
+
+  auto-tag:
+    name: Auto-tag release
+    needs: [lint, test]
+    # Only for a real push landing on main - never for a pull_request run (which has
+    # nothing new to tag yet, and would need write access to a fork it doesn't have
+    # anyway), and never for a push to any other branch.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute and push the next patch tag
+        shell: powershell
+        run: |
+          # Every push to main that passes lint+test becomes a release - no more manual
+          # "did someone remember to tag this" step. Each release is a small, atomic step
+          # up from the last tag, auto-numbered by incrementing patch.
+          $existingTagsOnThisCommit = git tag --points-at HEAD
+          if ($existingTagsOnThisCommit) {
+            Write-Host "This commit is already tagged ($existingTagsOnThisCommit) - skipping."
+            exit 0
+          }
+
+          $latest = git tag -l 'v*.*.*' | ForEach-Object {
+            $p = ($_ -replace '^v', '') -split '\.'
+            if ($p.Count -eq 3) {
+              [PSCustomObject]@{ Tag = $_; Major = [int]$p[0]; Minor = [int]$p[1]; Patch = [int]$p[2] }
+            }
+          } | Sort-Object Major, Minor, Patch | Select-Object -Last 1
+
+          $newTag = if ($latest) { "v$($latest.Major).$($latest.Minor).$($latest.Patch + 1)" } else { 'v1.0.0' }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag $newTag
+          git push origin $newTag
+          Write-Host "Tagged and pushed $newTag - release.yml picks it up from here."
