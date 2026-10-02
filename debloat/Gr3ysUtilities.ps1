@@ -394,6 +394,17 @@ $script:bloatScanAction = {
     }
     $lines.Add('')
 
+    # Work/school Teams is never a removal target (MSTeams AppX, or the classic Teams
+    # Machine-Wide Installer*) - reported explicitly here since nothing else in this scan
+    # would otherwise mention it at all.
+    $workTeamsAppxScan = $allInstalledAppx | Where-Object { $_.Name -eq 'MSTeams' } | Select-Object -First 1
+    $classicWorkTeamsScan = $entries | Where-Object { $_.DisplayName -like 'Teams Machine-Wide Installer*' } | Select-Object -First 1
+    $lines.Add('Work/school Teams (never removed by this tool):')
+    if ($workTeamsAppxScan) { $lines.Add("  - Detected: AppX MSTeams $($workTeamsAppxScan.Version)") }
+    elseif ($classicWorkTeamsScan) { $lines.Add("  - Detected: $($classicWorkTeamsScan.DisplayName)") }
+    else { $lines.Add('  - Not detected') }
+    $lines.Add('')
+
     $lines.Add("OEM scheduled tasks that would be disabled ($($foundTasks.Count)):")
     if ($foundTasks.Count -eq 0) { $lines.Add('  (none matched)') }
     else { foreach ($n in $foundTasks) { $lines.Add("  - $n") } }
@@ -919,6 +930,11 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                   <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
                              ToolTip="Auto-detects Dell vs Lenovo and installs the matching OEM driver/BIOS update tool via winget, only if this looks like commercial hardware (not Inspiron/Alienware/IdeaPad/Yoga/Legion) and it isn't already installed. No-ops on non-Dell/Lenovo machines."/>
                 </DockPanel>
+                <DockPanel LastChildFill="False" Margin="0,0,0,1">
+                  <CheckBox DockPanel.Dock="Left" Name="OptProtectWorkTeams" Content="Protect work/school Teams if detected" IsChecked="True"/>
+                  <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
+                             ToolTip="Adds an explicit guard: a package identified as work/school Teams (AppX MSTeams, or the classic Teams Machine-Wide Installer) is never removed or de-provisioned, regardless of what any bloat pattern matches. The generic bloat pattern that removes consumer Teams (the old Chat-icon package, exact name MicrosoftTeams) already cannot match MSTeams - this is a second, independent layer. Scan This Machine reports whether work/school Teams is present on this machine either way."/>
+                </DockPanel>
                 <TextBlock Style="{StaticResource Header}" Text="Office" Margin="0,10,0,6"/>
                 <DockPanel LastChildFill="False" Margin="0,0,0,1">
                   <CheckBox DockPanel.Dock="Left" Name="OptSkipOfficeRemoval" Content="Skip removing existing Office"/>
@@ -1431,6 +1447,7 @@ $optSkipDebloat = $window.FindName('OptSkipDebloat')
 $optDell = $window.FindName('OptDell')
 $optLenovo = $window.FindName('OptLenovo')
 $optInstallOemUpdate = $window.FindName('OptInstallOemUpdate')
+$optProtectWorkTeams = $window.FindName('OptProtectWorkTeams')
 $optSkipOfficeRemoval = $window.FindName('OptSkipOfficeRemoval')
 $optSkipOfficeInstall = $window.FindName('OptSkipOfficeInstall')
 $optExcludeTeams = $window.FindName('OptExcludeTeams')
@@ -2570,6 +2587,7 @@ $btnStart.Add_Click({
     if ($optDell.IsChecked) { $argList += '-Dell' }
     if ($optLenovo.IsChecked) { $argList += '-Lenovo' }
     if ($optInstallOemUpdate.IsChecked) { $argList += '-InstallOemUpdateTool' }
+    if ($optProtectWorkTeams.IsChecked) { $argList += '-ProtectWorkTeams' }
     if ($optSkipOfficeRemoval.IsChecked) { $argList += '-SkipOfficeRemoval' }
     if ($optSkipOfficeInstall.IsChecked) { $argList += '-SkipOfficeInstall' }
     if ($optTweakTelemetry.IsChecked) { $argList += '-TweakReduceTelemetry' }

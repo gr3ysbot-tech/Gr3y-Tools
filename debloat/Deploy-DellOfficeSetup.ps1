@@ -168,6 +168,14 @@
     Windows does not silently turn on device encryption at first Microsoft-account
     sign-in (relevant on 24H2) for a machine that is staying on local accounts.
 
+.PARAMETER ProtectWorkTeams
+    Adds an explicit guard in Remove-OemBloatware: a package identified as work/school
+    Teams (AppX name MSTeams, or the classic "Teams Machine-Wide Installer*" Win32
+    entry) is never removed or de-provisioned, regardless of what any bloat pattern
+    matches - today's generic.appxPatterns entry ("MicrosoftTeams", no wildcards) is
+    already an exact match that cannot catch MSTeams, so this is a second, independent
+    layer rather than something that changes current behavior.
+
 .PARAMETER FixSystemRepair
     Run sfc /scannow then DISM /Online /Cleanup-Image /RestoreHealth. Can take
     10-20+ minutes. Off by default - intended to be triggered standalone from the
@@ -281,7 +289,8 @@ param(
     [switch]$CreateBreakGlassAdmin,
     [string]$BreakGlassAdminName = 'Gr3yBreakGlass',
     [switch]$EnableBitLocker,
-    [switch]$PreventAutomaticDeviceEncryption
+    [switch]$PreventAutomaticDeviceEncryption,
+    [switch]$ProtectWorkTeams
 )
 
 $ErrorActionPreference = 'Continue'
@@ -607,6 +616,17 @@ function Start-ProcessLowPriority {
     }
 }
 
+function Test-IsWorkSchoolTeams {
+    # AppX name MSTeams is the modern (23H2+) work/school client, inbox or installed by
+    # Microsoft 365 Apps; "Teams Machine-Wide Installer*" is the classic per-machine MSI
+    # stub the pre-2023 desktop client used. Neither is ever a legitimate removal target
+    # for this tool - see improvement-plan.md's explicit "do not add MSTeams" rule.
+    param([string]$AppxName, [string]$Win32DisplayName)
+    if ($AppxName -and $AppxName -eq 'MSTeams') { return $true }
+    if ($Win32DisplayName -and $Win32DisplayName -like 'Teams Machine-Wide Installer*') { return $true }
+    return $false
+}
+
 function Remove-OemBloatware {
     Write-Log '--- Phase 1: Removing OEM (Dell/Lenovo) bloatware and McAfee trialware ---'
 
@@ -635,6 +655,10 @@ function Remove-OemBloatware {
     foreach ($pattern in $OemBloatAppxPatterns) {
         $installed = $allInstalledAppx | Where-Object { $_.Name -like $pattern }
         foreach ($pkg in $installed) {
+            if ($ProtectWorkTeams -and (Test-IsWorkSchoolTeams -AppxName $pkg.Name)) {
+                Write-Log "Skipping removal of '$($pkg.Name)' - identified as work/school Teams, protected by -ProtectWorkTeams." 'WARN'
+                continue
+            }
             $appxRemoveSteps.Add(@{
                 Description = "Removing AppX package: $($pkg.PackageFullName)"
                 Action = $appxRemoveAction
@@ -643,6 +667,10 @@ function Remove-OemBloatware {
         }
         $provisioned = $allProvisionedAppx | Where-Object { $_.DisplayName -like $pattern }
         foreach ($pkg in $provisioned) {
+            if ($ProtectWorkTeams -and (Test-IsWorkSchoolTeams -AppxName $pkg.DisplayName)) {
+                Write-Log "Skipping de-provisioning of '$($pkg.DisplayName)' - identified as work/school Teams, protected by -ProtectWorkTeams." 'WARN'
+                continue
+            }
             $appxDeprovisionSteps.Add(@{
                 Description = "De-provisioning AppX package: $($pkg.DisplayName)"
                 Action = $appxDeprovisionAction
@@ -689,6 +717,10 @@ function Remove-OemBloatware {
         $matches = $entries | Where-Object { $_.DisplayName -like $pattern }
         foreach ($match in $matches) {
             $name = $match.DisplayName
+            if ($ProtectWorkTeams -and (Test-IsWorkSchoolTeams -Win32DisplayName $name)) {
+                Write-Log "Skipping uninstall of '$name' - identified as work/school Teams, protected by -ProtectWorkTeams." 'WARN'
+                continue
+            }
             Invoke-Step "Uninstalling: $name" {
                 $decision = ConvertFrom-UninstallString -UninstallString $match.UninstallString -QuietUninstallString $match.QuietUninstallString
                 switch ($decision.Type) {
@@ -2641,6 +2673,19 @@ function Get-ValidationChecks {
         $checks.Add([PSCustomObject]@{ Check = 'Device Join State'; Status = 'INFO'; Detail = "AzureAdJoined=$azureJoined, DomainJoined=$domainJoined" })
     } catch {
         $checks.Add([PSCustomObject]@{ Check = 'Device Join State'; Status = 'UNKNOWN'; Detail = $_.Exception.Message })
+    }
+
+    try {
+        $workTeamsAppx = Get-AppxPackage -AllUsers -Name 'MSTeams' -ErrorAction SilentlyContinue | Select-Object -First 1
+        $classicWorkTeams = Get-UninstallEntries | Where-Object { $_.DisplayName -like 'Teams Machine-Wide Installer*' } | Select-Object -First 1
+        if ($workTeamsAppx -or $classicWorkTeams) {
+            $detail = if ($workTeamsAppx) { "AppX MSTeams $($workTeamsAppx.Version)" } else { $classicWorkTeams.DisplayName }
+            $checks.Add([PSCustomObject]@{ Check = 'Work/School Teams'; Status = 'INFO'; Detail = "Detected ($detail) - never removed by this tool" })
+        } else {
+            $checks.Add([PSCustomObject]@{ Check = 'Work/School Teams'; Status = 'INFO'; Detail = 'Not detected' })
+        }
+    } catch {
+        $checks.Add([PSCustomObject]@{ Check = 'Work/School Teams'; Status = 'UNKNOWN'; Detail = $_.Exception.Message })
     }
 
     try {
