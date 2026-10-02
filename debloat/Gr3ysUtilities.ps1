@@ -1087,6 +1087,9 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
             <Border Width="14"/>
             <Button Name="BtnExportInstalled" Content="Export Installed Apps..." BorderBrush="{StaticResource AccentBrush}"
                     ToolTip="Run this on the OLD machine, if you can - saves a small JSON file listing everything winget sees as installed, plus every other installed program's name. Not required: Compare Against List also accepts a plain-text app-name list (e.g. copy-pasted Get-ItemProperty/RMM output), for when the old machine is still in use and this tool can't run there at all."/>
+            <TextBlock Name="LinkNoGuiExport" Text="No GUI access?" Foreground="{StaticResource AccentBrush}" FontSize="11"
+                       VerticalAlignment="Center" Margin="4,0,0,0" Cursor="Hand" TextDecorations="Underline"
+                       ToolTip="Get a command-line-only version of Export Installed Apps, for when you can only reach the old machine through an RMM run-script action or PowerShell remoting - no way to launch this GUI there at all."/>
             <Button Name="BtnCompareBaseline" Content="Compare Against List..." BorderBrush="{StaticResource AccentBrush}"
                     ToolTip="Run this on the NEW machine. Loads either an Export Installed Apps JSON file, or a plain .txt file - one app name per line, or a pasted DisplayName/DisplayVersion table (e.g. Get-ItemProperty on the Uninstall registry keys, run remotely through an RMM tool and saved from the console output). Scans this machine and checks the box for every catalog app that's on the old list but missing here, in a new Compare Results filter - pick which ones you want, then Install Selected. Anything missing with no catalog match is listed below instead, for manual install."/>
             <Button Name="BtnStopInstall" Content="Stop" Visibility="Collapsed"/>
@@ -1593,6 +1596,7 @@ $btnSelectAll = $window.FindName('BtnSelectAll')
 $btnClearSelection = $window.FindName('BtnClearSelection')
 $btnCheckInstalled = $window.FindName('BtnCheckInstalled')
 $btnExportInstalled = $window.FindName('BtnExportInstalled')
+$linkNoGuiExport = $window.FindName('LinkNoGuiExport')
 $btnCompareBaseline = $window.FindName('BtnCompareBaseline')
 $selectedCountText = $window.FindName('SelectedCountText')
 $btnInstallSelected = $window.FindName('BtnInstallSelected')
@@ -3108,6 +3112,22 @@ $btnExportInstalled.Add_Click({
     if ($script:installProc -and -not $script:installProc.HasExited) { return }
     $script:installPendingAction = 'export'
     Start-InstalledCheck
+})
+
+$linkNoGuiExport.Add_MouseLeftButtonUp({
+    $command = 'irm get.gr3y.io/debloat-export | iex'
+    try { [System.Windows.Clipboard]::SetText($command) } catch {}
+    [System.Windows.MessageBox]::Show(
+        "Copied to clipboard:`r`n$command`r`n`r`n" +
+        "Run that on the OLD machine through whatever command-line access you have " +
+        "(RMM run-script, PowerShell remoting, etc.) when you can't launch this GUI there. " +
+        "It prints the same export this button produces straight to the console - capture " +
+        "that output however your remote session lets you, save it as a .json file, then " +
+        "use Compare Against List... on the new machine like normal.`r`n`r`n" +
+        "To save straight to a file on that machine instead:`r`n" +
+        "`$s = irm get.gr3y.io/debloat-export`r`n" +
+        "& ([scriptblock]::Create(`$s)) -OutputPath C:\Temp\installed-apps.json",
+        'Export Installed Apps - Command Line', 'OK', 'Information') | Out-Null
 })
 
 $btnCompareBaseline.Add_Click({
