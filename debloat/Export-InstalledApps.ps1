@@ -84,8 +84,21 @@ $export = [PSCustomObject]@{
 }
 
 if ($OutputPath) {
-    ($export | ConvertTo-Json -Depth 4) | Set-Content -Path $OutputPath -Encoding UTF8
-    Write-Output "Saved $($export.wingetIds.Count) winget app(s) and $($export.installedProgramNames.Count) program name(s) to $OutputPath"
+    # Set-Content fails if the target directory doesn't exist yet (e.g. a fresh machine
+    # with no C:\Temp) - that's a non-terminating error by default, so without -ErrorAction
+    # Stop the script would print a false "Saved" success message right after a real
+    # failure. Create the directory first, and only claim success if the write actually
+    # happens.
+    $outputDir = Split-Path -Path $OutputPath -Parent
+    if ($outputDir -and -not (Test-Path -Path $outputDir)) {
+        New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+    }
+    try {
+        ($export | ConvertTo-Json -Depth 4) | Set-Content -Path $OutputPath -Encoding UTF8 -ErrorAction Stop
+        Write-Output "Saved $($export.wingetIds.Count) winget app(s) and $($export.installedProgramNames.Count) program name(s) to $OutputPath"
+    } catch {
+        Write-Error "Could not save to $OutputPath - $($_.Exception.Message)"
+    }
 } else {
     $export
 }

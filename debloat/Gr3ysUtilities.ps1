@@ -3327,7 +3327,7 @@ function Show-NoGuiExportDialog {
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
-        <TextBox Name="CmdFile" Grid.Column="0" MinHeight="60" AcceptsReturn="True" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
+        <TextBox Name="CmdFile" Grid.Column="0" MinHeight="32" VerticalContentAlignment="Center" TextWrapping="NoWrap" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Auto"/>
         <Button Name="BtnCopyFile" Grid.Column="1" Content="Copy" Width="70" Height="32" Margin="8,0,0,0" VerticalAlignment="Top"/>
       </Grid>
 
@@ -3351,7 +3351,10 @@ function Show-NoGuiExportDialog {
     $btnDialogClose = $dialog.FindName('BtnDialogClose')
 
     $cmdPrint.Text = 'irm get.gr3y.io/debloat-export | iex'
-    $cmdFile.Text = "`$s = irm get.gr3y.io/debloat-export`r`n& ([scriptblock]::Create(`$s)) -OutputPath C:\Temp\installed-apps.json"
+    # One line, `;`-separated, not two lines joined by a newline - a lot of RMM "run
+    # command" fields are single-line text inputs, and even in a real console, pasting
+    # two lines runs each as its own separate paste-and-Enter instead of one atomic paste.
+    $cmdFile.Text = "`$s = irm get.gr3y.io/debloat-export; & ([scriptblock]::Create(`$s)) -OutputPath C:\Temp\installed-apps.json"
 
     # Brief "Copied!" feedback on the clicked button, reverted after ~1.2s - a DispatcherTimer
     # closure per click rather than a single shared one, since either Copy button can fire
