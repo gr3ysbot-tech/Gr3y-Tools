@@ -3243,8 +3243,8 @@ function Show-NoGuiExportDialog {
     $dialogXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="No GUI Access - Export Installed Apps" Width="640" SizeToContent="Height"
-        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Title="No GUI Access - Export Installed Apps" Width="640" Height="460" MinWidth="500" MinHeight="380"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
         Background="#232629" FontFamily="Segoe UI" FontSize="13">
   <Window.Resources>
     <SolidColorBrush x:Key="BgBrush" Color="#232629"/>
@@ -3304,6 +3304,7 @@ function Show-NoGuiExportDialog {
       </Setter>
     </Style>
   </Window.Resources>
+  <ScrollViewer VerticalScrollBarVisibility="Auto">
   <Border Padding="20">
     <StackPanel>
       <TextBlock Text="No GUI access on the old machine?" FontFamily="Consolas" FontSize="16" Foreground="{StaticResource HeaderBrush}" Margin="0,0,0,10"/>
@@ -3316,8 +3317,8 @@ function Show-NoGuiExportDialog {
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
-        <TextBox Name="CmdPrint" Grid.Column="0" Height="30" VerticalContentAlignment="Center"/>
-        <Button Name="BtnCopyPrint" Grid.Column="1" Content="Copy" Width="70" Height="30" Margin="8,0,0,0"/>
+        <TextBox Name="CmdPrint" Grid.Column="0" MinHeight="32" VerticalContentAlignment="Center"/>
+        <Button Name="BtnCopyPrint" Grid.Column="1" Content="Copy" Width="70" Height="32" Margin="8,0,0,0"/>
       </Grid>
 
       <TextBlock Text="Or save straight to a file on that machine instead:" FontWeight="Bold" Margin="0,0,0,4"/>
@@ -3326,8 +3327,8 @@ function Show-NoGuiExportDialog {
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
-        <TextBox Name="CmdFile" Grid.Column="0" Height="54" AcceptsReturn="True" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
-        <Button Name="BtnCopyFile" Grid.Column="1" Content="Copy" Width="70" Height="30" Margin="8,0,0,0" VerticalAlignment="Top"/>
+        <TextBox Name="CmdFile" Grid.Column="0" MinHeight="60" AcceptsReturn="True" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
+        <Button Name="BtnCopyFile" Grid.Column="1" Content="Copy" Width="70" Height="32" Margin="8,0,0,0" VerticalAlignment="Top"/>
       </Grid>
 
       <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,16,0,16"
@@ -3336,6 +3337,7 @@ function Show-NoGuiExportDialog {
       <Button Name="BtnDialogClose" Content="Close" HorizontalAlignment="Right" Width="90"/>
     </StackPanel>
   </Border>
+  </ScrollViewer>
 </Window>
 '@
     $reader = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($dialogXaml))
