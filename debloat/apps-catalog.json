@@ -9,6 +9,7 @@
     {"name": "Tor Browser", "category": "Browsers", "wingetId": "TorProject.TorBrowser", "url": "https://www.torproject.org/", "msp": false},
 
     {"name": "Adobe Acrobat Reader", "category": "Documents", "wingetId": "Adobe.Acrobat.Reader.64-bit", "url": "https://acrobat.adobe.com/"},
+    {"name": "Bluebeam Revu", "category": "Documents", "wingetId": "Bluebeam.Revu.21", "url": "https://www.bluebeam.com/revu"},
     {"name": "Adobe Creative Cloud", "category": "Documents", "wingetId": "Adobe.CreativeCloud", "url": "https://creativecloud.adobe.com/"},
     {"name": "SumatraPDF", "category": "Documents", "wingetId": "SumatraPDF.SumatraPDF", "url": "https://www.sumatrapdfreader.org/"},
     {"name": "PDF24 Creator", "category": "Documents", "wingetId": "geeksoftwareGmbH.PDF24Creator", "url": "https://www.pdf24.org/"},
@@ -18,7 +19,6 @@
     {"name": "Slack", "category": "Communications", "wingetId": "SlackTechnologies.Slack", "url": "https://slack.com/"},
 
     {"name": "Autoruns", "category": "Microsoft Tools", "wingetId": "Microsoft.Sysinternals.Autoruns", "url": "https://learn.microsoft.com/en-us/sysinternals/downloads/autoruns"},
-    {"name": ".NET Desktop Runtime 6", "category": "Microsoft Tools", "wingetId": "Microsoft.DotNet.DesktopRuntime.6", "url": "https://dotnet.microsoft.com/en-us/download/dotnet/6.0"},
     {"name": ".NET Desktop Runtime 8", "category": "Microsoft Tools", "wingetId": "Microsoft.DotNet.DesktopRuntime.8", "url": "https://dotnet.microsoft.com"},
     {"name": ".NET Desktop Runtime 9", "category": "Microsoft Tools", "wingetId": "Microsoft.DotNet.DesktopRuntime.9", "url": "https://dotnet.microsoft.com"},
     {"name": ".NET Desktop Runtime 10", "category": "Microsoft Tools", "wingetId": "Microsoft.DotNet.DesktopRuntime.10", "url": "https://dotnet.microsoft.com"},

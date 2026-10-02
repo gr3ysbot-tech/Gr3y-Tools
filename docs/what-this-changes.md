@@ -264,11 +264,11 @@ Customize Preferences panel writes back the Off column exactly.
 | Zoom | Communications | `Zoom.Zoom` |  |
 | Adobe Acrobat Reader | Documents | `Adobe.Acrobat.Reader.64-bit` |  |
 | Adobe Creative Cloud | Documents | `Adobe.CreativeCloud` |  |
+| Bluebeam Revu | Documents | `Bluebeam.Revu.21` |  |
 | LibreOffice | Documents | `TheDocumentFoundation.LibreOffice` |  |
 | PDF24 Creator | Documents | `geeksoftwareGmbH.PDF24Creator` |  |
 | SumatraPDF | Documents | `SumatraPDF.SumatraPDF` |  |
 | .NET Desktop Runtime 10 | Microsoft Tools | `Microsoft.DotNet.DesktopRuntime.10` |  |
-| .NET Desktop Runtime 6 | Microsoft Tools | `Microsoft.DotNet.DesktopRuntime.6` |  |
 | .NET Desktop Runtime 8 | Microsoft Tools | `Microsoft.DotNet.DesktopRuntime.8` |  |
 | .NET Desktop Runtime 9 | Microsoft Tools | `Microsoft.DotNet.DesktopRuntime.9` |  |
 | Autoruns | Microsoft Tools | `Microsoft.Sysinternals.Autoruns` |  |

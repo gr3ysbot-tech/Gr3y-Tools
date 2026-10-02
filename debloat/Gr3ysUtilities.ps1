@@ -2844,6 +2844,34 @@ function ConvertFrom-AppListText {
     return @($names | Sort-Object -Unique)
 }
 
+# Plain substring matching (catalog Name inside a real DisplayName) doesn't work for the
+# .NET runtime family - a single .NET major version shows up under several different
+# component names (confirmed against real Compare Against List output: "Microsoft .NET
+# Host - 10.0.12 (x64)", "Microsoft .NET Host FX Resolver - 10.0.12 (x64)", "Microsoft
+# .NET Runtime - 10.0.12 (x64)", "Microsoft Windows Desktop Runtime - 10.0.12 (x64)", and
+# even "Microsoft Windows Desktop Runtime 10.0.12 (x64)" with no dash - none of which
+# contain the catalog's own name, ".NET Desktop Runtime 10", as a literal substring).
+# Installing any one of the catalog's "N.DotNet.DesktopRuntime.N" winget packages pulls in
+# the whole matching component stack together, so one correct match per major version is
+# enough - this only needs to recognize that stack by name, not install each piece
+# separately. Scoped narrowly to catalog entries actually named this way (unlike a fully
+# generic fuzzy matcher) since .NET runtime components are the one case confirmed, twice,
+# to recur on every real machine comparison - everything else observed so far (the VC++
+# Redistributable naming mismatch) was accepted as a one-off, not chased the same way.
+function Test-DotNetRuntimeNameMatch {
+    param([string]$CatalogName, [string]$CandidateName)
+    if (-not $CandidateName) { return $false }
+    if ($CatalogName -notmatch '^\.NET Desktop Runtime (\d+)$') { return $false }
+    $majorVersion = $Matches[1]
+    if ($CandidateName -notmatch '(?i)(\.NET|Desktop Runtime)') { return $false }
+    # Major version as its own token (e.g. the "10" in "10.0.12", not the "10" inside
+    # "110.0.12") - not preceded by another digit. No lookahead needed after the literal
+    # dot: a version string always has more digits after its first dot ("10.0.12"), so
+    # requiring "not followed by a digit" there would reject every real version string -
+    # confirmed as a real bug this way during testing, not assumed.
+    return [bool]($CandidateName -match "(?<!\d)$majorVersion\.")
+}
+
 # winget right-pads every column to the widest value it holds in that particular run, so
 # there's no fixed offset to hardcode - the header row's own character positions are the
 # only reliable way to slice the Id column back out of a `winget list` table.
@@ -3319,10 +3347,10 @@ $timer.Add_Tick({
                         # last time's matches stuck in the Compare Results view.
                         $entry.CompareMatch = $false
                         $onBaseline = ($entry.WingetId -and ($baseline.wingetIds -contains $entry.WingetId)) -or
-                                      [bool]($baseline.installedProgramNames | Where-Object { $_ -and ($_ -like "*$($entry.Name)*") } | Select-Object -First 1)
+                                      [bool]($baseline.installedProgramNames | Where-Object { $_ -and (($_ -like "*$($entry.Name)*") -or (Test-DotNetRuntimeNameMatch -CatalogName $entry.Name -CandidateName $_)) } | Select-Object -First 1)
                         if (-not $onBaseline) { continue }
                         $alreadyHere = ($entry.WingetId -and $installedIds.Contains($entry.WingetId)) -or
-                                       [bool]($currentProgramNames | Where-Object { $_ -and ($_ -like "*$($entry.Name)*") } | Select-Object -First 1)
+                                       [bool]($currentProgramNames | Where-Object { $_ -and (($_ -like "*$($entry.Name)*") -or (Test-DotNetRuntimeNameMatch -CatalogName $entry.Name -CandidateName $_)) } | Select-Object -First 1)
                         if ($alreadyHere) { continue }
                         $entry.CheckBox.IsChecked = $true
                         $entry.CheckBox.Foreground = $accentBrush
@@ -3348,7 +3376,7 @@ $timer.Add_Tick({
                         # install). A substring check is a reasonable match for this case.
                         $alreadyHandled = $false
                         foreach ($catalogName in $matchedCatalogNames) {
-                            if ($name -like "*$catalogName*") { $alreadyHandled = $true; break }
+                            if (($name -like "*$catalogName*") -or (Test-DotNetRuntimeNameMatch -CatalogName $catalogName -CandidateName $name)) { $alreadyHandled = $true; break }
                         }
                         if ($alreadyHandled) { continue }
                         $unmatched.Add($name)
