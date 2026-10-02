@@ -3907,7 +3907,19 @@ $timer.Add_Tick({
                     foreach ($n in $currentProgramNames) { [void]$currentNameSet.Add($n) }
 
                     $matchedCount = 0
+                    # Two different sets, deliberately - $matchedCatalogNames is only the
+                    # ones auto-checked (missing here, ready to install); $accountedCatalogNames
+                    # is every catalog entry that explains a baseline name at all, whether or
+                    # not it still needs installing. Using only $matchedCatalogNames to filter
+                    # the unmatched list below was the bug: a catalog app already installed
+                    # here (e.g. .NET Desktop Runtime 10, already present in some version) hit
+                    # `continue` before ever being recorded, so every baseline name it should
+                    # have explained - all five .NET 10 component names, VC++ redist variants,
+                    # whatever - fell through into "no catalog match, install manually" even
+                    # though there genuinely was a match. It just didn't need installing.
                     $matchedCatalogNames = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+                    $accountedCatalogNames = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+                    $alreadyInstalledNames = New-Object System.Collections.Generic.List[string]
                     foreach ($entry in $script:appEntries) {
                         # Reset first - a second Compare run (a different export file, or a
                         # re-run after installing some of the first batch) must not leave
@@ -3916,9 +3928,13 @@ $timer.Add_Tick({
                         $onBaseline = ($entry.WingetId -and ($baseline.wingetIds -contains $entry.WingetId)) -or
                                       [bool]($baseline.installedProgramNames | Where-Object { $_ -and (($_ -like "*$($entry.Name)*") -or (Test-DotNetRuntimeNameMatch -CatalogName $entry.Name -CandidateName $_)) } | Select-Object -First 1)
                         if (-not $onBaseline) { continue }
+                        [void]$accountedCatalogNames.Add($entry.Name)
                         $alreadyHere = ($entry.WingetId -and $installedIds.Contains($entry.WingetId)) -or
                                        [bool]($currentProgramNames | Where-Object { $_ -and (($_ -like "*$($entry.Name)*") -or (Test-DotNetRuntimeNameMatch -CatalogName $entry.Name -CandidateName $_)) } | Select-Object -First 1)
-                        if ($alreadyHere) { continue }
+                        if ($alreadyHere) {
+                            $alreadyInstalledNames.Add($entry.Name)
+                            continue
+                        }
                         $entry.CheckBox.IsChecked = $true
                         $entry.CheckBox.Foreground = $accentBrush
                         $entry.CheckBox.Content = "$($entry.Name) (missing - on old machine)"
@@ -3926,6 +3942,7 @@ $timer.Add_Tick({
                         [void]$matchedCatalogNames.Add($entry.Name)
                         $matchedCount++
                     }
+                    $alreadyInstalledNames = @($alreadyInstalledNames | Sort-Object -Unique)
                     # Apps present by name on the baseline machine with no catalog match at
                     # all - nothing to auto-check, so just list them (matches the kind of
                     # manual line-item the ticket's own instructions already call out, e.g.
@@ -3942,7 +3959,7 @@ $timer.Add_Tick({
                         # was both auto-checked AND wrongly listed as needing a manual
                         # install). A substring check is a reasonable match for this case.
                         $alreadyHandled = $false
-                        foreach ($catalogName in $matchedCatalogNames) {
+                        foreach ($catalogName in $accountedCatalogNames) {
                             if (($name -like "*$catalogName*") -or (Test-DotNetRuntimeNameMatch -CatalogName $catalogName -CandidateName $name)) { $alreadyHandled = $true; break }
                         }
                         if ($alreadyHandled) { continue }
@@ -3974,6 +3991,11 @@ $timer.Add_Tick({
                         }
                     }
                     $lines.Add('')
+                    if ($alreadyInstalledNames.Count -gt 0) {
+                        $lines.Add("$($alreadyInstalledNames.Count) catalog app(s) already installed here - not offered again (old machine's copy isn't needed; this machine's installed version may be newer):")
+                        foreach ($n in $alreadyInstalledNames) { $lines.Add("  - $n") }
+                        $lines.Add('')
+                    }
                     if ($unmatched.Count -gt 0) {
                         $lines.Add("$($unmatched.Count) more installed on the old machine with no catalog match - install these manually:")
                         foreach ($n in $unmatched) { $lines.Add("  - $n") }
