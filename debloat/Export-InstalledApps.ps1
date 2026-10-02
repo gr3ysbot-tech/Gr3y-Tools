@@ -100,5 +100,12 @@ if ($OutputPath) {
         Write-Error "Could not save to $OutputPath - $($_.Exception.Message)"
     }
 } else {
-    $export
+    # Not -OutputPath | Format-List or just `$export` - either lets PowerShell's default
+    # table/list formatter decide how to show this, which truncates array properties
+    # (wingetIds, installedProgramNames) to a handful of entries plus "..." and clips wide
+    # columns to the console width. The whole point of this no-OutputPath path is "print
+    # something capturable" (see the GUI's own No GUI Access dialog text) - full JSON text
+    # is what's actually copyable and re-saveable as the .json Compare Against List reads,
+    # not a truncated table meant for human skimming.
+    $export | ConvertTo-Json -Depth 4
 }
