@@ -1096,9 +1096,9 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
       <TabItem Header="Config">
         <Grid>
           <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="660"/>
+            <ColumnDefinition Width="5*" MinWidth="700"/>
             <ColumnDefinition Width="10"/>
-            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="3*" MinWidth="300"/>
           </Grid.ColumnDefinitions>
           <Border Grid.Column="0" Style="{StaticResource Panel}">
             <ScrollViewer VerticalScrollBarVisibility="Auto">
