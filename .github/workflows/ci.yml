@@ -50,11 +50,11 @@ jobs:
           name: pester-results
           path: pester-results.xml
 
-  auto-tag:
-    name: Auto-tag release
+  update-manifest:
+    name: Point latest.json at this commit
     needs: [lint, test]
     # Only for a real push landing on main - never for a pull_request run (which has
-    # nothing new to tag yet, and would need write access to a fork it doesn't have
+    # nothing new to publish yet, and would need write access to a fork it doesn't have
     # anyway), and never for a push to any other branch.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: windows-latest
@@ -62,32 +62,44 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Compute and push the next patch tag
+      - name: Regenerate latest.json and what-this-changes.md, commit if changed
         shell: powershell
         run: |
-          # Every push to main that passes lint+test becomes a release - no more manual
-          # "did someone remember to tag this" step. Each release is a small, atomic step
-          # up from the last tag, auto-numbered by incrementing patch.
-          $existingTagsOnThisCommit = git tag --points-at HEAD
-          if ($existingTagsOnThisCommit) {
-            Write-Host "This commit is already tagged ($existingTagsOnThisCommit) - skipping."
-            exit 0
+          # This is the whole reason irm get.gr3y.io/debloat | iex ever sees a change:
+          # debloat.ps1 reads latest.json from main for the commit + file hashes to fetch.
+          # No version tag, no GitHub Release, no zip - every push to main that passes
+          # lint+test just becomes the thing that URL fetches, immediately. Numbered
+          # releases (the vX.Y.Z tags release.yml builds a zip/attestation/Release page
+          # for) are a separate, deliberate, manually-triggered step - `git tag v0.x.y-beta
+          # && git push origin v0.x.y-beta` - not something every commit should produce.
+          #
+          # (Earlier version of this job auto-created a new vX.Y.Z tag on every push and
+          # relied on that tag-push to trigger release.yml. That silently never worked -
+          # GitHub blocks GITHUB_TOKEN-authored pushes from triggering other workflow runs,
+          # so tags kept getting created (v1.0.7..v1.0.13) but release.yml never once ran
+          # for any of them, and latest.json stayed frozen at v1.0.6 while six more pushes
+          # shipped invisibly. This version sidesteps the whole problem: no second workflow
+          # to trigger, just a direct commit back to main in this same job.)
+          $trackedNames = @('Deploy-DellOfficeSetup.ps1', 'Gr3ysUtilities.ps1', 'apps-catalog.json', 'bloat-patterns.json', 'tweaks.json', 'gr3ylabs-logo.png')
+          $filesObj = [ordered]@{}
+          foreach ($name in $trackedNames) {
+              $path = Join-Path 'debloat' $name
+              $filesObj[$name] = (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToUpper()
           }
+          $manifest = [ordered]@{ version = 'beta'; commit = "${{ github.sha }}"; files = $filesObj }
+          ($manifest | ConvertTo-Json -Depth 4) | Set-Content -Path 'latest.json' -Encoding ASCII -NoNewline
 
-          $latest = git tag -l 'v*.*.*' | ForEach-Object {
-            $p = ($_ -replace '^v', '') -split '\.'
-            if ($p.Count -eq 3) {
-              [PSCustomObject]@{ Tag = $_; Major = [int]$p[0]; Minor = [int]$p[1]; Patch = [int]$p[2] }
-            }
-          } | Sort-Object Major, Minor, Patch | Select-Object -Last 1
-
-          $newTag = if ($latest) { "v$($latest.Major).$($latest.Minor).$($latest.Patch + 1)" } else { 'v1.0.0' }
+          .\debloat\Generate-ChangesReference.ps1
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag $newTag
-          git push origin $newTag
-          Write-Host "Tagged and pushed $newTag - release.yml picks it up from here."
+          git add latest.json 'docs\what-this-changes.md'
+          $status = git status --porcelain
+          if ($status) {
+            $shortSha = "${{ github.sha }}".Substring(0, 7)
+            git commit -m "Point latest.json at $shortSha and regenerate what-this-changes.md"
+            git push origin main
+          } else {
+            Write-Host "latest.json and docs/what-this-changes.md already up to date - nothing to commit."
+          }
