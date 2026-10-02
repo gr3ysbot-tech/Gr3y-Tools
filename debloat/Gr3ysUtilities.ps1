@@ -3381,8 +3381,281 @@ function Show-NoGuiExportDialog {
 
 $btnNoGuiExport.Add_Click({ Show-NoGuiExportDialog })
 
-$btnCompareBaseline.Add_Click({
-    if ($script:installProc -and -not $script:installProc.HasExited) { return }
+# PLACEHOLDER - matches Export-InstalledApps.ps1's own $RelayUrl default. Update both
+# together once cloudflare/export-relay-worker.js is deployed (see cloudflare/README.md).
+$script:ExportRelayUrl = 'https://REPLACE-WITH-YOUR-WORKER-URL.workers.dev'
+
+function New-PairingCode {
+    # Unambiguous alphabet (no 0/O, 1/I/L) - meant to be read aloud over a phone or typed
+    # into an RMM console without confusion. RandomNumberGenerator over Get-Random purely
+    # because it's already on hand and equally simple to use here, not for any real
+    # security need - a short-lived, one-time-claim code has nothing to brute-force.
+    $alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $bytes = New-Object byte[] 6
+    $rng.GetBytes($bytes)
+    -join ($bytes | ForEach-Object { $alphabet[$_ % $alphabet.Length] })
+}
+
+function Show-CompareSourceChooser {
+    $dialogXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Compare Against..." Width="460" SizeToContent="Height" MinWidth="380"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
+        Background="#232629" FontFamily="Segoe UI" FontSize="13">
+  <Window.Resources>
+    <SolidColorBrush x:Key="BgBrush" Color="#232629"/>
+    <SolidColorBrush x:Key="ButtonBrush" Color="#1E3747"/>
+    <SolidColorBrush x:Key="ButtonHoverBrush" Color="#2A4C69"/>
+    <SolidColorBrush x:Key="ControlBorderBrush" Color="#707070"/>
+    <SolidColorBrush x:Key="TextBrush" Color="#F7F7F7"/>
+    <SolidColorBrush x:Key="MutedBrush" Color="#9AA3AB"/>
+    <SolidColorBrush x:Key="HeaderBrush" Color="#5BDCFF"/>
+    <SolidColorBrush x:Key="AccentBrush" Color="#5BDCFF"/>
+    <Style TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+    </Style>
+    <Style TargetType="Button">
+      <Setter Property="Background" Value="{StaticResource ButtonBrush}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource ControlBorderBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="10,4"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource ButtonHoverBrush}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+  <Border Padding="20">
+    <StackPanel>
+      <TextBlock Text="Compare Against..." FontFamily="Consolas" FontSize="16" Foreground="{StaticResource HeaderBrush}" Margin="0,0,0,10"/>
+      <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,16"
+                 Text="Where's the old machine's installed-apps list coming from?"/>
+      <Button Name="BtnChooseFile" Content="Load a File or Pasted List..." HorizontalAlignment="Stretch" Height="40" Margin="0,0,0,8"
+              ToolTip="A Gr3y Tools export JSON file, or a plain-text/.txt list (one app name per line, or a pasted DisplayName/DisplayVersion table)."/>
+      <Button Name="BtnChoosePair" Content="Generate a Pairing Code..." HorizontalAlignment="Stretch" Height="40" BorderBrush="{StaticResource AccentBrush}"
+              ToolTip="Shows a one-time code - run Export-InstalledApps.ps1 -Code on the old machine and it's sent straight here, no file needed. Lost if this dialog isn't open to receive it."/>
+      <Button Name="BtnChooseCancel" Content="Cancel" HorizontalAlignment="Right" Width="90" Margin="0,16,0,0"/>
+    </StackPanel>
+  </Border>
+</Window>
+'@
+    $reader = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($dialogXaml))
+    $dialog = [Windows.Markup.XamlReader]::Load($reader)
+    $dialog.Owner = $window
+
+    $btnChooseFile = $dialog.FindName('BtnChooseFile')
+    $btnChoosePair = $dialog.FindName('BtnChoosePair')
+    $btnChooseCancel = $dialog.FindName('BtnChooseCancel')
+
+    $resultHolder = [PSCustomObject]@{ Value = $null }
+    $btnChooseFile.Add_Click({ $resultHolder.Value = 'file'; $dialog.Close() }.GetNewClosure())
+    $btnChoosePair.Add_Click({ $resultHolder.Value = 'pair'; $dialog.Close() }.GetNewClosure())
+    $btnChooseCancel.Add_Click({ $dialog.Close() }.GetNewClosure())
+
+    $dialog.ShowDialog() | Out-Null
+    return $resultHolder.Value
+}
+
+function Show-PairingDialog {
+    if ($script:ExportRelayUrl -match 'REPLACE-WITH-YOUR-WORKER-URL') {
+        [System.Windows.MessageBox]::Show('The pairing relay is not configured yet in this build - see cloudflare/README.md.', 'Gr3y Tools', 'OK', 'Warning') | Out-Null
+        return
+    }
+    $code = New-PairingCode
+
+    $dialogXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Pair with Old Machine" Width="640" Height="440" MinWidth="500" MinHeight="380"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
+        Background="#232629" FontFamily="Segoe UI" FontSize="13">
+  <Window.Resources>
+    <SolidColorBrush x:Key="BgBrush" Color="#232629"/>
+    <SolidColorBrush x:Key="ButtonBrush" Color="#1E3747"/>
+    <SolidColorBrush x:Key="ButtonHoverBrush" Color="#2A4C69"/>
+    <SolidColorBrush x:Key="ControlBorderBrush" Color="#707070"/>
+    <SolidColorBrush x:Key="TextBrush" Color="#F7F7F7"/>
+    <SolidColorBrush x:Key="MutedBrush" Color="#9AA3AB"/>
+    <SolidColorBrush x:Key="HeaderBrush" Color="#5BDCFF"/>
+    <SolidColorBrush x:Key="GreenBrush" Color="#3FB950"/>
+    <SolidColorBrush x:Key="LogBgBrush" Color="#1B1E21"/>
+    <SolidColorBrush x:Key="PanelBorderBrush" Color="#2F373D"/>
+    <SolidColorBrush x:Key="NavSelectedBrush" Color="#5E81AC"/>
+    <Style TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+    </Style>
+    <Style TargetType="Button">
+      <Setter Property="Background" Value="{StaticResource ButtonBrush}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource ControlBorderBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="10,4"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource ButtonHoverBrush}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType="TextBox">
+      <Setter Property="Background" Value="{StaticResource LogBgBrush}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource PanelBorderBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="8,6"/>
+      <Setter Property="FontFamily" Value="Consolas"/>
+      <Setter Property="IsReadOnly" Value="True"/>
+      <Setter Property="SelectionBrush" Value="{StaticResource NavSelectedBrush}"/>
+      <Setter Property="CaretBrush" Value="{StaticResource TextBrush}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TextBox">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+              <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+  <ScrollViewer VerticalScrollBarVisibility="Auto">
+  <Border Padding="20">
+    <StackPanel>
+      <TextBlock Text="Pair with Old Machine" FontFamily="Consolas" FontSize="16" Foreground="{StaticResource HeaderBrush}" Margin="0,0,0,10"/>
+      <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,16"
+                 Text="Run the command below on the OLD machine through whatever command-line access you have. The export is sent straight here - one-time use, and lost if this dialog is closed before it arrives."/>
+
+      <TextBlock Text="Code:" FontWeight="Bold" Margin="0,0,0,4"/>
+      <TextBlock Name="CodeDisplay" FontFamily="Consolas" FontSize="26" FontWeight="Bold" Foreground="{StaticResource HeaderBrush}" Margin="0,0,0,16"/>
+
+      <TextBlock Text="Run on the old machine:" FontWeight="Bold" Margin="0,0,0,4"/>
+      <Grid Margin="0,0,0,16">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <TextBox Name="CmdPair" Grid.Column="0" MinHeight="32" VerticalContentAlignment="Center" TextWrapping="NoWrap" HorizontalScrollBarVisibility="Auto"/>
+        <Button Name="BtnCopyPair" Grid.Column="1" Content="Copy" Width="70" Height="32" Margin="8,0,0,0"/>
+      </Grid>
+
+      <TextBlock Name="StatusText" Text="Waiting for data..." Foreground="{StaticResource MutedBrush}" Margin="0,0,0,16" TextWrapping="Wrap"/>
+
+      <Button Name="BtnCancelPairing" Content="Cancel" HorizontalAlignment="Right" Width="90"/>
+    </StackPanel>
+  </Border>
+  </ScrollViewer>
+</Window>
+'@
+    $reader = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($dialogXaml))
+    $dialog = [Windows.Markup.XamlReader]::Load($reader)
+    $dialog.Owner = $window
+
+    $codeDisplay = $dialog.FindName('CodeDisplay')
+    $cmdPair = $dialog.FindName('CmdPair')
+    $btnCopyPair = $dialog.FindName('BtnCopyPair')
+    $statusText = $dialog.FindName('StatusText')
+    $btnCancelPairing = $dialog.FindName('BtnCancelPairing')
+
+    $codeDisplay.Text = $code
+    $cmdPair.Text = "`$s = irm get.gr3y.io/debloat-export; & ([scriptblock]::Create(`$s)) -Code $code"
+
+    $btnCopyPair.Add_Click({
+        try { [System.Windows.Clipboard]::SetText($cmdPair.Text) } catch {}
+        $btnCopyPair.Content = 'Copied!'
+        $revertTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $revertTimer.Interval = [TimeSpan]::FromSeconds(1.2)
+        $revertTimer.Add_Tick({ $btnCopyPair.Content = 'Copy'; $revertTimer.Stop() }.GetNewClosure())
+        $revertTimer.Start()
+    }.GetNewClosure())
+
+    # Poll in a background runspace, not inline - each poll is a network round-trip and
+    # this repeats every few seconds for up to 10 minutes, unlike the other small one-off
+    # inline fetches elsewhere in this script. A DispatcherTimer here only ever checks
+    # "is the background call done yet" (cheap, no UI hitch), same async-plus-polling
+    # pattern already used for Scan and the direct-download queue path.
+    $relayUrl = $script:ExportRelayUrl
+    $pollPS = [powershell]::Create()
+    [void]$pollPS.AddScript({
+        param($RelayUrl, $Code, $TimeoutSeconds)
+        $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+        while ((Get-Date) -lt $deadline) {
+            try {
+                return Invoke-RestMethod -Uri "$RelayUrl/poll?code=$Code" -Method Get -ErrorAction Stop
+            } catch {
+                Start-Sleep -Seconds 3
+            }
+        }
+        return $null
+    })
+    [void]$pollPS.AddArgument($relayUrl)
+    [void]$pollPS.AddArgument($code)
+    [void]$pollPS.AddArgument(600)
+    $pollHandle = $pollPS.BeginInvoke()
+
+    $checkTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $checkTimer.Interval = [TimeSpan]::FromMilliseconds(500)
+    $checkTimer.Add_Tick({
+        if (-not $pollHandle.IsCompleted) { return }
+        $checkTimer.Stop()
+        $result = $null
+        try { $result = $pollPS.EndInvoke($pollHandle) } catch {}
+        $pollPS.Dispose()
+        if ($result) {
+            $baseline = [PSCustomObject]@{
+                hostname = $result.hostname
+                exportedAt = $result.exportedAt
+                wingetIds = @($result.wingetIds)
+                installedProgramNames = @($result.installedProgramNames)
+            }
+            $dialog.Close()
+            Set-CompareBaseline -Baseline $baseline
+        } else {
+            $statusText.Text = 'Timed out - no data received in 10 minutes. Close this and try again if needed.'
+        }
+    }.GetNewClosure())
+    $checkTimer.Start()
+
+    $btnCancelPairing.Add_Click({
+        $checkTimer.Stop()
+        if (-not $pollHandle.IsCompleted) { try { $pollPS.Stop() } catch {} }
+        $pollPS.Dispose()
+        $dialog.Close()
+    }.GetNewClosure())
+    $dialog.Add_Closing({ $checkTimer.Stop() }.GetNewClosure())
+
+    $dialog.ShowDialog() | Out-Null
+}
+
+function Set-CompareBaseline {
+    param([Parameter(Mandatory)][PSCustomObject]$Baseline)
+    $script:installPendingAction = [PSCustomObject]@{ Action = 'compare'; Baseline = $Baseline }
+    Start-InstalledCheck
+}
+
+function Import-CompareBaselineFromFile {
     $dialog = New-Object Microsoft.Win32.OpenFileDialog
     $dialog.Filter = 'App list (*.json;*.txt)|*.json;*.txt|All files (*.*)|*.*'
     $dialog.InitialDirectory = [Environment]::GetFolderPath('Desktop')
@@ -3426,9 +3699,15 @@ $btnCompareBaseline.Add_Click({
             installedProgramNames = $names
         }
     }
+    Set-CompareBaseline -Baseline $baseline
+}
 
-    $script:installPendingAction = [PSCustomObject]@{ Action = 'compare'; Baseline = $baseline }
-    Start-InstalledCheck
+$btnCompareBaseline.Add_Click({
+    if ($script:installProc -and -not $script:installProc.HasExited) { return }
+    switch (Show-CompareSourceChooser) {
+        'file' { Import-CompareBaselineFromFile }
+        'pair' { Show-PairingDialog }
+    }
 })
 
 $btnUpgradeAll.Add_Click({

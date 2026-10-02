@@ -26,11 +26,30 @@
 
 .PARAMETER OutputPath
     Optional. Writes the export as JSON to this path instead of the pipeline.
+
+.PARAMETER Code
+    Optional. A pairing code shown by Gr3ysUtilities.ps1's "Pair with Old Machine..."
+    dialog (Compare Against List...). Sends the export straight to that running app
+    instance via a short-lived Cloudflare Worker relay instead of printing it or saving a
+    file - nothing to copy-paste or transfer by hand. Takes priority over -OutputPath if
+    both are given. The code is one-time and expires in 10 minutes - if nothing is
+    actively polling for it (the GUI isn't open to that dialog), the export goes nowhere
+    and isn't retried.
+
+.PARAMETER RelayUrl
+    Base URL of the pairing relay Worker. Defaults to the deployed Gr3y Tools relay -
+    only override this if you're running your own (see cloudflare/README.md).
 #>
 
 [CmdletBinding()]
 param(
-    [string]$OutputPath
+    [string]$OutputPath,
+    [string]$Code,
+    # PLACEHOLDER - update once the Worker in cloudflare/export-relay-worker.js is
+    # deployed (see cloudflare/README.md) and its real *.workers.dev URL is known. Left
+    # obviously fake on purpose rather than a guessed-but-plausible URL, so -Code fails
+    # loudly instead of silently posting to a made-up endpoint.
+    [string]$RelayUrl = 'https://REPLACE-WITH-YOUR-WORKER-URL.workers.dev'
 )
 
 function Get-UninstallEntries {
@@ -83,7 +102,19 @@ $export = [PSCustomObject]@{
     installedProgramNames = @(Get-UninstallEntries | Select-Object -ExpandProperty DisplayName -Unique | Sort-Object)
 }
 
-if ($OutputPath) {
+if ($Code) {
+    if ($RelayUrl -match 'REPLACE-WITH-YOUR-WORKER-URL') {
+        Write-Error "This copy of Export-InstalledApps.ps1 has no relay configured yet (RelayUrl is still the placeholder). Deploy cloudflare/export-relay-worker.js and update RelayUrl's default, or pass -RelayUrl explicitly."
+        return
+    }
+    try {
+        Invoke-RestMethod -Uri "$RelayUrl/submit?code=$Code" -Method Post -ContentType 'application/json' `
+            -Body ($export | ConvertTo-Json -Depth 4) -ErrorAction Stop | Out-Null
+        Write-Output "Sent to pairing code $Code - check the Pair with Old Machine... dialog on the other machine. (One-time use - if that dialog isn't open and waiting, this export goes nowhere.)"
+    } catch {
+        Write-Error "Could not send to pairing code $Code - $($_.Exception.Message)"
+    }
+} elseif ($OutputPath) {
     # Set-Content fails if the target directory doesn't exist yet (e.g. a fresh machine
     # with no C:\Temp) - that's a non-terminating error by default, so without -ErrorAction
     # Stop the script would print a false "Saved" success message right after a real
