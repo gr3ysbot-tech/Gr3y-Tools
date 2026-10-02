@@ -1436,13 +1436,23 @@ if (Test-Path $logoPath) {
     } catch {}
 }
 
-# The XAML's Height="820" isn't clamped to the work area - on a 1366x768 laptop, or a
-# 13-inch FHD panel at 150% scaling (a ~700px-tall effective work area), that puts the
-# Install Apps action bar and window controls off-screen with no way to reach them.
+# The XAML's Height="820"/Width="1150" isn't clamped to the work area - on a 1366x768
+# laptop, or a 13-inch FHD panel at 150% scaling (a ~700px-tall effective work area), that
+# puts the Install Apps action bar and window controls off-screen with no way to reach
+# them.
 $workArea = [System.Windows.SystemParameters]::WorkArea
 if ($workArea.Height -lt 840) {
     $window.WindowState = 'Maximized'
 } else {
+    # Also grow on a bigger display, not just shrink on a small one - the XAML default
+    # only ever got smaller here before, so on a big/wide monitor the window opened
+    # noticeably smaller than the screen and had to be resized by hand every time.
+    # Capped well short of the actual work area (never Maximized/fullscreen by this path -
+    # that's the branch above, for small screens only) - just a roomier default.
+    $targetHeight = [Math]::Min($workArea.Height - 40, 1000)
+    $targetWidth = [Math]::Min($workArea.Width - 40, 1600)
+    if ($targetHeight -gt $window.Height) { $window.Height = $targetHeight }
+    if ($targetWidth -gt $window.Width) { $window.Width = $targetWidth }
     if ($window.Height -gt $workArea.Height - 20) { $window.Height = $workArea.Height - 20 }
     if ($window.Width -gt $workArea.Width - 20) { $window.Width = $workArea.Width - 20 }
 }
