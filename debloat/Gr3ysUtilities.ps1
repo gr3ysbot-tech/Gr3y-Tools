@@ -139,6 +139,81 @@ function Get-MachineTag {
         (Get-SafeFileNamePart $serial)
 }
 
+function Get-DellReplacementEligibility {
+    # Looks up this machine's own Dell service tag via the Dell TechDirect Warranty API
+    # and turns its ship date into a repair-vs-replace call:
+    #   under 3 years  - repair/support (warranty repair, part replacement, upgrades)
+    #   3-4 years      - toss-up, judgment call
+    #   over 4 years   - replace only (repair cost is better spent toward a new PC)
+    #
+    # Needs a Dell TechDirect API Client ID/Secret - register for free at
+    # techdirect.dell.com (Services > Get support and replace parts > APIs), approval
+    # takes a few business days. This repo is public (irm get.gr3y.io/debloat | iex), so
+    # those credentials can never be committed here - they're read from either the
+    # GR3Y_DELL_API_CLIENT_ID/GR3Y_DELL_API_CLIENT_SECRET environment variables (e.g. set
+    # by an RMM tool's script-variable injection for that one run) or a local
+    # C:\ProgramData\Gr3yTools\dell-api.json file ({"clientId":"...","clientSecret":"..."})
+    # that never ships with this tool and has to be placed on each machine separately.
+    param([Parameter(Mandatory)][string]$ServiceTag)
+
+    $clientId = $env:GR3Y_DELL_API_CLIENT_ID
+    $clientSecret = $env:GR3Y_DELL_API_CLIENT_SECRET
+    if (-not $clientId -or -not $clientSecret) {
+        $credPath = Join-Path $env:ProgramData 'Gr3yTools\dell-api.json'
+        if (Test-Path $credPath) {
+            try {
+                $cred = Get-Content -Path $credPath -Raw | ConvertFrom-Json
+                $clientId = $cred.clientId
+                $clientSecret = $cred.clientSecret
+            } catch {}
+        }
+    }
+    if (-not $clientId -or -not $clientSecret) {
+        return [PSCustomObject]@{
+            Success = $false
+            Message = "Dell API credentials not found. Set GR3Y_DELL_API_CLIENT_ID / GR3Y_DELL_API_CLIENT_SECRET as environment variables, or create $credPath as {`"clientId`":`"...`",`"clientSecret`":`"...`"}. Register for a free API key at https://techdirect.dell.com/ (Services > Get support and replace parts > APIs) - approval takes a few business days."
+        }
+    }
+
+    try {
+        $authHeader = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${clientId}:${clientSecret}"))
+        $tokenResponse = Invoke-RestMethod -Uri 'https://apigtwb2c.us.dell.com/auth/oauth/v2/token' -Method Post `
+            -Headers @{ Authorization = $authHeader } `
+            -Body @{ grant_type = 'client_credentials' } `
+            -ContentType 'application/x-www-form-urlencoded'
+        $accessToken = $tokenResponse.access_token
+        if (-not $accessToken) {
+            return [PSCustomObject]@{ Success = $false; Message = 'Dell API authentication did not return an access token - double check the Client ID/Secret.' }
+        }
+
+        $warrantyResponse = Invoke-RestMethod -Method Get -Headers @{ Authorization = "Bearer $accessToken"; Accept = 'application/json' } `
+            -Uri "https://apigtwb2c.us.dell.com/PROD/sbil/eapi/v5/asset-entitlements?servicetags=$ServiceTag"
+    } catch {
+        return [PSCustomObject]@{ Success = $false; Message = "Dell API request failed: $($_.Exception.Message)" }
+    }
+
+    $asset = $warrantyResponse | Select-Object -First 1
+    if (-not $asset -or -not $asset.shipDate) {
+        return [PSCustomObject]@{ Success = $false; Message = "Dell API returned no ship date for service tag $ServiceTag - double check the tag, or this machine may not be a Dell-registered asset." }
+    }
+
+    $shipDate = [DateTime]$asset.shipDate
+    $ageYears = ((Get-Date) - $shipDate).TotalDays / 365.25
+    $recommendation =
+        if ($ageYears -lt 3) { 'Repair/support - warranty repair, part replacement, upgrades as needed.' }
+        elseif ($ageYears -lt 4) { 'Toss-up - judgment call. Weigh repair cost against replacement.' }
+        else { 'Replace only - repair cost is better spent toward a new PC.' }
+
+    return [PSCustomObject]@{
+        Success        = $true
+        ServiceTag     = $ServiceTag
+        ShipDate       = $shipDate
+        AgeYears       = [Math]::Round($ageYears, 1)
+        Model          = $asset.productLineDescription
+        Recommendation = $recommendation
+    }
+}
+
 function Get-DescendantProcessIds {
     # Returns {ProcessId; CreationDate} objects, not bare ints - CreationDate lets a
     # caller that's about to Stop-Process confirm the PID still refers to the same
@@ -1150,6 +1225,12 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                   </StackPanel>
                 </Grid>
 
+                <TextBlock Style="{StaticResource Header}" Text="Hardware Lifecycle" Margin="0,14,0,0"/>
+                <TextBlock Style="{StaticResource Hint}" Text="Dell only for now (service tag lookup needs a registered Dell TechDirect API key - see tooltip). Looks up this machine's ship date and applies: under 3 years - repair/support; 3-4 years - judgment call; over 4 years - replace only."
+                           TextWrapping="Wrap" Margin="0,0,0,4" Opacity="0.7"/>
+                <Button Name="BtnCheckReplacement" Content="Check Replacement Eligibility" HorizontalAlignment="Stretch" Margin="0,0,0,10"
+                        ToolTip="Reads this machine's own Dell service tag and looks up its ship date via the Dell TechDirect Warranty API. Requires Dell API credentials set as GR3Y_DELL_API_CLIENT_ID / GR3Y_DELL_API_CLIENT_SECRET environment variables, or a C:\ProgramData\Gr3yTools\dell-api.json file ({&quot;clientId&quot;:&quot;...&quot;,&quot;clientSecret&quot;:&quot;...&quot;}) - register for free at techdirect.dell.com (approval takes a few business days). Non-Dell machines aren't supported yet - there's no equivalent reliable API without the same kind of registered access."/>
+
                 <TextBlock Style="{StaticResource Header}" Text="Customize Preferences" Margin="0,14,0,0"/>
                 <TextBlock Style="{StaticResource Hint}" Text="Each switch reflects the machine's current setting. Toggle what you want and Apply only sends what changed. Explorer restarts once at the end if needed."
                            TextWrapping="Wrap" Margin="0,0,0,4" Opacity="0.7"/>
@@ -1616,6 +1697,7 @@ $btnFixTimeSync = $window.FindName('BtnFixTimeSync')
 $btnFixNetFx3 = $window.FindName('BtnFixNetFx3')
 $btnFixWindowsUpdate = $window.FindName('BtnFixWindowsUpdate')
 $btnFixWinGet = $window.FindName('BtnFixWinGet')
+$btnCheckReplacement = $window.FindName('BtnCheckReplacement')
 $btnRevertLastRun = $window.FindName('BtnRevertLastRun')
 $fixesStatusText = $window.FindName('FixesStatusText')
 $fixesLogBox = $window.FindName('FixesLogBox')
@@ -2769,6 +2851,46 @@ $btnFixWinGet.Add_Click({ Start-FixJob -FixArgs @('-FixWinGetReinstall') -Label 
 $btnFixTimeSync.Add_Click({ Start-FixJob -FixArgs @('-FixTimeSync') -Label 'Time Resync' })
 
 $btnFixNetFx3.Add_Click({ Start-FixJob -FixArgs @('-FixNetFx3') -Label 'Enable .NET Framework 3.5' })
+
+# Two small REST calls (token + warranty lookup), not a multi-minute job - run inline on
+# the UI thread rather than a background runspace, same call this codebase already makes
+# for the FreeFileSync dynamicDownloadPage fetch (a brief pause is an acceptable tradeoff
+# against a full extra async stage for something this quick).
+$btnCheckReplacement.Add_Click({
+    $btnCheckReplacement.IsEnabled = $false
+    try {
+        $fixesLogBox.AppendText("=== Checking replacement eligibility ===`r`n")
+        $fixesLogBox.ScrollToEnd()
+
+        $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+        $bios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction SilentlyContinue
+        $mfr = if ($cs -and $cs.Manufacturer) { $cs.Manufacturer } else { '' }
+        if ($mfr -notmatch 'Dell') {
+            $fixesLogBox.AppendText("This machine's manufacturer is '$mfr' - automatic ship-date lookup currently only supports Dell (service tag via the Dell TechDirect API). Use manual judgment for this machine.`r`n`r`n")
+            $fixesLogBox.ScrollToEnd()
+            return
+        }
+        $serviceTag = if ($bios -and $bios.SerialNumber) { $bios.SerialNumber } else { $null }
+        if (-not $serviceTag) {
+            $fixesLogBox.AppendText("Could not read a BIOS serial number (service tag) from this machine.`r`n`r`n")
+            $fixesLogBox.ScrollToEnd()
+            return
+        }
+
+        $result = Get-DellReplacementEligibility -ServiceTag $serviceTag
+        if (-not $result.Success) {
+            $fixesLogBox.AppendText("$($result.Message)`r`n`r`n")
+        } else {
+            $fixesLogBox.AppendText("Service tag: $($result.ServiceTag)`r`n")
+            if ($result.Model) { $fixesLogBox.AppendText("Model: $($result.Model)`r`n") }
+            $fixesLogBox.AppendText("Ship date: $($result.ShipDate.ToString('yyyy-MM-dd')) ($($result.AgeYears) years old)`r`n")
+            $fixesLogBox.AppendText("Recommendation: $($result.Recommendation)`r`n`r`n")
+        }
+        $fixesLogBox.ScrollToEnd()
+    } finally {
+        $btnCheckReplacement.IsEnabled = $true
+    }
+})
 
 $btnRevertLastRun.Add_Click({
     $undoFile = Get-ChildItem -Path $workDir -Filter 'undo_*.json' -ErrorAction SilentlyContinue |
