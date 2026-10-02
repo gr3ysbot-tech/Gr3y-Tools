@@ -1050,6 +1050,8 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
             <Button Name="CatCommunications" Content="Communications"/>
             <Button Name="CatUtilities" Content="Utilities"/>
             <Button Name="CatNonSilent" Content="Non-Silent Installs"/>
+            <Button Name="CatCompareResults" Content="Compare Results" BorderBrush="{StaticResource AccentBrush}" Visibility="Collapsed"
+                    ToolTip="Shows only the apps Compare Against Export found missing on this machine - pick which ones to install, then Install Selected."/>
             <Border Width="12"/>
             <Button Name="BtnSelectAll" Content="Select All"/>
             <Button Name="BtnClearSelection" Content="Clear Selection"/>
@@ -1066,6 +1068,11 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
             <Button Name="BtnInstallSelected" Content="Install Selected" BorderBrush="{StaticResource GreenBrush}"/>
             <Button Name="BtnUninstallSelected" Content="Uninstall Selected" BorderBrush="{StaticResource RedBrush}"/>
             <Button Name="BtnUpgradeAll" Content="Upgrade All Installed"/>
+            <Border Width="14"/>
+            <Button Name="BtnExportInstalled" Content="Export Installed Apps..." BorderBrush="{StaticResource AccentBrush}"
+                    ToolTip="Run this on the OLD machine, if you can - saves a small JSON file listing everything winget sees as installed, plus every other installed program's name. Not required: Compare Against List also accepts a plain-text app-name list (e.g. copy-pasted Get-ItemProperty/RMM output), for when the old machine is still in use and this tool can't run there at all."/>
+            <Button Name="BtnCompareBaseline" Content="Compare Against List..." BorderBrush="{StaticResource AccentBrush}"
+                    ToolTip="Run this on the NEW machine. Loads either an Export Installed Apps JSON file, or a plain .txt file - one app name per line, or a pasted DisplayName/DisplayVersion table (e.g. Get-ItemProperty on the Uninstall registry keys, run remotely through an RMM tool and saved from the console output). Scans this machine and checks the box for every catalog app that's on the old list but missing here, in a new Compare Results filter - pick which ones you want, then Install Selected. Anything missing with no catalog match is listed below instead, for manual install."/>
             <Button Name="BtnStopInstall" Content="Stop" Visibility="Collapsed"/>
             <TextBlock Name="InstallStatusText" Text="Idle" VerticalAlignment="Center" Margin="12,0,0,0"/>
           </StackPanel>
@@ -1552,9 +1559,12 @@ $catDocumentsBtn = $window.FindName('CatDocuments')
 $catCommunicationsBtn = $window.FindName('CatCommunications')
 $catUtilitiesBtn = $window.FindName('CatUtilities')
 $catNonSilentBtn = $window.FindName('CatNonSilent')
+$catCompareResultsBtn = $window.FindName('CatCompareResults')
 $btnSelectAll = $window.FindName('BtnSelectAll')
 $btnClearSelection = $window.FindName('BtnClearSelection')
 $btnCheckInstalled = $window.FindName('BtnCheckInstalled')
+$btnExportInstalled = $window.FindName('BtnExportInstalled')
+$btnCompareBaseline = $window.FindName('BtnCompareBaseline')
 $selectedCountText = $window.FindName('SelectedCountText')
 $btnInstallSelected = $window.FindName('BtnInstallSelected')
 $btnUninstallSelected = $window.FindName('BtnUninstallSelected')
@@ -2324,7 +2334,7 @@ if ($script:wingetAvailable) {
     $wingetTooltip = "winget (App Installer) was not found on this machine, so Install Apps is disabled. " +
         "Click Install winget, or install it from the Microsoft Store yourself."
     $wingetStatusText.ToolTip = $wingetTooltip
-    foreach ($b in @($btnInstallSelected, $btnUninstallSelected, $btnUpgradeAll, $btnCheckInstalled)) {
+    foreach ($b in @($btnInstallSelected, $btnUninstallSelected, $btnUpgradeAll, $btnCheckInstalled, $btnExportInstalled, $btnCompareBaseline)) {
         $b.IsEnabled = $false
         $b.ToolTip = $wingetTooltip
     }
@@ -2439,7 +2449,7 @@ foreach ($cat in $categories) {
         # Msp defaults to true (business-appropriate) when the catalog entry omits the
         # field - only the handful of entries explicitly flagged "msp": false (Tor
         # Browser, qBittorrent, OpenRGB and similar) are excluded from Business Baseline.
-        $entry = [PSCustomObject]@{ CheckBox = $cb; Row = $row; Name = $app.name; Category = $cat.Name; WingetId = $app.wingetId; DownloadUrl = $app.downloadUrl; DynamicDownloadPage = $app.dynamicDownloadPage; SacRisk = [bool]$app.sacRisk; Msp = ($app.msp -ne $false) }
+        $entry = [PSCustomObject]@{ CheckBox = $cb; Row = $row; Name = $app.name; Category = $cat.Name; WingetId = $app.wingetId; DownloadUrl = $app.downloadUrl; DynamicDownloadPage = $app.dynamicDownloadPage; SacRisk = [bool]$app.sacRisk; Msp = ($app.msp -ne $false); CompareMatch = $false }
         $script:appEntries.Add($entry)
         # Checked/Unchecked (not Click) since they fire off IsChecked itself changing,
         # regardless of interaction method - Click alone was observed to not reliably
@@ -2468,6 +2478,7 @@ function Update-AppVisibility {
             $visible =
                 if ($script:activeCategory -eq 'All') { $true }
                 elseif ($script:activeCategory -eq 'Business Baseline') { $entry.Msp }
+                elseif ($script:activeCategory -eq 'Compare Results') { $entry.CompareMatch }
                 else { $block.Category -eq $script:activeCategory }
             $entry.Row.Visibility = if ($visible) { 'Visible' } else { 'Collapsed' }
             if ($visible) { $anyVisible = $true }
@@ -2486,6 +2497,7 @@ $catDocumentsBtn.Add_Click({ $script:activeCategory = 'Documents'; Update-AppVis
 $catCommunicationsBtn.Add_Click({ $script:activeCategory = 'Communications'; Update-AppVisibility })
 $catUtilitiesBtn.Add_Click({ $script:activeCategory = 'Utilities'; Update-AppVisibility })
 $catNonSilentBtn.Add_Click({ $script:activeCategory = 'Non-Silent Installs'; Update-AppVisibility })
+$catCompareResultsBtn.Add_Click({ $script:activeCategory = 'Compare Results'; Update-AppVisibility })
 
 # Apply the Business Baseline default filter now - every row defaults to Visible when
 # created above, which matched the old 'All' default but would otherwise show the full
@@ -2760,9 +2772,51 @@ $script:installDone = 0
 $script:installFailedCount = 0
 $script:installFailedNames = New-Object System.Collections.Generic.List[string]
 $script:currentQueueEntry = $null
+$script:installPendingAction = $null
 $script:directDownloadPS = $null
 $script:directDownloadHandle = $null
 $script:directDownloadPath = $null
+
+# For Compare Against Export when the old machine can't run this tool at all (e.g. it's
+# in active use by the person still on it) - accepts the raw copy-pasted console output of
+# a remote command run through an RMM tool, PowerShell remoting, or similar, saved to a
+# .txt file. Same column-position technique as Get-WingetListedIds below: look for the
+# DisplayName/DisplayVersion header a Format-Table dump produces, find the real columns
+# from the header's own character positions (not a fixed offset), and stop at the first
+# blank line or trailing "PS C:\..." prompt a copy-pasted console transcript carries.
+# Falls back to one app name per non-empty line for anything that isn't that exact shape -
+# a plain name list (however it was produced) still works.
+function ConvertFrom-AppListText {
+    param([string]$Text)
+    $lines = $Text -split "`r?`n"
+    $names = New-Object System.Collections.Generic.List[string]
+    $headerIndex = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^DisplayName\s+DisplayVersion') { $headerIndex = $i; break }
+    }
+    if ($headerIndex -ge 0) {
+        $header = $lines[$headerIndex]
+        $nameCol = $header.IndexOf('DisplayName')
+        $versionCol = $header.IndexOf('DisplayVersion')
+        for ($i = $headerIndex + 2; $i -lt $lines.Count; $i++) {
+            $line = $lines[$i]
+            if (-not $line -or -not $line.Trim()) { break }
+            if ($line -match '^PS [A-Za-z]:\\') { break }
+            if ($line.Length -le $nameCol) { continue }
+            $endCol = if ($versionCol -gt $nameCol) { [Math]::Min($versionCol, $line.Length) } else { $line.Length }
+            $name = $line.Substring($nameCol, $endCol - $nameCol).Trim()
+            if ($name) { $names.Add($name) }
+        }
+    } else {
+        foreach ($line in $lines) {
+            $trimmed = $line.Trim()
+            if (-not $trimmed) { continue }
+            if ($trimmed -match '^PS [A-Za-z]:\\') { continue }
+            $names.Add($trimmed)
+        }
+    }
+    return @($names | Sort-Object -Unique)
+}
 
 # winget right-pads every column to the widest value it holds in that particular run, so
 # there's no fixed offset to hardcode - the header row's own character positions are the
@@ -2806,6 +2860,8 @@ function Complete-InstallQueueItem {
         $btnUninstallSelected.IsEnabled = $true
         $btnUpgradeAll.IsEnabled = $true
         $btnCheckInstalled.IsEnabled = $true
+        $btnExportInstalled.IsEnabled = $true
+        $btnCompareBaseline.IsEnabled = $true
         $btnStopInstall.Visibility = 'Collapsed'
     }
 }
@@ -2817,6 +2873,8 @@ function Start-NextInQueue {
         $btnUninstallSelected.IsEnabled = $true
         $btnUpgradeAll.IsEnabled = $true
         $btnCheckInstalled.IsEnabled = $true
+        $btnExportInstalled.IsEnabled = $true
+        $btnCompareBaseline.IsEnabled = $true
         $btnStopInstall.Visibility = 'Collapsed'
         $script:installProc = $null
         $script:currentQueueEntry = $null
@@ -2932,6 +2990,8 @@ function Start-AppQueue {
     $btnUninstallSelected.IsEnabled = $false
     $btnUpgradeAll.IsEnabled = $false
     $btnCheckInstalled.IsEnabled = $false
+    $btnExportInstalled.IsEnabled = $false
+    $btnCompareBaseline.IsEnabled = $false
     $btnStopInstall.Visibility = 'Visible'
     Start-NextInQueue
 }
@@ -2948,6 +3008,8 @@ function Start-InstalledCheck {
     $btnUninstallSelected.IsEnabled = $false
     $btnUpgradeAll.IsEnabled = $false
     $btnCheckInstalled.IsEnabled = $false
+    $btnExportInstalled.IsEnabled = $false
+    $btnCompareBaseline.IsEnabled = $false
     $btnStopInstall.Visibility = 'Visible'
     $script:installMode = 'check'
     $script:currentQueueEntry = $null
@@ -2970,6 +3032,62 @@ $btnUninstallSelected.Add_Click({
 })
 $btnCheckInstalled.Add_Click({ Start-InstalledCheck })
 
+$btnExportInstalled.Add_Click({
+    if ($script:installProc -and -not $script:installProc.HasExited) { return }
+    $script:installPendingAction = 'export'
+    Start-InstalledCheck
+})
+
+$btnCompareBaseline.Add_Click({
+    if ($script:installProc -and -not $script:installProc.HasExited) { return }
+    $dialog = New-Object Microsoft.Win32.OpenFileDialog
+    $dialog.Filter = 'App list (*.json;*.txt)|*.json;*.txt|All files (*.*)|*.*'
+    $dialog.InitialDirectory = [Environment]::GetFolderPath('Desktop')
+    if (-not $dialog.ShowDialog()) { return }
+    $rawText = $null
+    try {
+        $rawText = Get-Content -Path $dialog.FileName -Raw
+    } catch {
+        [System.Windows.MessageBox]::Show("Could not read that file: $($_.Exception.Message)", 'Gr3y Tools', 'OK', 'Error') | Out-Null
+        return
+    }
+
+    # Two input shapes: a Gr3y Tools export (JSON, has wingetIds) from a machine that ran
+    # this tool's own Export Installed Apps, or any plain-text program-name list (.txt) -
+    # the old machine's own installed-apps dump from an RMM tool, PowerShell remoting, or
+    # anything else, for the common case where this tool can't be run there at all (e.g.
+    # it's in active use by the person still on it). Both end up normalized to the same
+    # {hostname; exportedAt; wingetIds; installedProgramNames} shape the compare logic uses.
+    $baseline = $null
+    try {
+        $parsedJson = $rawText | ConvertFrom-Json -ErrorAction Stop
+        if ($parsedJson.installedProgramNames -or $parsedJson.wingetIds) {
+            $baseline = [PSCustomObject]@{
+                hostname = if ($parsedJson.hostname) { $parsedJson.hostname } else { Split-Path -Leaf $dialog.FileName }
+                exportedAt = if ($parsedJson.exportedAt) { $parsedJson.exportedAt } else { (Get-Item $dialog.FileName).LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss') }
+                wingetIds = @($parsedJson.wingetIds)
+                installedProgramNames = @($parsedJson.installedProgramNames)
+            }
+        }
+    } catch {}
+    if (-not $baseline) {
+        $names = ConvertFrom-AppListText -Text $rawText
+        if ($names.Count -eq 0) {
+            [System.Windows.MessageBox]::Show("Could not find any app names in that file. Expected either a Gr3y Tools export (JSON) or a plain-text list - one app name per line, or a pasted DisplayName/DisplayVersion table (e.g. from Get-ItemProperty on the Uninstall registry keys, run through an RMM tool).", 'Gr3y Tools', 'OK', 'Error') | Out-Null
+            return
+        }
+        $baseline = [PSCustomObject]@{
+            hostname = Split-Path -Leaf $dialog.FileName
+            exportedAt = (Get-Item $dialog.FileName).LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')
+            wingetIds = @()
+            installedProgramNames = $names
+        }
+    }
+
+    $script:installPendingAction = [PSCustomObject]@{ Action = 'compare'; Baseline = $baseline }
+    Start-InstalledCheck
+})
+
 $btnUpgradeAll.Add_Click({
     # Same double-launch hole as Start had - a fast double-click before the next timer
     # tick disables the button would otherwise orphan the first winget upgrade process.
@@ -2988,6 +3106,8 @@ $btnUpgradeAll.Add_Click({
     $btnUninstallSelected.IsEnabled = $false
     $btnUpgradeAll.IsEnabled = $false
     $btnCheckInstalled.IsEnabled = $false
+    $btnExportInstalled.IsEnabled = $false
+    $btnCompareBaseline.IsEnabled = $false
     $btnStopInstall.Visibility = 'Visible'
 })
 
@@ -2997,11 +3117,14 @@ $btnStopInstall.Add_Click({
     }
     $script:installQueue.Clear()
     $script:currentQueueEntry = $null
+    $script:installPendingAction = $null
     $installStatusText.Text = 'Stopped.'
     $btnInstallSelected.IsEnabled = $true
     $btnUninstallSelected.IsEnabled = $true
     $btnUpgradeAll.IsEnabled = $true
     $btnCheckInstalled.IsEnabled = $true
+    $btnExportInstalled.IsEnabled = $true
+    $btnCompareBaseline.IsEnabled = $true
     $btnStopInstall.Visibility = 'Collapsed'
 })
 
@@ -3114,29 +3237,157 @@ $timer.Add_Tick({
         } catch {}
         if (-not $running) {
             if ($script:installMode -eq 'check') {
-                # One consolidated `winget list` covering the whole catalog - colour/relabel
-                # only, never auto-tick a box, so a fresh laptop's Edge/OneDrive/PowerShell/
-                # Windows Terminal/VC++ redists/.NET runtimes don't end up pre-selected for
-                # Uninstall Selected.
                 $installedIds = Get-WingetListedIds -Path $script:installLogFile
-                $foundCount = 0
-                foreach ($entry in $script:appEntries) {
-                    if (-not $entry.WingetId) { continue }
-                    if ($installedIds.Contains($entry.WingetId)) {
-                        $entry.CheckBox.Foreground = $greenBrush
-                        $entry.CheckBox.Content = "$($entry.Name) (installed)"
-                        $foundCount++
-                    } else {
-                        $entry.CheckBox.ClearValue([System.Windows.Controls.Control]::ForegroundProperty)
-                        $entry.CheckBox.Content = $entry.Name
+
+                if ($script:installPendingAction -eq 'export') {
+                    $script:installPendingAction = $null
+                    $programNames = @(Get-UninstallEntries | Select-Object -ExpandProperty DisplayName -Unique | Sort-Object)
+                    $export = [PSCustomObject]@{
+                        hostname = $env:COMPUTERNAME
+                        exportedAt = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+                        wingetIds = @($installedIds)
+                        installedProgramNames = $programNames
                     }
+                    $saveDialog = New-Object Microsoft.Win32.SaveFileDialog
+                    $saveDialog.FileName = "installed-apps_$(Get-MachineTag).json"
+                    $saveDialog.InitialDirectory = [Environment]::GetFolderPath('Desktop')
+                    $saveDialog.Filter = 'JSON files (*.json)|*.json|All files (*.*)|*.*'
+                    if ($saveDialog.ShowDialog()) {
+                        try {
+                            ($export | ConvertTo-Json -Depth 4) | Set-Content -Path $saveDialog.FileName -Encoding UTF8
+                            $installStatusText.Text = "Exported $($export.wingetIds.Count) winget app(s) and $($programNames.Count) program name(s) to $($saveDialog.FileName)"
+                            [System.Windows.MessageBox]::Show("Saved to $($saveDialog.FileName)`r`n`r`nRun Compare Against Export on the new machine and point it at this file.", 'Gr3y Tools', 'OK', 'Information') | Out-Null
+                        } catch {
+                            [System.Windows.MessageBox]::Show("Could not save: $($_.Exception.Message)", 'Gr3y Tools', 'OK', 'Error') | Out-Null
+                        }
+                    } else {
+                        $installStatusText.Text = 'Export cancelled.'
+                    }
+                } elseif ($script:installPendingAction -and $script:installPendingAction.Action -eq 'compare') {
+                    $baseline = $script:installPendingAction.Baseline
+                    $script:installPendingAction = $null
+                    # Matching works by name (always available - a plain-text/RMM-pulled
+                    # list only ever has DisplayNames, never winget package IDs) OR'd with
+                    # winget ID matching when the baseline came from this tool's own Export
+                    # (more precise where it's available). Name matching is a substring
+                    # check: catalog names are short ("Firefox") and real product names are
+                    # longer ("Mozilla Firefox") - confirmed necessary and sufficient by a
+                    # dedicated test against the exact kind of DisplayName/DisplayVersion
+                    # dump an RMM tool's remote command output produces. Best-effort, not
+                    # guaranteed full recall - e.g. catalog name "Visual C++ 2015-2022
+                    # 64-bit" is genuinely not a substring of the real registered name
+                    # "Microsoft Visual C++ 2015-2022 Redistributable (x64)", so that one
+                    # would land in the manual-install list below despite having a real
+                    # catalog entry. A missed match only means one more line in that list,
+                    # never a wrong auto-check, so this tradeoff was kept deliberately
+                    # simple rather than chasing a token/synonym matcher for marginal gain.
+                    $currentProgramNames = @(Get-UninstallEntries | Select-Object -ExpandProperty DisplayName)
+                    $currentNameSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+                    foreach ($n in $currentProgramNames) { [void]$currentNameSet.Add($n) }
+
+                    $matchedCount = 0
+                    $matchedCatalogNames = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+                    foreach ($entry in $script:appEntries) {
+                        # Reset first - a second Compare run (a different export file, or a
+                        # re-run after installing some of the first batch) must not leave
+                        # last time's matches stuck in the Compare Results view.
+                        $entry.CompareMatch = $false
+                        $onBaseline = ($entry.WingetId -and ($baseline.wingetIds -contains $entry.WingetId)) -or
+                                      [bool]($baseline.installedProgramNames | Where-Object { $_ -and ($_ -like "*$($entry.Name)*") } | Select-Object -First 1)
+                        if (-not $onBaseline) { continue }
+                        $alreadyHere = ($entry.WingetId -and $installedIds.Contains($entry.WingetId)) -or
+                                       [bool]($currentProgramNames | Where-Object { $_ -and ($_ -like "*$($entry.Name)*") } | Select-Object -First 1)
+                        if ($alreadyHere) { continue }
+                        $entry.CheckBox.IsChecked = $true
+                        $entry.CheckBox.Foreground = $accentBrush
+                        $entry.CheckBox.Content = "$($entry.Name) (missing - on old machine)"
+                        $entry.CompareMatch = $true
+                        [void]$matchedCatalogNames.Add($entry.Name)
+                        $matchedCount++
+                    }
+                    # Apps present by name on the baseline machine with no catalog match at
+                    # all - nothing to auto-check, so just list them (matches the kind of
+                    # manual line-item the ticket's own instructions already call out, e.g.
+                    # a LOB app with no winget package).
+                    $unmatched = New-Object System.Collections.Generic.List[string]
+                    foreach ($name in @($baseline.installedProgramNames)) {
+                        if (-not $name) { continue }
+                        if ($currentNameSet.Contains($name)) { continue }
+                        # Catalog names are short ("Firefox") and registry DisplayNames are
+                        # the full product name ("Mozilla Firefox") - they're different
+                        # strings for the same app, so an exact-match check here would never
+                        # catch an app the catalog match above already checked (confirmed by
+                        # a failing test before this -like substring check was added: Firefox
+                        # was both auto-checked AND wrongly listed as needing a manual
+                        # install). A substring check is a reasonable match for this case.
+                        $alreadyHandled = $false
+                        foreach ($catalogName in $matchedCatalogNames) {
+                            if ($name -like "*$catalogName*") { $alreadyHandled = $true; break }
+                        }
+                        if ($alreadyHandled) { continue }
+                        $unmatched.Add($name)
+                    }
+                    $unmatched = @($unmatched | Sort-Object -Unique)
+
+                    # A dedicated filter instead of 'All' - the whole point raised against
+                    # the first version of this feature was that scrolling through all 77
+                    # catalog apps across categories to find ~5 highlighted ones wasn't
+                    # usable; this view shows only the matches, so picking which ones to
+                    # install means looking at a short list, not hunting for color-coding.
+                    # Only switch to it when there's something to show - an empty filtered
+                    # view reads as "this is broken," not "good news, nothing missing."
+                    $lines = New-Object System.Collections.Generic.List[string]
+                    $lines.Add("Compared against $($baseline.hostname) (exported $($baseline.exportedAt)).")
+                    if ($matchedCount -gt 0) {
+                        $catCompareResultsBtn.Visibility = 'Visible'
+                        $script:activeCategory = 'Compare Results'
+                        Update-AppVisibility
+                        $lines.Add("$matchedCount catalog app(s) checked below (installed there, missing here) - ready for Install Selected.")
+                    } else {
+                        $lines.Add('No catalog app was missing here that is installed on the old machine.')
+                        # Don't strand the view on a now-empty Compare Results filter from a
+                        # previous run.
+                        if ($script:activeCategory -eq 'Compare Results') {
+                            $script:activeCategory = 'Business Baseline'
+                            Update-AppVisibility
+                        }
+                    }
+                    $lines.Add('')
+                    if ($unmatched.Count -gt 0) {
+                        $lines.Add("$($unmatched.Count) more installed on the old machine with no catalog match - install these manually:")
+                        foreach ($n in $unmatched) { $lines.Add("  - $n") }
+                    } else {
+                        $lines.Add('Nothing else installed on the old machine was missing here.')
+                    }
+                    $installLogBox.Text = $lines -join "`r`n"
+                    $installStatusText.Text = "Done - $matchedCount app(s) checked, $($unmatched.Count) need a manual look (see log)"
+                } else {
+                    # One consolidated `winget list` covering the whole catalog - colour/relabel
+                    # only, never auto-tick a box, so a fresh laptop's Edge/OneDrive/PowerShell/
+                    # Windows Terminal/VC++ redists/.NET runtimes don't end up pre-selected for
+                    # Uninstall Selected.
+                    $foundCount = 0
+                    foreach ($entry in $script:appEntries) {
+                        if (-not $entry.WingetId) { continue }
+                        if ($installedIds.Contains($entry.WingetId)) {
+                            $entry.CheckBox.Foreground = $greenBrush
+                            $entry.CheckBox.Content = "$($entry.Name) (installed)"
+                            $foundCount++
+                        } else {
+                            $entry.CheckBox.ClearValue([System.Windows.Controls.Control]::ForegroundProperty)
+                            $entry.CheckBox.Content = $entry.Name
+                        }
+                    }
+                    $installStatusText.Text = "Done - $foundCount of $($script:appEntries.Count) already installed (colour-coded above - tick the ones you want and use Uninstall Selected to remove them)"
                 }
-                $installStatusText.Text = "Done - $foundCount of $($script:appEntries.Count) already installed (colour-coded above - tick the ones you want and use Uninstall Selected to remove them)"
+
                 $script:installProc = $null
                 $btnInstallSelected.IsEnabled = $true
                 $btnUninstallSelected.IsEnabled = $true
                 $btnUpgradeAll.IsEnabled = $true
                 $btnCheckInstalled.IsEnabled = $true
+                $btnExportInstalled.IsEnabled = $true
+                $btnCompareBaseline.IsEnabled = $true
                 $btnStopInstall.Visibility = 'Collapsed'
             } elseif ($script:installMode -eq 'upgrade') {
                 $tail = $null
@@ -3150,6 +3401,8 @@ $timer.Add_Tick({
                 $btnUninstallSelected.IsEnabled = $true
                 $btnUpgradeAll.IsEnabled = $true
                 $btnCheckInstalled.IsEnabled = $true
+                $btnExportInstalled.IsEnabled = $true
+                $btnCompareBaseline.IsEnabled = $true
                 $btnStopInstall.Visibility = 'Collapsed'
             } else {
                 # install / uninstall: queue-driven, one winget process (and log file) per
@@ -3219,7 +3472,7 @@ $timer.Add_Tick({
                 $wingetStatusText.Foreground = $greenBrush
                 $wingetStatusText.ClearValue([System.Windows.Controls.Control]::ToolTipProperty)
                 $btnInstallWinGet.Visibility = 'Collapsed'
-                foreach ($b in @($btnInstallSelected, $btnUninstallSelected, $btnUpgradeAll, $btnCheckInstalled)) {
+                foreach ($b in @($btnInstallSelected, $btnUninstallSelected, $btnUpgradeAll, $btnCheckInstalled, $btnExportInstalled, $btnCompareBaseline)) {
                     $b.IsEnabled = $true
                     $b.ClearValue([System.Windows.Controls.Control]::ToolTipProperty)
                 }
