@@ -81,6 +81,9 @@
     {"name": "HWiNFO", "category": "Utilities", "wingetId": "REALiX.HWiNFO", "url": "https://www.hwinfo.com/"},
     {"name": "CPU-Z", "category": "Utilities", "wingetId": "CPUID.CPU-Z", "url": "https://www.cpuid.com/softwares/cpu-z.html"},
 
-    {"name": "FreeFileSync", "category": "Non-Silent Installs", "url": "https://freefilesync.org/", "downloadUrl": "https://freefilesync.org/download/FreeFileSync_14.12_Windows_Setup.exe", "dynamicDownloadPage": "https://freefilesync.org/download.php"}
+    {"name": "FreeFileSync", "category": "Non-Silent Installs", "url": "https://freefilesync.org/", "downloadUrl": "https://freefilesync.org/download/FreeFileSync_14.12_Windows_Setup.exe", "dynamicDownloadPage": "https://freefilesync.org/download.php"},
+
+    {"name": "Mimecast for Outlook", "category": "Manual Install Only", "url": "https://mimecastsupport.zendesk.com/hc/en-us/articles/33859996801043-Mimecast-for-Outlook-Installing-Standalone", "msp": false},
+    {"name": "DataLink Viewer", "category": "Manual Install Only", "url": "https://milletsoftware.com/DataLink_Viewer.htm", "msp": false}
   ]
 }

@@ -268,6 +268,8 @@ Customize Preferences panel writes back the Off column exactly.
 | LibreOffice | Documents | `TheDocumentFoundation.LibreOffice` |  |
 | PDF24 Creator | Documents | `geeksoftwareGmbH.PDF24Creator` |  |
 | SumatraPDF | Documents | `SumatraPDF.SumatraPDF` |  |
+| DataLink Viewer | Manual Install Only | *(manual install only - no automated download)* |  |
+| Mimecast for Outlook | Manual Install Only | *(manual install only - no automated download)* |  |
 | .NET Desktop Runtime 10 | Microsoft Tools | `Microsoft.DotNet.DesktopRuntime.10` |  |
 | .NET Desktop Runtime 8 | Microsoft Tools | `Microsoft.DotNet.DesktopRuntime.8` |  |
 | .NET Desktop Runtime 9 | Microsoft Tools | `Microsoft.DotNet.DesktopRuntime.9` |  |

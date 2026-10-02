@@ -1064,6 +1064,8 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
             <Button Name="CatCommunications" Content="Communications"/>
             <Button Name="CatUtilities" Content="Utilities"/>
             <Button Name="CatNonSilent" Content="Non-Silent Installs"/>
+            <Button Name="CatManualOnly" Content="Manual Install Only"
+                    ToolTip="No automated installer exists for these (tenant login, license key, or vendor email required) - the (?) link opens the real product/download page so you can grab it yourself."/>
             <Button Name="CatCompareResults" Content="Compare Results" BorderBrush="{StaticResource AccentBrush}" Visibility="Collapsed"
                     ToolTip="Shows only the apps Compare Against Export found missing on this machine - pick which ones to install, then Install Selected."/>
             <Border Width="12"/>
@@ -1585,6 +1587,7 @@ $catDocumentsBtn = $window.FindName('CatDocuments')
 $catCommunicationsBtn = $window.FindName('CatCommunications')
 $catUtilitiesBtn = $window.FindName('CatUtilities')
 $catNonSilentBtn = $window.FindName('CatNonSilent')
+$catManualOnlyBtn = $window.FindName('CatManualOnly')
 $catCompareResultsBtn = $window.FindName('CatCompareResults')
 $btnSelectAll = $window.FindName('BtnSelectAll')
 $btnClearSelection = $window.FindName('BtnClearSelection')
@@ -2475,7 +2478,7 @@ foreach ($cat in $categories) {
         # Msp defaults to true (business-appropriate) when the catalog entry omits the
         # field - only the handful of entries explicitly flagged "msp": false (Tor
         # Browser, qBittorrent, OpenRGB and similar) are excluded from Business Baseline.
-        $entry = [PSCustomObject]@{ CheckBox = $cb; Row = $row; Name = $app.name; Category = $cat.Name; WingetId = $app.wingetId; DownloadUrl = $app.downloadUrl; DynamicDownloadPage = $app.dynamicDownloadPage; SacRisk = [bool]$app.sacRisk; Msp = ($app.msp -ne $false); CompareMatch = $false }
+        $entry = [PSCustomObject]@{ CheckBox = $cb; Row = $row; Name = $app.name; Category = $cat.Name; WingetId = $app.wingetId; DownloadUrl = $app.downloadUrl; DynamicDownloadPage = $app.dynamicDownloadPage; Url = $app.url; SacRisk = [bool]$app.sacRisk; Msp = ($app.msp -ne $false); CompareMatch = $false }
         $script:appEntries.Add($entry)
         # Checked/Unchecked (not Click) since they fire off IsChecked itself changing,
         # regardless of interaction method - Click alone was observed to not reliably
@@ -2523,6 +2526,7 @@ $catDocumentsBtn.Add_Click({ $script:activeCategory = 'Documents'; Update-AppVis
 $catCommunicationsBtn.Add_Click({ $script:activeCategory = 'Communications'; Update-AppVisibility })
 $catUtilitiesBtn.Add_Click({ $script:activeCategory = 'Utilities'; Update-AppVisibility })
 $catNonSilentBtn.Add_Click({ $script:activeCategory = 'Non-Silent Installs'; Update-AppVisibility })
+$catManualOnlyBtn.Add_Click({ $script:activeCategory = 'Manual Install Only'; Update-AppVisibility })
 $catCompareResultsBtn.Add_Click({ $script:activeCategory = 'Compare Results'; Update-AppVisibility })
 
 # Apply the Business Baseline default filter now - every row defaults to Visible when
@@ -2941,6 +2945,20 @@ function Start-NextInQueue {
         'uninstall' { 'Uninstalling' }
     }
     $installStatusText.Text = "$actionWord $($entry.Name)... ($($script:installDone + 1)/$($script:installTotal))"
+
+    # Manual Install Only entries (no winget package, no direct-download URL either -
+    # tenant login, license key, or a vendor email is required) have nothing this tool
+    # can run. Point at the real product/download page instead of falling through to the
+    # winget branch below with an empty --id, which would just log a confusing failure.
+    if (-not $entry.WingetId -and -not $entry.DownloadUrl) {
+        $installLogBox.AppendText("=== $actionWord`: $($entry.Name) (manual install only) ===`r`n")
+        $linkText = if ($entry.Url) { $entry.Url } else { 'no link available - check the vendor directly' }
+        $installLogBox.AppendText("No automated installer available for $($entry.Name). Download it yourself from: $linkText`r`n")
+        $installLogBox.ScrollToEnd()
+        $script:installDone++
+        Complete-InstallQueueItem
+        return
+    }
 
     # Direct-download entries (no winget package exists) skip winget entirely - they
     # download their own installer and launch it visibly (not hidden, not waited on),

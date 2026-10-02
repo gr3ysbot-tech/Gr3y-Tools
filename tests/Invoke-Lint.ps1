@@ -86,11 +86,21 @@ if (Test-Path $appsCatalogPath) {
     } else {
         Write-LintOk 'apps-catalog.json has no duplicate wingetId values'
     }
-    $missingIdentifier = $catalog.apps | Where-Object { -not $_.wingetId -and -not $_.downloadUrl }
+    # "Manual Install Only" is the one category allowed to have neither - these are apps
+    # with no public silent/direct installer at all (tenant login, license key, or a
+    # vendor email required), where a verified product/download page url is the best
+    # this tool can offer. Every other category still needs a real wingetId or downloadUrl.
+    $missingIdentifier = $catalog.apps | Where-Object { -not $_.wingetId -and -not $_.downloadUrl -and $_.category -ne 'Manual Install Only' }
     if ($missingIdentifier) {
         Write-LintError "apps-catalog.json has entr(y/ies) with neither wingetId nor downloadUrl: $($missingIdentifier.name -join ', ')"
     } else {
-        Write-LintOk 'every apps-catalog.json entry has a wingetId or a downloadUrl'
+        Write-LintOk 'every apps-catalog.json entry has a wingetId or a downloadUrl (or is Manual Install Only with a url)'
+    }
+    $manualOnlyMissingUrl = $catalog.apps | Where-Object { $_.category -eq 'Manual Install Only' -and -not $_.url }
+    if ($manualOnlyMissingUrl) {
+        Write-LintError "apps-catalog.json has Manual Install Only entr(y/ies) with no url: $($manualOnlyMissingUrl.name -join ', ')"
+    } else {
+        Write-LintOk 'every Manual Install Only entry has a url'
     }
 }
 

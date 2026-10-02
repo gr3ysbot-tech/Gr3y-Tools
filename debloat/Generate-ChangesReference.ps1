@@ -116,7 +116,9 @@ $lines.Add('')
 $lines.Add('| App | Category | Winget ID | SAC Risk |')
 $lines.Add('| --- | --- | --- | --- |')
 foreach ($app in ($appsCatalog.apps | Sort-Object category, name)) {
-    $id = if ($app.wingetId) { "``$($app.wingetId)``" } else { '*(direct download, no winget package)*' }
+    $id = if ($app.wingetId) { "``$($app.wingetId)``" }
+          elseif ($app.downloadUrl) { '*(direct download, no winget package)*' }
+          else { '*(manual install only - no automated download)*' }
     $risk = if ($app.sacRisk) { 'Yes' } else { '' }
     $lines.Add("| $($app.name) | $($app.category) | $id | $risk |")
 }
