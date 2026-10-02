@@ -753,6 +753,20 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
       <Setter Property="FontSize" Value="12"/>
       <Setter Property="Padding" Value="8,6"/>
     </Style>
+    <Style x:Key="VerticalSplitter" TargetType="GridSplitter">
+      <Setter Property="Width" Value="6"/>
+      <Setter Property="HorizontalAlignment" Value="Stretch"/>
+      <Setter Property="VerticalAlignment" Value="Stretch"/>
+      <Setter Property="Background" Value="{StaticResource ControlBorderBrush}"/>
+      <Setter Property="Cursor" Value="SizeWE"/>
+      <Setter Property="ResizeBehavior" Value="PreviousAndNext"/>
+      <Setter Property="ToolTip" Value="Drag to resize"/>
+      <Style.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+          <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+        </Trigger>
+      </Style.Triggers>
+    </Style>
 
     <Style TargetType="ScrollBar">
       <Setter Property="Background" Value="{StaticResource BgBrush}"/>
@@ -1078,15 +1092,17 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
           </StackPanel>
           <Grid>
             <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="*"/>
-              <ColumnDefinition Width="300"/>
+              <ColumnDefinition Width="*" MinWidth="300"/>
+              <ColumnDefinition Width="6"/>
+              <ColumnDefinition Width="340" MinWidth="220"/>
             </Grid.ColumnDefinitions>
             <Border Grid.Column="0" Style="{StaticResource Panel}">
               <ScrollViewer VerticalScrollBarVisibility="Auto">
                 <StackPanel Name="InstallAppsPanel"/>
               </ScrollViewer>
             </Border>
-            <Border Grid.Column="1" Margin="10,0,0,0" Style="{StaticResource Panel}" Padding="0">
+            <GridSplitter Grid.Column="1" Style="{StaticResource VerticalSplitter}"/>
+            <Border Grid.Column="2" Margin="4,0,0,0" Style="{StaticResource Panel}" Padding="0">
               <TextBox Name="InstallLogBox" Style="{StaticResource LogBox}" BorderThickness="0" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontSize="11"/>
             </Border>
           </Grid>
