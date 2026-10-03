@@ -1162,10 +1162,8 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
             <Border Width="14"/>
             <Button Name="BtnExportInstalled" Content="Export Installed Apps..." BorderBrush="{StaticResource AccentBrush}"
                     ToolTip="Run this on the OLD machine, if you can - saves a small JSON file listing everything winget sees as installed, plus every other installed program's name. Not required: Compare Against List also accepts a plain-text app-name list (e.g. copy-pasted Get-ItemProperty/RMM output), for when the old machine is still in use and this tool can't run there at all."/>
-            <Button Name="BtnNoGuiExport" Content="No GUI access?" BorderBrush="{StaticResource AccentBrush}"
-                    ToolTip="Get a command-line-only version of Export Installed Apps, for when you can only reach the old machine through an RMM run-script action or PowerShell remoting - no way to launch this GUI there at all."/>
             <Button Name="BtnCompareBaseline" Content="Compare Against List..." BorderBrush="{StaticResource AccentBrush}"
-                    ToolTip="Run this on the NEW machine. Loads either an Export Installed Apps JSON file, or a plain .txt file - one app name per line, or a pasted DisplayName/DisplayVersion table (e.g. Get-ItemProperty on the Uninstall registry keys, run remotely through an RMM tool and saved from the console output). Scans this machine and checks the box for every catalog app that's on the old list but missing here, in a new Compare Results filter - pick which ones you want, then Install Selected. Anything missing with no catalog match is listed below instead, for manual install."/>
+                    ToolTip="Run this on the NEW machine. Get the old machine's list here by pairing code (run one command on the old machine, its list arrives by itself), or by loading an Export Installed Apps JSON file or a plain-text list. The dialog also has the command-line export commands for an old machine with no GUI. Then checks the box for every catalog app that's on the old list but missing here, in a Compare Results filter - pick which ones you want, then Install Selected. Apps already installed here are listed as such, and anything with no catalog match is listed for manual install."/>
             <Button Name="BtnStopInstall" Content="Stop" Visibility="Collapsed"/>
             <TextBlock Name="InstallStatusText" Text="Idle" VerticalAlignment="Center" Margin="12,0,0,0"/>
           </StackPanel>
@@ -1676,7 +1674,6 @@ $btnSelectAll = $window.FindName('BtnSelectAll')
 $btnClearSelection = $window.FindName('BtnClearSelection')
 $btnCheckInstalled = $window.FindName('BtnCheckInstalled')
 $btnExportInstalled = $window.FindName('BtnExportInstalled')
-$btnNoGuiExport = $window.FindName('BtnNoGuiExport')
 $btnCompareBaseline = $window.FindName('BtnCompareBaseline')
 $selectedCountText = $window.FindName('SelectedCountText')
 $btnInstallSelected = $window.FindName('BtnInstallSelected')
@@ -3235,15 +3232,31 @@ $btnExportInstalled.Add_Click({
     Start-InstalledCheck
 })
 
-# Themed as its own small XAML tree (not sharable with the main window's resources,
-# which live in that separate parsed document) rather than a plain System.Windows.MessageBox
-# - a MessageBox can't hold a selectable/copyable command box, and its default white
-# Win32 chrome looks broken sitting on top of this app's dark theme.
-function Show-NoGuiExportDialog {
+# Matches Export-InstalledApps.ps1's own $RelayUrl default - keep both in sync.
+$script:ExportRelayUrl = 'https://gr3y-export-relay.gr3y-b8f.workers.dev'
+
+function New-PairingCode {
+    # Unambiguous alphabet (no 0/O, 1/I/L) - meant to be read aloud over a phone or typed
+    # into an RMM console without confusion. RandomNumberGenerator over Get-Random purely
+    # because it's already on hand and equally simple to use here, not for any real
+    # security need - a short-lived, one-time-claim code has nothing to brute-force.
+    $alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $bytes = New-Object byte[] 6
+    $rng.GetBytes($bytes)
+    -join ($bytes | ForEach-Object { $alphabet[$_ % $alphabet.Length] })
+}
+
+function Show-CompareSourceChooser {
+    # One dialog for the whole "get the old machine's list here" question - this used to be
+    # split across a separate "No GUI access?" button/dialog (the command-line export
+    # commands) and this chooser (file vs pairing code), which read as two unrelated
+    # features when it's really one flow. Themed as its own XAML tree, same as the other
+    # dialogs, since it can't share the main window's resources.
     $dialogXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="No GUI Access - Export Installed Apps" Width="640" Height="460" MinWidth="500" MinHeight="380"
+        Title="Compare Against an Old Machine" Width="660" Height="600" MinWidth="520" MinHeight="460"
         WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
         Background="#232629" FontFamily="Segoe UI" FontSize="13">
   <Window.Resources>
@@ -3254,10 +3267,10 @@ function Show-NoGuiExportDialog {
     <SolidColorBrush x:Key="TextBrush" Color="#F7F7F7"/>
     <SolidColorBrush x:Key="MutedBrush" Color="#9AA3AB"/>
     <SolidColorBrush x:Key="HeaderBrush" Color="#5BDCFF"/>
+    <SolidColorBrush x:Key="AccentBrush" Color="#5BDCFF"/>
     <SolidColorBrush x:Key="LogBgBrush" Color="#1B1E21"/>
     <SolidColorBrush x:Key="PanelBorderBrush" Color="#2F373D"/>
     <SolidColorBrush x:Key="NavSelectedBrush" Color="#5E81AC"/>
-
     <Style TargetType="TextBlock">
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
     </Style>
@@ -3307,34 +3320,52 @@ function Show-NoGuiExportDialog {
   <ScrollViewer VerticalScrollBarVisibility="Auto">
   <Border Padding="20">
     <StackPanel>
-      <TextBlock Text="No GUI access on the old machine?" FontFamily="Consolas" FontSize="16" Foreground="{StaticResource HeaderBrush}" Margin="0,0,0,10"/>
-      <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,16"
-                 Text="Run this on the OLD machine through whatever command-line access you have - RMM run-script, PowerShell remoting, winrs, whatever - when you can't launch this GUI there at all. It prints the same export Export Installed Apps... produces straight to the console."/>
+      <TextBlock Text="Compare Against an Old Machine" FontFamily="Consolas" FontSize="16" Foreground="{StaticResource HeaderBrush}" Margin="0,0,0,10"/>
+      <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,14"
+                 Text="Checks off every catalog app that's installed on the old machine but missing here. Pick how the old machine's list gets here:"/>
 
-      <TextBlock Text="Run on the old machine:" FontWeight="Bold" Margin="0,0,0,4"/>
-      <Grid Margin="0,0,0,16">
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="Auto"/>
-        </Grid.ColumnDefinitions>
-        <TextBox Name="CmdPrint" Grid.Column="0" MinHeight="32" VerticalContentAlignment="Center"/>
-        <Button Name="BtnCopyPrint" Grid.Column="1" Content="Copy" Width="70" Height="32" Margin="8,0,0,0"/>
-      </Grid>
+      <Button Name="BtnChoosePair" HorizontalAlignment="Stretch" Margin="0,0,0,8" BorderBrush="{StaticResource AccentBrush}">
+        <StackPanel Margin="0,4">
+          <TextBlock Text="Generate a Pairing Code..." FontWeight="Bold" HorizontalAlignment="Center"/>
+          <TextBlock Text="Easiest - run one command on the old machine and its list arrives here by itself. No file." Foreground="{StaticResource MutedBrush}" FontSize="12" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+        </StackPanel>
+      </Button>
+      <Button Name="BtnChooseFile" HorizontalAlignment="Stretch" Margin="0,0,0,18">
+        <StackPanel Margin="0,4">
+          <TextBlock Text="Load a File or Pasted List..." FontWeight="Bold" HorizontalAlignment="Center"/>
+          <TextBlock Text="An Export Installed Apps file, or a plain-text list (one app name per line, or a pasted DisplayName/DisplayVersion table)." Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap" TextAlignment="Center" Margin="0,2,0,0"/>
+        </StackPanel>
+      </Button>
 
-      <TextBlock Text="Or save straight to a file on that machine instead:" FontWeight="Bold" Margin="0,0,0,4"/>
-      <Grid>
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="Auto"/>
-        </Grid.ColumnDefinitions>
-        <TextBox Name="CmdFile" Grid.Column="0" MinHeight="32" VerticalContentAlignment="Center" TextWrapping="NoWrap" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Auto"/>
-        <Button Name="BtnCopyFile" Grid.Column="1" Content="Copy" Width="70" Height="32" Margin="8,0,0,0" VerticalAlignment="Top"/>
-      </Grid>
+      <Border BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,1,0,0" Padding="0,14,0,0">
+        <StackPanel>
+          <TextBlock Text="Old machine has no GUI to run this on?" FontWeight="Bold" Margin="0,0,0,4"/>
+          <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,10"
+                     Text="Make the file from its command line instead - RMM run-script, PowerShell remoting, winrs, anything that can run a PowerShell command. Then use Load a File above."/>
 
-      <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,16,0,16"
-                 Text="Either way, the result is the same JSON shape Compare Against List... already reads - once you have the file (or saved console output) on the new machine, point Compare Against List... at it like normal."/>
+          <TextBlock Text="Print the list to the console (copy the output into a .json file):" Margin="0,0,0,4"/>
+          <Grid Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBox Name="CmdPrint" Grid.Column="0" MinHeight="32" VerticalContentAlignment="Center" TextWrapping="NoWrap" HorizontalScrollBarVisibility="Auto"/>
+            <Button Name="BtnCopyPrint" Grid.Column="1" Content="Copy" Width="70" Height="32" Margin="8,0,0,0"/>
+          </Grid>
 
-      <Button Name="BtnDialogClose" Content="Close" HorizontalAlignment="Right" Width="90"/>
+          <TextBlock Text="Or save it straight to a file on that machine:" Margin="0,0,0,4"/>
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBox Name="CmdFile" Grid.Column="0" MinHeight="32" VerticalContentAlignment="Center" TextWrapping="NoWrap" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Auto"/>
+            <Button Name="BtnCopyFile" Grid.Column="1" Content="Copy" Width="70" Height="32" Margin="8,0,0,0" VerticalAlignment="Top"/>
+          </Grid>
+        </StackPanel>
+      </Border>
+
+      <Button Name="BtnChooseCancel" Content="Cancel" HorizontalAlignment="Right" Width="90" Margin="0,18,0,0"/>
     </StackPanel>
   </Border>
   </ScrollViewer>
@@ -3344,11 +3375,13 @@ function Show-NoGuiExportDialog {
     $dialog = [Windows.Markup.XamlReader]::Load($reader)
     $dialog.Owner = $window
 
+    $btnChooseFile = $dialog.FindName('BtnChooseFile')
+    $btnChoosePair = $dialog.FindName('BtnChoosePair')
+    $btnChooseCancel = $dialog.FindName('BtnChooseCancel')
     $cmdPrint = $dialog.FindName('CmdPrint')
     $cmdFile = $dialog.FindName('CmdFile')
     $btnCopyPrint = $dialog.FindName('BtnCopyPrint')
     $btnCopyFile = $dialog.FindName('BtnCopyFile')
-    $btnDialogClose = $dialog.FindName('BtnDialogClose')
 
     $cmdPrint.Text = 'irm get.gr3y.io/debloat-export | iex'
     # One line, `;`-separated, not two lines joined by a newline - a lot of RMM "run
@@ -3374,91 +3407,6 @@ function Show-NoGuiExportDialog {
     }
     $btnCopyPrint.Add_Click({ & $makeCopyHandler $cmdPrint $btnCopyPrint }.GetNewClosure())
     $btnCopyFile.Add_Click({ & $makeCopyHandler $cmdFile $btnCopyFile }.GetNewClosure())
-    $btnDialogClose.Add_Click({ $dialog.Close() }.GetNewClosure())
-
-    $dialog.ShowDialog() | Out-Null
-}
-
-$btnNoGuiExport.Add_Click({ Show-NoGuiExportDialog })
-
-# Matches Export-InstalledApps.ps1's own $RelayUrl default - keep both in sync.
-$script:ExportRelayUrl = 'https://gr3y-export-relay.gr3y-b8f.workers.dev'
-
-function New-PairingCode {
-    # Unambiguous alphabet (no 0/O, 1/I/L) - meant to be read aloud over a phone or typed
-    # into an RMM console without confusion. RandomNumberGenerator over Get-Random purely
-    # because it's already on hand and equally simple to use here, not for any real
-    # security need - a short-lived, one-time-claim code has nothing to brute-force.
-    $alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
-    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    $bytes = New-Object byte[] 6
-    $rng.GetBytes($bytes)
-    -join ($bytes | ForEach-Object { $alphabet[$_ % $alphabet.Length] })
-}
-
-function Show-CompareSourceChooser {
-    $dialogXaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Compare Against..." Width="460" SizeToContent="Height" MinWidth="380"
-        WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
-        Background="#232629" FontFamily="Segoe UI" FontSize="13">
-  <Window.Resources>
-    <SolidColorBrush x:Key="BgBrush" Color="#232629"/>
-    <SolidColorBrush x:Key="ButtonBrush" Color="#1E3747"/>
-    <SolidColorBrush x:Key="ButtonHoverBrush" Color="#2A4C69"/>
-    <SolidColorBrush x:Key="ControlBorderBrush" Color="#707070"/>
-    <SolidColorBrush x:Key="TextBrush" Color="#F7F7F7"/>
-    <SolidColorBrush x:Key="MutedBrush" Color="#9AA3AB"/>
-    <SolidColorBrush x:Key="HeaderBrush" Color="#5BDCFF"/>
-    <SolidColorBrush x:Key="AccentBrush" Color="#5BDCFF"/>
-    <Style TargetType="TextBlock">
-      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-    </Style>
-    <Style TargetType="Button">
-      <Setter Property="Background" Value="{StaticResource ButtonBrush}"/>
-      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-      <Setter Property="BorderBrush" Value="{StaticResource ControlBorderBrush}"/>
-      <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Padding" Value="10,4"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource ButtonHoverBrush}"/>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-  </Window.Resources>
-  <Border Padding="20">
-    <StackPanel>
-      <TextBlock Text="Compare Against..." FontFamily="Consolas" FontSize="16" Foreground="{StaticResource HeaderBrush}" Margin="0,0,0,10"/>
-      <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,16"
-                 Text="Where's the old machine's installed-apps list coming from?"/>
-      <Button Name="BtnChooseFile" Content="Load a File or Pasted List..." HorizontalAlignment="Stretch" Height="40" Margin="0,0,0,8"
-              ToolTip="A Gr3y Tools export JSON file, or a plain-text/.txt list (one app name per line, or a pasted DisplayName/DisplayVersion table)."/>
-      <Button Name="BtnChoosePair" Content="Generate a Pairing Code..." HorizontalAlignment="Stretch" Height="40" BorderBrush="{StaticResource AccentBrush}"
-              ToolTip="Shows a one-time code - run Export-InstalledApps.ps1 -Code on the old machine and it's sent straight here, no file needed. Lost if this dialog isn't open to receive it."/>
-      <Button Name="BtnChooseCancel" Content="Cancel" HorizontalAlignment="Right" Width="90" Margin="0,16,0,0"/>
-    </StackPanel>
-  </Border>
-</Window>
-'@
-    $reader = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($dialogXaml))
-    $dialog = [Windows.Markup.XamlReader]::Load($reader)
-    $dialog.Owner = $window
-
-    $btnChooseFile = $dialog.FindName('BtnChooseFile')
-    $btnChoosePair = $dialog.FindName('BtnChoosePair')
-    $btnChooseCancel = $dialog.FindName('BtnChooseCancel')
 
     $resultHolder = [PSCustomObject]@{ Value = $null }
     $btnChooseFile.Add_Click({ $resultHolder.Value = 'file'; $dialog.Close() }.GetNewClosure())
