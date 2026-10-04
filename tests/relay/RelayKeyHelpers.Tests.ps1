@@ -175,6 +175,25 @@ Describe 'Relay key helpers' {
             (Get-GuestRowInfo -Rec ([pscustomobject]@{ enabled = $true; expires = $null; expired = $false })).NeedsExpiry | Should -BeFalse
         }
 
+        It 'treats a code of 8 or more characters with a usable time as lapsed, even when this clock is behind the relay''s' {
+            # The relay refuses only SHORT codes for a far-away expiry, so for a longer code expired + a time
+            # that looks like the future can only be a PC clock that is behind: it has lapsed.
+            $rec = [pscustomobject]@{ key = 'ABCD-EFGH-JKMN'; enabled = $true; expires = $script:nowMs + 3600000; expired = $true }
+            (Get-GuestRowInfo -Rec $rec).NeedsExpiry | Should -BeFalse
+            # The same record under a short key does need an expiry.
+            $short = [pscustomobject]@{ key = 'HAND-6'; enabled = $true; expires = $script:nowMs + 3600000 * 24 * 30; expired = $true }
+            (Get-GuestRowInfo -Rec $short).NeedsExpiry | Should -BeTrue
+            # ... and a longer code with NO usable time still does.
+            (Get-GuestRowInfo -Rec ([pscustomobject]@{ key = 'ABCD-EFGH-JKMN'; enabled = $true; expires = $null; expired = $true })).NeedsExpiry | Should -BeTrue
+        }
+
+        It 'says Needs expiry for a refused record whose expiry cannot be shown, but Invalid for one that is merely odd' {
+            $huge = Get-GuestRowInfo -Rec ([pscustomobject]@{ key = 'HUGE-7'; enabled = $true; expires = 9000000000000000; expired = $true })
+            $huge.Expires | Should -Be 'Needs expiry'
+            $huge.NeedsExpiry | Should -BeTrue
+            (Get-GuestRowInfo -Rec ([pscustomobject]@{ key = 'HUGE-LONG-1'; enabled = $true; expires = 9000000000000000; expired = $false })).Expires | Should -Be 'Invalid'
+        }
+
         It 'copes with an absurd expiry value' {
             $info = Get-GuestRowInfo -Rec ([pscustomobject]@{ enabled = $true; expires = 99999999999999999; expired = $false })
             $info.Expires | Should -Be 'Invalid'
