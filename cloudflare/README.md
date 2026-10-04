@@ -56,6 +56,20 @@ Worker. A new GUI against the old Worker degrades cleanly (it detects the old Wo
 so); the old GUI against the new Worker would just sit waiting. See the project handoff for
 the full rollout.
 
+**Checking which Worker is live (no key needed):** `curl -sI https://<your-worker>/admin/keys`
+answers `401` on both gated generations, but only this one adds the header
+`X-Relay-Features: expiry,custom-codes,rename,brake`.
+
+**Moving from the gated Worker that has no expiry to this one:** nothing to configure - no new
+secret or binding. Existing random guest codes keep working and never expire until you give
+them an expiry. One thing to check afterwards: a guest code you added by hand in the KV
+dashboard that is **under 8 characters** (the old instructions allowed 6-7) is refused from now
+on unless it carries an `expires` within a day; the Manage list shows it as Expired - fix it
+with **Edit Code...** (give it an expiry) or replace it with a code of 8 or more characters.
+A new GUI against the older Worker makes **New Code** say the relay is too old and creates
+nothing (it removes the random code the older Worker made); rolling the Worker back re-enables
+expired and short codes, because the older code ignores `expires`.
+
 **Rollback:** Worker page -> **Deployments** -> three-dot menu on a previous version ->
 **Rollback** (the last 100 versions are available). A rollback can be refused if a binding was
 added or changed between versions - adding the `ADMIN_KEY` secret / KV binding may block a
@@ -68,7 +82,7 @@ Pairing:
 
 | Route | Header | Result |
 | --- | --- | --- |
-| `POST /open?code=XXXXXX` | `X-Access-Key`: admin or guest code | `200 {"session","label"}` and holds the code open 10 min; `401` code unknown/off; `409` code already open |
+| `POST /open?code=XXXXXX` | `X-Access-Key`: admin or guest code | `200 {"session","label"}` and holds the code open 10 min; `401` code unknown, switched off or expired; `409` code already open; `429` too many refused codes from this connection (see *Wrong-code brake*; the admin code is never blocked) |
 | `POST /submit?code=XXXXXX` | none (the old machine needs no key) | `200` stored; `404` nothing is waiting for that code; `409` already sent; `413` body over 1 MB; `400` body missing |
 | `GET /poll?code=XXXXXX` | `X-Session` from `/open` | `200` the export (once, then deleted); `404` nothing yet; `401` wrong/missing session once an export exists |
 | `POST /close?code=XXXXXX` | `X-Session` | drops the slot and export (the GUI calls it on Cancel/close). Always `200`. |
@@ -78,19 +92,66 @@ Admin (header `X-Access-Key` = the `ADMIN_KEY` secret):
 
 | Route | Result |
 | --- | --- |
-| `GET /admin/keys` | list guest codes as JSON `[{key,label,enabled,created}]` |
-| `POST /admin/keys?label=Name` | create a guest code, returns it as `XXXX-XXXX-XXXX` |
+| `GET /admin/keys` | list guest codes as JSON `[{key,custom,label,enabled,created,expires,expired}]` (`expires` is epoch milliseconds or `null`; `expired` is decided on the server's clock) |
+| `POST /admin/keys?label=Name[&hours=N][&code=TEXT]` | create a guest code. Without `code` a random one is made, shown as `XXXX-XXXX-XXXX`. `code=TEXT` picks it yourself: 4-32 letters or digits, any case, spaces and dashes ignored. `hours=N` makes it expire N hours from now (0.02 to 8760; absent, `0` or `never` = no expiry). `409` if the code is taken |
+| `POST /admin/keys/<CODE>/expiry?hours=N` | set a new expiry, counted from now (`0` / `never` removes it; `hours` is required) |
+| `POST /admin/keys/<CODE>/rename[?to=TEXT][&hours=N]` | change the code on the fly: the same guest (label, on/off, created) under a new code, and the old code stops working. No `to` = a random new code; no `hours` = keep the current expiry. `503` with "BOTH work" means the new code was saved but the old one could not be removed - delete the old one |
 | `POST /admin/keys/<CODE>/disable` or `/enable` | switch a guest code off / on |
 | `DELETE /admin/keys/<CODE>` | delete a guest code for good |
 
 Admin routes return `503` when `ADMIN_KEY` is unset or shorter than 16 characters, and `401`
 when a key is supplied but wrong. A hand-added guest key (created directly in the KV dashboard)
-must be stored under `guest:<CODE>` where `<CODE>` is upper-case letters and digits, 6-32
-characters, with a value like `{"label":"Name","enabled":true}`.
+must be stored under `guest:<CODE>` where `<CODE>` is upper-case letters and digits, 4-32
+characters, with a value like `{"label":"Name","enabled":true}`. A code under 8 characters must
+also carry `"expires"` (epoch milliseconds) at most a day ahead, or the relay refuses it and the
+list shows it as Expired (see *Short codes* below). A guest code cannot be the same as the admin
+code - the relay refuses to create or rename one to it.
 
 The app manages guest codes for you: Compare Against List... -> **Manage Access Codes...**
-(create, copy, switch off/on, delete). You only touch the dashboard for the one-time setup
-and the `ADMIN_KEY` secret.
+(create, copy, edit, switch off/on, delete). You only touch the dashboard for the one-time
+setup and the `ADMIN_KEY` secret.
+
+**Expiry and codes you choose.** A guest code can expire on its own: pick how long when you
+create it, or change it later with **Edit Code...** (which can also change the code text, so a
+throwaway code like `9989` can be rotated every day). The relay refuses an expired code exactly
+like a switched-off one, but keeps it listed as *Expired* for a week so you can extend or delete
+it, then Workers KV removes it. Codes that existed before this feature never expire until you
+give them an expiry.
+
+**Short codes must be short-lived.** A code under 8 characters can be guessed (a 4-digit code has
+10,000 possibilities and the relay's address is public), so the relay only accepts one with an
+expiry of at most 24 hours. Use 8 or more characters for anything longer-lived. The two numbers
+are `WEAK_CODE_LENGTH` and `WEAK_CODE_MAX_HOURS` at the top of the Worker. The rule is checked
+when a code is saved **and** when it is used, so a short code added by hand with no expiry (or
+one a month away) is simply not accepted.
+
+**Wrong-code brake.** The relay counts the access codes it refuses, per connection - an unknown,
+a switched-off and an expired code are refused and counted alike, so a caller cannot tell them
+apart. After 20 in 10 minutes that connection gets `429` (with `Retry-After`) until the window
+ends, and a locked-out connection costs no KV reads. A guess is counted the moment it arrives
+and handed back when the code turns out to be good, so a burst of parallel guesses cannot get
+past the limit (the price: more than 20 simultaneous requests from one address are limited too,
+even with a good code). An IPv6 connection is counted by its /64. **The admin code is never
+blocked**, so the owner can always manage codes - even from a shared address (hotel Wi-Fi, an
+office, a phone carrier) where someone else's wrong guesses count against everyone. The price:
+a locked-out address can still keep guessing the admin code (it only costs the attacker a 429
+per wrong try), so `ADMIN_KEY` must be long and random - 32 characters from the helper, not a
+phrase (the Worker only insists on 16). A request
+with no key at all (the app's version probe) is never counted. The count is kept in the Worker's
+memory, not KV (a counter written on every guess would let an attacker burn the daily write
+quota), and Cloudflare runs several copies of a Worker, so this slows guessing rather than
+stopping it - which is why short codes must expire.
+
+**What the relay cannot do.** On the free plan anyone who knows the relay's address can use up
+the daily KV quotas with plain requests (each wrong guess is a read; a valid code opens a slot,
+which is a write). Cloudflare's own rate-limiting features could cut that down but not rule it
+out (WAF rate-limiting rules need a domain you own; the Workers Rate Limiting binding counts
+per location and only approximately), and none is set up here. The 8-character rule looks at length only, so `12345678` may
+never expire: choose codes that are not guessable. A short code that is extended 24 hours at a
+time stays alive - the rule is per setting, not a lifetime cap. KV has no compare-and-set, so two
+admin requests made at the same instant (a script - the app does one thing at a time) can
+overwrite each other. Rolling the Worker back to an older version re-enables expired and short
+codes, because the old code ignores `expires`.
 
 ## Admin usage from PowerShell (optional)
 
@@ -101,7 +162,10 @@ variable so it is not typed on screen:
 $h = @{ 'X-Access-Key' = $env:GR3Y_RELAY_ADMIN_KEY }
 $base = 'https://gr3y-export-relay.gr3y-b8f.workers.dev'
 Invoke-RestMethod "$base/admin/keys" -Headers $h                                  # list
-Invoke-RestMethod "$base/admin/keys?label=Mike" -Method Post -Headers $h          # create
+Invoke-RestMethod "$base/admin/keys?label=Mike" -Method Post -Headers $h          # create (random code, never expires)
+Invoke-RestMethod "$base/admin/keys?label=Test&hours=1&code=9989" -Method Post -Headers $h   # a 4-digit code that lasts 1 hour
+Invoke-RestMethod "$base/admin/keys/9989/rename?to=77AB3&hours=1" -Method Post -Headers $h   # change the code, restart the hour
+Invoke-RestMethod "$base/admin/keys/ABCD1234EFGH/expiry?hours=24" -Method Post -Headers $h   # expire in a day
 Invoke-RestMethod "$base/admin/keys/ABCD1234EFGH/disable" -Method Post -Headers $h # switch off
 Invoke-RestMethod "$base/admin/keys/ABCD1234EFGH" -Method Delete -Headers $h       # delete
 ```
@@ -117,8 +181,9 @@ Invoke-RestMethod "$base/admin/keys/ABCD1234EFGH" -Method Delete -Headers $h    
 - The GUI polls `GET /poll?code=` with the `X-Session`. The first match returns the export and
   deletes both KV entries - a code is claimed exactly once. Entries no one claims expire on
   their own (the export is given the slot's remaining lifetime, never more).
-- Guest codes live in KV as `guest:<CODE>` and are checked on every `/open`. Switching one off
-  or deleting it blocks new pairings with it.
+- Guest codes live in KV as `guest:<CODE>` = `{label,enabled,created,expires?,custom?}` and are
+  checked on every `/open`. Switching one off, deleting it or letting it expire blocks new
+  pairings with it (a pairing that is already open finishes normally).
 
 ## Limits and timing (Cloudflare KV, free plan)
 
