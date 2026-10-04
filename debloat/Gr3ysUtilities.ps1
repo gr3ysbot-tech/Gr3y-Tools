@@ -3379,9 +3379,68 @@ function ConvertFrom-RelayKeyList {
     return , $rows.ToArray()
 }
 
+function Get-GuestRowInfo {
+    # Display facts for one guest-code record from the relay: the state word (On / Off /
+    # Expired), the expiry as local time or "Never", and whether it has expired. Pure, so it can
+    # be unit-tested. A relay that predates the expiry feature sends no expires / expired
+    # fields: those codes simply never expire.
+    param($Rec)
+    $names = @($Rec.PSObject.Properties | ForEach-Object { $_.Name })
+    $expiresMs = $null
+    if (($names -contains 'expires') -and $null -ne $Rec.expires) {
+        try { $expiresMs = [long]$Rec.expires } catch { $expiresMs = $null }
+    }
+    $expired = ($names -contains 'expired') -and ($Rec.expired -eq $true)
+    $enabled = ($Rec.enabled -eq $true)
+    $state = if ($expired) { 'Expired' } elseif ($enabled) { 'On' } else { 'Off' }
+    $text = 'Never'
+    if ($null -ne $expiresMs) {
+        try {
+            $text = [System.DateTimeOffset]::FromUnixTimeMilliseconds($expiresMs).LocalDateTime.ToString('yyyy-MM-dd HH:mm', [System.Globalization.CultureInfo]::InvariantCulture)
+        } catch {
+            $text = 'Invalid'
+            $expiresMs = $null
+        }
+    } elseif ($expired) {
+        $text = 'Needs expiry'   # the relay refuses it but gave no usable time (a hand-edited record)
+    }
+    # Expired but not lapsed: no usable time, or one well in the future (more than 10 minutes, so a
+    # clock difference cannot cause it). The relay refuses such a code for another reason - a code
+    # under 8 characters needs an expiry within a day - and "has expired" would be the wrong thing to say.
+    $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $needsExpiry = $expired -and (($null -eq $expiresMs) -or ($expiresMs -gt ($nowMs + 600000)))
+    return [PSCustomObject]@{ State = $state; Expires = $text; ExpiresMs = $expiresMs; Expired = $expired; NeedsExpiry = $needsExpiry; Enabled = $enabled }
+}
+
+function ConvertTo-GuestCodeText {
+    # Cleans a guest code the owner typed. Blank is allowed (= let the relay make a random one).
+    # Letters and digits only; spaces and dashes are ignored; case does not matter (the relay
+    # stores it upper-case). Returns { Ok; Code; Error }. The same rules the relay applies.
+    param([string]$Text)
+    $typed = $(if ($null -eq $Text) { '' } else { $Text.Trim() })
+    if ($typed -eq '') { return [PSCustomObject]@{ Ok = $true; Code = ''; Error = $null } }
+    # -cnotmatch, not -notmatch: the case-insensitive operator also lets U+212A (Kelvin sign) and
+    # U+0130 through as "letters", and the relay would then refuse them with a different message.
+    if ($typed -cnotmatch '^[A-Za-z0-9 \-]+\z') {
+        return [PSCustomObject]@{ Ok = $false; Code = ''; Error = 'Use only letters and digits in a code (spaces and dashes are ignored).' }
+    }
+    $code = ($typed -replace '[ \-]', '').ToUpperInvariant()
+    if ($code.Length -lt 4) { return [PSCustomObject]@{ Ok = $false; Code = ''; Error = 'A code needs at least 4 letters or digits.' } }
+    if ($code.Length -gt 32) { return [PSCustomObject]@{ Ok = $false; Code = ''; Error = 'A code can be at most 32 letters or digits.' } }
+    return [PSCustomObject]@{ Ok = $true; Code = $code; Error = $null }
+}
+
+function ConvertTo-HoursQuery {
+    # A number of hours as the invariant-culture text the relay's ?hours= expects (a comma
+    # decimal separator from another locale would be read as garbage). 0 means never expires.
+    param([double]$Hours)
+    return $Hours.ToString('0.######', [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
 function Start-RelayPairing {
     # Opens a fresh pairing code with the access code. Retries a new code on 409 (collision)
-    # up to 3 times. Failure reasons: 'auth' (401), 'badkey' (the code holds characters that
+    # up to 3 times. Failure reasons: 'auth' (401), 'locked' (429 - too many wrong codes from this
+    # connection), 'badkey' (the code holds characters that
     # cannot go in a header - nothing was sent), 'outdated' (404 - old Worker has no /open),
     # 'network' (no HTTP response), 'busy' (3 collisions), 'server' (anything else, incl. 503).
     # NOTE: no `continue` inside a switch here - in PowerShell that continues the SWITCH, not
@@ -3403,8 +3462,9 @@ function Start-RelayPairing {
             }
             return [PSCustomObject]@{ Ok = $true; Code = $code; Session = [string]$o.session; Label = [string]$o.label; Attempts = $attempt }
         }
-        if ($r.Status -eq 401) { return [PSCustomObject]@{ Ok = $false; Failure = 'auth'; Message = 'The access code was not accepted (wrong, or switched off).'; Attempts = $attempt } }
+        if ($r.Status -eq 401) { return [PSCustomObject]@{ Ok = $false; Failure = 'auth'; Message = 'The access code was not accepted (wrong, switched off or expired).'; Attempts = $attempt } }
         if ($r.Status -eq 404) { return [PSCustomObject]@{ Ok = $false; Failure = 'outdated'; Message = $script:RelayOutdatedText; Attempts = $attempt } }
+        if ($r.Status -eq 429) { return [PSCustomObject]@{ Ok = $false; Failure = 'locked'; Message = 'Too many wrong access codes from this connection.'; Attempts = $attempt } }
         if ($r.Status -eq 0) { return [PSCustomObject]@{ Ok = $false; Failure = 'network'; Message = $r.Error; Attempts = $attempt } }
         if ($r.Status -ne 409) { return [PSCustomObject]@{ Ok = $false; Failure = 'server'; Message = "The relay answered HTTP $($r.Status)."; Attempts = $attempt } }
         # 409 = this code is already open elsewhere; loop and try a brand new code.
@@ -3463,7 +3523,7 @@ function Show-PromptDialog {
     $dialogXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Access Code" Width="480" Height="270" MinWidth="420" MinHeight="250"
+        Title="Access Code" Width="480" Height="300" MinWidth="420" MinHeight="250"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize" ShowInTaskbar="False"
         Background="#232629" FontFamily="Segoe UI" FontSize="13">
   <Window.Resources>
@@ -3603,7 +3663,11 @@ function Show-PromptDialog {
     }.GetNewClosure())
     $btnCancel.Add_Click({ if ($Secret) { $secretBox.Clear() }; $dialog.Close() }.GetNewClosure())
 
-    $dialog.Add_Loaded({ if ($Secret) { $secretBox.Focus() } else { $plainBox.Focus() } }.GetNewClosure())
+    # A pre-filled value (the Custom Expiry prompt's "24") is selected, so typing replaces it. Left
+    # unselected the caret sits in front of it, and typing 48 gave "4824" - about 200 days.
+    $dialog.Add_Loaded({
+        if ($Secret) { $secretBox.Focus() } else { $plainBox.Focus(); if ($plainBox.Text) { $plainBox.SelectAll() } }
+    }.GetNewClosure())
     $dialog.ShowDialog() | Out-Null
     # Empty string counts as cancel (nothing typed), so callers only get a non-empty code.
     if ([string]::IsNullOrEmpty($resultHolder.Value)) { return $null }
@@ -3809,6 +3873,233 @@ function Show-CompareSourceChooser {
     return $resultHolder.Value
 }
 
+function Show-CodeDialog {
+    # One dialog for creating a guest code (Mode 'new') and for changing one (Mode 'edit'): the
+    # label, the code itself (blank = a random one when creating, "keep it" when editing) and
+    # how long it lasts. Clicking an expiry button finishes the dialog, after the entries are
+    # checked; "Keep current expiry" (edit only) leaves the expiry alone. Returns $null when
+    # cancelled, else { Label; Code; Hours; Keep }: Code is '' for blank, Hours is a number
+    # (0 = never) or $null with Keep. A code under 8 characters can be guessed, so it must
+    # expire within 24 hours - the relay enforces that too; checking here means the owner is
+    # told before anything is sent. Its own XAML tree, like the other dialogs.
+    param(
+        [ValidateSet('new', 'edit')][string]$Mode = 'new',
+        [string]$Title = 'Guest Code',
+        [string]$Message,
+        [string]$CurrentCode,
+        [string]$CurrentExpiry,
+        [double]$CurrentRemainingHours = -1,
+        # The code being edited has already expired: "keep the expiry" would leave it unusable, so
+        # that button is not offered and Enter picks 1 day instead.
+        [switch]$CurrentExpired,
+        [System.Windows.Window]$Owner
+    )
+    $dialogXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Guest Code" Width="560" Height="610" MinWidth="520" MinHeight="500"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize" ShowInTaskbar="False"
+        Background="#232629" FontFamily="Segoe UI" FontSize="13">
+  <Window.Resources>
+    <SolidColorBrush x:Key="BgBrush" Color="#232629"/>
+    <SolidColorBrush x:Key="ButtonBrush" Color="#1E3747"/>
+    <SolidColorBrush x:Key="ButtonHoverBrush" Color="#2A4C69"/>
+    <SolidColorBrush x:Key="ControlBorderBrush" Color="#707070"/>
+    <SolidColorBrush x:Key="TextBrush" Color="#F7F7F7"/>
+    <SolidColorBrush x:Key="MutedBrush" Color="#9AA3AB"/>
+    <SolidColorBrush x:Key="HeaderBrush" Color="#5BDCFF"/>
+    <SolidColorBrush x:Key="AccentBrush" Color="#5BDCFF"/>
+    <SolidColorBrush x:Key="ErrorBrush" Color="#F85149"/>
+    <SolidColorBrush x:Key="LogBgBrush" Color="#1B1E21"/>
+    <SolidColorBrush x:Key="NavSelectedBrush" Color="#5E81AC"/>
+    <Style TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+    </Style>
+    <Style TargetType="Button">
+      <Setter Property="Background" Value="{StaticResource ButtonBrush}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource ControlBorderBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="10,4"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource ButtonHoverBrush}"/>
+              </Trigger>
+              <Trigger Property="IsDefault" Value="True">
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType="TextBox">
+      <Setter Property="Background" Value="{StaticResource LogBgBrush}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource ControlBorderBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="8,4"/>
+      <Setter Property="FontFamily" Value="Consolas"/>
+      <Setter Property="SelectionBrush" Value="{StaticResource NavSelectedBrush}"/>
+      <Setter Property="CaretBrush" Value="{StaticResource TextBrush}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TextBox">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+              <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+  <Border Padding="20">
+    <StackPanel>
+      <TextBlock Name="CdTitle" Text="Guest Code" FontFamily="Consolas" FontSize="16" Foreground="{StaticResource HeaderBrush}" Margin="0,0,0,10"/>
+      <TextBlock Name="CdMessage" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,12"/>
+      <Grid Name="CdLabelRow" Margin="0,0,0,8">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="64"/>
+          <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <TextBlock Text="Label" VerticalAlignment="Center"/>
+        <TextBox Name="LabelBox" Grid.Column="1" MinHeight="30" VerticalContentAlignment="Center" MaxLength="60" FontFamily="Segoe UI" AutomationProperties.Name="Label"/>
+      </Grid>
+      <Grid Margin="0,0,0,4">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="64"/>
+          <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <TextBlock Text="Code" VerticalAlignment="Center"/>
+        <TextBox Name="CodeBox" Grid.Column="1" MinHeight="30" VerticalContentAlignment="Center" MaxLength="40" AutomationProperties.Name="Code"/>
+      </Grid>
+      <TextBlock Name="CdHint" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="64,0,0,12"/>
+      <TextBlock Name="CdCurrent" TextWrapping="Wrap" Margin="0,0,0,8" Visibility="Collapsed"/>
+      <TextBlock Text="Expires after - click one to finish:" FontWeight="Bold" Margin="0,2,0,6"/>
+      <UniformGrid Columns="3" Margin="-3,0,-3,0">
+        <Button Name="BtnExp1" Content="1 hour" Height="34" Margin="3,0,3,6"/>
+        <Button Name="BtnExp8" Content="8 hours" Height="34" Margin="3,0,3,6"/>
+        <Button Name="BtnExp24" Content="1 day" Height="34" Margin="3,0,3,6"/>
+        <Button Name="BtnExp168" Content="7 days" Height="34" Margin="3,0,3,6"/>
+        <Button Name="BtnExp720" Content="30 days" Height="34" Margin="3,0,3,6"/>
+        <Button Name="BtnExp0" Content="Never expires" Height="34" Margin="3,0,3,6"/>
+      </UniformGrid>
+      <Button Name="BtnExpCustom" Content="Custom number of hours..." Height="34" HorizontalAlignment="Stretch" Margin="0,0,0,6"/>
+      <Button Name="BtnExpKeep" Content="Keep current expiry" Height="34" HorizontalAlignment="Stretch" Margin="0,0,0,6" Visibility="Collapsed"/>
+      <TextBlock Name="CdError" TextWrapping="Wrap" Foreground="{StaticResource ErrorBrush}" Margin="0,4,0,0" Visibility="Collapsed" AutomationProperties.LiveSetting="Assertive"/>
+      <Button Name="BtnCdCancel" Content="Cancel" Width="90" HorizontalAlignment="Right" IsCancel="True" Margin="0,10,0,0"/>
+    </StackPanel>
+  </Border>
+</Window>
+'@
+    $reader = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($dialogXaml))
+    $dialog = [Windows.Markup.XamlReader]::Load($reader)
+    $dialog.Owner = $(if ($Owner) { $Owner } else { $window })
+    $dialog.Title = $Title
+    $dialog.FindName('CdTitle').Text = $Title
+    $dialog.FindName('CdMessage').Text = $Message
+    $labelBox = $dialog.FindName('LabelBox')
+    $codeBox = $dialog.FindName('CodeBox')
+    $hint = $dialog.FindName('CdHint')
+    $errBox = $dialog.FindName('CdError')
+    $btnKeep = $dialog.FindName('BtnExpKeep')
+    $btnDay = $dialog.FindName('BtnExp24')
+
+    # Keep these two in step with cloudflare/export-relay-worker.js (WEAK_CODE_LENGTH / _MAX_HOURS).
+    $weakLength = 8
+    $weakHours = 24
+    $currentNorm = (($CurrentCode -replace '[^A-Za-z0-9]', '')).ToUpperInvariant()
+
+    if ($Mode -eq 'new') {
+        $hint.Text = 'Leave Code blank for a random 12-character code, or type your own (4 to 32 letters or digits, any case). A code under 8 characters can be guessed, so it must expire within 24 hours.'
+        $btnDay.IsDefault = $true
+        $dialog.Add_Loaded({ $labelBox.Focus() }.GetNewClosure())
+    } else {
+        $dialog.FindName('CdLabelRow').Visibility = 'Collapsed'
+        $codeBox.Text = $CurrentCode
+        $hint.Text = 'Leave Code as it is to keep this code, or type a new one - the old code stops working within about a minute. A code under 8 characters can be guessed, so it must expire within 24 hours.'
+        if ($CurrentExpiry) {
+            $cur = $dialog.FindName('CdCurrent')
+            $cur.Text = $CurrentExpiry
+            $cur.Visibility = 'Visible'
+        }
+        if ($CurrentExpired) {
+            # Nothing to keep: the code is already unusable. Pick a new life for it.
+            $btnDay.IsDefault = $true
+        } else {
+            $btnKeep.Visibility = 'Visible'
+            $btnKeep.IsDefault = $true
+        }
+        $dialog.Height = 660
+        $dialog.Add_Loaded({ $codeBox.Focus(); $codeBox.SelectAll() }.GetNewClosure())
+    }
+
+    $showError = {
+        param([string]$msg)
+        $errBox.Text = $msg
+        $errBox.Visibility = 'Visible'
+    }.GetNewClosure()
+
+    $result = [PSCustomObject]@{ Value = $null }   # stays $null when cancelled
+    $finish = {
+        param($hours, [bool]$keep)
+        $errBox.Visibility = 'Collapsed'
+        $labelText = ''
+        if ($Mode -eq 'new') {
+            $labelText = $labelBox.Text.Trim()
+            if (-not $labelText) { & $showError 'Give the code a label - the person or site it is for.'; return }
+        }
+        $parsed = ConvertTo-GuestCodeText -Text $codeBox.Text
+        if (-not $parsed.Ok) { & $showError $parsed.Error; return }
+        $code = $parsed.Code
+        if ($Mode -eq 'edit' -and $code -eq $currentNorm) { $code = '' }   # unchanged = keep it
+        if ($Mode -eq 'edit' -and $code -eq '' -and $keep) { & $showError 'Nothing to change - type a new code, or click an expiry.'; return }
+        $length = $(if ($code) { $code.Length } elseif ($Mode -eq 'edit') { $currentNorm.Length } else { 12 })
+        if ($length -lt $weakLength) {
+            $tooLong = $(if ($keep) { $CurrentRemainingHours -lt 0 -or $CurrentRemainingHours -gt $weakHours } else { $hours -le 0 -or $hours -gt $weakHours })
+            if ($tooLong) {
+                & $showError 'A code under 8 characters can be guessed, so it must expire within 24 hours. Click 1 hour, 8 hours or 1 day (or a custom number up to 24), or use a longer code.'
+                return
+            }
+        }
+        $result.Value = [PSCustomObject]@{ Label = $labelText; Code = $code; Hours = $hours; Keep = $keep }
+        $dialog.Close()
+    }.GetNewClosure()
+
+    foreach ($preset in @(
+            @{ Id = 'BtnExp1'; Hours = 1 }, @{ Id = 'BtnExp8'; Hours = 8 }, @{ Id = 'BtnExp24'; Hours = 24 },
+            @{ Id = 'BtnExp168'; Hours = 168 }, @{ Id = 'BtnExp720'; Hours = 720 }, @{ Id = 'BtnExp0'; Hours = 0 })) {
+        $presetHours = [double]$preset.Hours   # copied to a local so each closure keeps its own value
+        $dialog.FindName($preset.Id).Add_Click({ & $finish $presetHours $false }.GetNewClosure())
+    }
+    $btnKeep.Add_Click({ & $finish $null $true }.GetNewClosure())
+    $dialog.FindName('BtnExpCustom').Add_Click({
+        $err = $null
+        for ($asked = 0; $asked -lt 3; $asked++) {
+            $typed = Show-PromptDialog -Owner $dialog -Title 'Custom Expiry' -Message 'Hours until the code expires (for example 48 = two days, 0.5 = half an hour). 0 means it never expires.' -DefaultText '24' -ErrorText $err
+            if ([string]::IsNullOrWhiteSpace($typed)) { return }   # cancelled: stay in this dialog
+            $hours = 0.0
+            $parsedHours = [double]::TryParse($typed.Trim(), [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$hours)
+            if ($parsedHours -and ($hours -eq 0 -or ($hours -ge 0.02 -and $hours -le 8760))) {
+                & $finish $hours $false
+                return
+            }
+            $err = 'Enter a number from 0.02 (about a minute) to 8760, or 0 for never. Use a dot for decimals (0.5).'
+        }
+        # Three bad entries in a row: say so here instead of closing the prompt without a word.
+        & $showError $err
+    }.GetNewClosure())
+    $dialog.ShowDialog() | Out-Null
+    return $result.Value
+}
+
 function Show-AccessCodesDialog {
     # Admin-only management of guest access codes (create / copy / switch off-on / delete),
     # reached from the Compare chooser. Uses $script:RelayKeys.Admin (kept separate from the
@@ -3834,7 +4125,7 @@ function Show-AccessCodesDialog {
     $dialogXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Manage Access Codes" Width="760" Height="560" MinWidth="640" MinHeight="460"
+        Title="Manage Access Codes" Width="840" Height="560" MinWidth="760" MinHeight="460"
         WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
         Background="#232629" FontFamily="Segoe UI" FontSize="13">
   <Window.Resources>
@@ -3847,6 +4138,7 @@ function Show-AccessCodesDialog {
     <SolidColorBrush x:Key="HeaderBrush" Color="#5BDCFF"/>
     <SolidColorBrush x:Key="AccentBrush" Color="#5BDCFF"/>
     <SolidColorBrush x:Key="GreenBrush" Color="#3FB950"/>
+    <SolidColorBrush x:Key="AmberBrush" Color="#D29922"/>
     <SolidColorBrush x:Key="ErrorBrush" Color="#F85149"/>
     <SolidColorBrush x:Key="LogBgBrush" Color="#1B1E21"/>
     <SolidColorBrush x:Key="PanelBorderBrush" Color="#2F373D"/>
@@ -3913,29 +4205,34 @@ function Show-AccessCodesDialog {
       </Grid.RowDefinitions>
       <TextBlock Grid.Row="0" Text="Manage Access Codes" FontFamily="Consolas" FontSize="16" Foreground="{StaticResource HeaderBrush}" Margin="0,0,0,10"/>
       <TextBlock Grid.Row="1" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,12"
-                 Text="Guest codes let someone else pair with an old machine without knowing the admin code. Changes can take up to a minute to reach every Cloudflare location."/>
-      <Grid Grid.Row="2" Margin="8,0,8,4">
+                 Text="Guest codes let someone else pair with an old machine without knowing the admin code. Choose the code yourself or let one be generated; a code can expire on its own (Expires column), and Edit Code... changes the code or its expiry any time. A code under 8 characters must expire within 24 hours. An expired code stays listed for a week. Changes can take up to a minute to reach every Cloudflare location."/>
+      <Grid Grid.Row="2" Margin="8,0,25,4">
         <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="170"/>
+          <ColumnDefinition Width="250"/>
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="70"/>
-          <ColumnDefinition Width="100"/>
+          <ColumnDefinition Width="130"/>
+          <ColumnDefinition Width="90"/>
         </Grid.ColumnDefinitions>
         <TextBlock Grid.Column="0" Text="Code" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
         <TextBlock Grid.Column="1" Text="Label" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
         <TextBlock Grid.Column="2" Text="State" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
-        <TextBlock Grid.Column="3" Text="Created" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
+        <TextBlock Grid.Column="3" Text="Expires" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
+        <TextBlock Grid.Column="4" Text="Created" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
       </Grid>
       <ListBox Grid.Row="3" Name="CodesList" SelectionMode="Single" Background="{StaticResource LogBgBrush}"
-               BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1"/>
+               BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1"
+               HorizontalContentAlignment="Stretch" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+               ScrollViewer.VerticalScrollBarVisibility="Visible"/>
       <TextBlock Grid.Row="4" Name="CodesStatus" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,10,0,0" Text="Loading..."/>
       <DockPanel Grid.Row="5" Margin="0,14,0,0" LastChildFill="False">
-        <Button Name="BtnCodeNew" Content="New Code..." Width="110" Margin="0,0,8,0" DockPanel.Dock="Left" BorderBrush="{StaticResource AccentBrush}"/>
-        <Button Name="BtnCodeCopy" Content="Copy Code" Width="100" Margin="0,0,8,0" DockPanel.Dock="Left"/>
-        <Button Name="BtnCodeToggle" Content="Switch Off" Width="100" Margin="0,0,8,0" DockPanel.Dock="Left"/>
-        <Button Name="BtnCodeDelete" Content="Delete..." Width="90" Margin="0,0,8,0" DockPanel.Dock="Left"/>
-        <Button Name="BtnCodeClose" Content="Close" Width="90" DockPanel.Dock="Right"/>
-        <Button Name="BtnCodeRefresh" Content="Refresh" Width="90" Margin="0,0,8,0" DockPanel.Dock="Right"/>
+        <Button Name="BtnCodeNew" Content="New Code..." Width="105" Margin="0,0,6,0" DockPanel.Dock="Left" BorderBrush="{StaticResource AccentBrush}"/>
+        <Button Name="BtnCodeCopy" Content="Copy Code" Width="90" Margin="0,0,6,0" DockPanel.Dock="Left"/>
+        <Button Name="BtnCodeEdit" Content="Edit Code..." Width="105" Margin="0,0,6,0" DockPanel.Dock="Left"/>
+        <Button Name="BtnCodeToggle" Content="Switch Off" Width="95" Margin="0,0,6,0" DockPanel.Dock="Left"/>
+        <Button Name="BtnCodeDelete" Content="Delete..." Width="80" Margin="0,0,6,0" DockPanel.Dock="Left"/>
+        <Button Name="BtnCodeClose" Content="Close" Width="80" DockPanel.Dock="Right"/>
+        <Button Name="BtnCodeRefresh" Content="Refresh" Width="80" Margin="0,0,6,0" DockPanel.Dock="Right"/>
       </DockPanel>
     </Grid>
   </Border>
@@ -3949,44 +4246,58 @@ function Show-AccessCodesDialog {
     $codesStatus = $dialog.FindName('CodesStatus')
     $btnNew = $dialog.FindName('BtnCodeNew')
     $btnCopy = $dialog.FindName('BtnCodeCopy')
+    $btnEdit = $dialog.FindName('BtnCodeEdit')
     $btnToggle = $dialog.FindName('BtnCodeToggle')
     $btnDelete = $dialog.FindName('BtnCodeDelete')
     $btnRefresh = $dialog.FindName('BtnCodeRefresh')
     $btnClose = $dialog.FindName('BtnCodeClose')
 
     # Build one ListBox item (a Grid of TextBlocks, no data binding - matching the rest of the
-    # GUI). Tag carries the bare code (no dashes) for the admin calls. The green "On"/red
-    # "Off" is its own TextBlock so the colour reads on the selected (blue) row too. This only
+    # GUI). The ListBox stretches its items, never scrolls sideways and always shows its vertical
+    # scrollbar, so the star-sized Label column gets exactly the leftover width and lines up with
+    # the header, which leaves the same room on its right for that scrollbar (without that, a
+    # long label widened its column, and a scrollbar appearing later nudged the rest out of
+    # alignment). The Code column fits the longest code the relay accepts (32 characters, with room to spare). Tag carries the bare code
+    # (no dashes) for the admin calls. The green "On"/red "Off"/amber "Expired" is its own
+    # TextBlock so the colour reads on the selected (blue) row too. This only
     # BUILDS the item; callers add it ($addRow) or swap it into an existing slot (Toggle) -
     # a ListBoxItem already in the list can't be inserted a second time.
     $newItem = {
         param($rec)
         $row = New-Object System.Windows.Controls.Grid
-        foreach ($w in @('170', '*', '70', '100')) {
+        $info = Get-GuestRowInfo -Rec $rec
+        foreach ($w in @('250', '*', '70', '130', '90')) {
             $cd = New-Object System.Windows.Controls.ColumnDefinition
             $cd.Width = [System.Windows.GridLength]::new([double]($w -replace '\*', '1'), $(if ($w -eq '*') { 'Star' } else { 'Pixel' }))
             $row.ColumnDefinitions.Add($cd)
         }
         $tbCode = New-Object System.Windows.Controls.TextBlock
         $tbCode.Text = $rec.key; $tbCode.FontFamily = 'Consolas'
+        $tbCode.TextTrimming = 'CharacterEllipsis'; $tbCode.Margin = '0,0,8,0'; $tbCode.ToolTip = [string]$rec.key
         [System.Windows.Controls.Grid]::SetColumn($tbCode, 0); [void]$row.Children.Add($tbCode)
         $tbLabel = New-Object System.Windows.Controls.TextBlock
-        $tbLabel.Text = $rec.label; $tbLabel.TextTrimming = 'CharacterEllipsis'
+        $tbLabel.Text = $rec.label; $tbLabel.TextTrimming = 'CharacterEllipsis'; $tbLabel.Margin = '0,0,8,0'
         [System.Windows.Controls.Grid]::SetColumn($tbLabel, 1); [void]$row.Children.Add($tbLabel)
         $tbState = New-Object System.Windows.Controls.TextBlock
-        $tbState.Text = $(if ($rec.enabled) { 'On' } else { 'Off' }); $tbState.FontWeight = 'Bold'
-        $tbState.Foreground = $dialog.FindResource($(if ($rec.enabled) { 'GreenBrush' } else { 'ErrorBrush' }))
+        $tbState.Text = $info.State; $tbState.FontWeight = 'Bold'
+        $stateBrush = if ($info.State -eq 'On') { 'GreenBrush' } elseif ($info.State -eq 'Off') { 'ErrorBrush' } else { 'AmberBrush' }
+        $tbState.Foreground = $dialog.FindResource($stateBrush)
         [System.Windows.Controls.Grid]::SetColumn($tbState, 2); [void]$row.Children.Add($tbState)
+        $tbExpires = New-Object System.Windows.Controls.TextBlock
+        $tbExpires.Text = $info.Expires
+        $tbExpires.Foreground = $dialog.FindResource($(if ($info.Expired) { 'AmberBrush' } else { 'TextBrush' }))
+        [System.Windows.Controls.Grid]::SetColumn($tbExpires, 3); [void]$row.Children.Add($tbExpires)
         $tbCreated = New-Object System.Windows.Controls.TextBlock
         $tbCreated.Text = $rec.created; $tbCreated.Foreground = $dialog.FindResource('MutedBrush')
-        [System.Windows.Controls.Grid]::SetColumn($tbCreated, 3); [void]$row.Children.Add($tbCreated)
+        [System.Windows.Controls.Grid]::SetColumn($tbCreated, 4); [void]$row.Children.Add($tbCreated)
         $item = New-Object System.Windows.Controls.ListBoxItem
         $item.Content = $row
         # A readable accessible name (screen readers, UI automation) - without it the row is
         # announced as the type name of the item.
-        [System.Windows.Automation.AutomationProperties]::SetName($item, "$($rec.key) $($rec.label) $(if ($rec.enabled) { 'On' } else { 'Off' })")
-        # Tag: the bare code (no separators) plus the enabled flag, for Toggle/Delete/Copy.
-        $item.Tag = [PSCustomObject]@{ Code = ($rec.key -replace '[^A-Za-z0-9]', ''); Display = $rec.key; Enabled = [bool]$rec.enabled; Label = $rec.label }
+        [System.Windows.Automation.AutomationProperties]::SetName($item, "$($rec.key) $($rec.label) $($info.State) expires $($info.Expires)")
+        # Tag: the bare code (no separators) plus the enabled flag and expiry, for Toggle / Set
+        # Expiry / Delete / Copy.
+        $item.Tag = [PSCustomObject]@{ Code = ($rec.key -replace '[^A-Za-z0-9]', ''); Display = $rec.key; Enabled = $info.Enabled; Label = $rec.label; ExpiresMs = $info.ExpiresMs; ExpiresText = $info.Expires; Expired = $info.Expired; NeedsExpiry = $info.NeedsExpiry }
         return $item
     }.GetNewClosure()
 
@@ -4006,7 +4317,7 @@ function Show-AccessCodesDialog {
     $setBusy = {
         param([bool]$busy, [string]$msg)
         $dialog.Cursor = $(if ($busy) { [System.Windows.Input.Cursors]::Wait } else { $null })
-        foreach ($b in @($btnNew, $btnCopy, $btnToggle, $btnDelete, $btnRefresh)) { $b.IsEnabled = -not $busy }
+        foreach ($b in @($btnNew, $btnCopy, $btnEdit, $btnToggle, $btnDelete, $btnRefresh)) { $b.IsEnabled = -not $busy }
         if ($msg) { $codesStatus.Text = $msg }
         # The relay calls below block this thread, so paint the busy state first - otherwise
         # the "Loading..." text and wait cursor are set but never drawn until the call returns.
@@ -4031,7 +4342,9 @@ function Show-AccessCodesDialog {
     $callAdmin = {
         param([string]$Method, [string]$Path)
         $key = $keys.Admin
-        if ([string]::IsNullOrEmpty($key)) { $key = $keys.Access }
+        # $guessed: the key being tried is only the cached pairing key, which may be a guest code.
+        $guessed = $false
+        if ([string]::IsNullOrEmpty($key)) { $key = $keys.Access; $guessed = -not [string]::IsNullOrEmpty($key) }
         $typed = $false
         $errText = $null
         # Same clean-up as the pairing key: a cached code with a stray typographic dash would
@@ -4047,13 +4360,18 @@ function Show-AccessCodesDialog {
                 $key = ConvertTo-RelayKey -Text $key
                 if (-not $key) { $errText = $badKeyText; continue }  # nothing was sent; ask again
                 $typed = $true
+                $guessed = $false
             }
             $r = Invoke-RelayRequest -RelayUrl $relayUrl -Method $Method -Path $Path -Headers @{ 'X-Access-Key' = $key }
-            if ($r.Status -eq 401) {
+            # 429 = this connection has had too many refused codes. The relay never blocks the ADMIN
+            # code, so a 429 for a key that was only guessed from the pairing cache (a guest code) means
+            # "not the admin code": ask for it, the same as for a 401, instead of dead-ending.
+            if ($r.Status -eq 401 -or ($r.Status -eq 429 -and $guessed)) {
                 $errText = $(if ($typed) { 'That admin code was not accepted. Try again.' } else { $null })
                 $key = $null
                 $keys.Admin = $null
                 $typed = $false
+                $guessed = $false
                 continue
             }
             if ($r.Status -ge 200 -and $r.Status -lt 300) { $keys.Admin = $key }
@@ -4085,24 +4403,107 @@ function Show-AccessCodesDialog {
     $btnRefresh.Add_Click({ & $refresh }.GetNewClosure())
 
     $btnNew.Add_Click({
-        $label = Show-PromptDialog -Owner $dialog -Title 'New Guest Code' -Message 'Give the new guest code a label (for example the name of the person or site it is for).'
-        if ([string]::IsNullOrWhiteSpace($label)) { return }
-        $label = $label.Trim()
+        $choice = Show-CodeDialog -Mode new -Owner $dialog -Title 'New Guest Code' -Message 'Choose a label, optionally choose the code yourself, then click how long it should last. (Enter picks 1 day.)'
+        if ($null -eq $choice) { return }   # cancelled: nothing is created
+        $query = "label=$([uri]::EscapeDataString($choice.Label))"
+        if ($choice.Code) { $query += '&code=' + [uri]::EscapeDataString($choice.Code) }
+        if ($choice.Hours -gt 0) { $query += '&hours=' + (ConvertTo-HoursQuery -Hours $choice.Hours) }
         & $setBusy $true 'Creating...'
-        $r = & $callAdmin 'POST' "/admin/keys?label=$([uri]::EscapeDataString($label))"
+        $r = & $callAdmin 'POST' "/admin/keys?$query"
         & $setBusy $false $null
         if ($null -eq $r) { $codesStatus.Text = 'Admin code needed.'; return }
+        if ($r.Status -eq 409) { $codesStatus.Text = 'That code is already taken - choose another.'; return }
         if ($r.Status -ne 200) { $codesStatus.Text = "Could not create the code ($(& $httpText $r)).$(& $errDetail $r)"; return }
         $rec = $null
         try { $rec = $r.Text | ConvertFrom-Json -ErrorAction Stop } catch {}
         if (-not $rec) { $codesStatus.Text = 'The relay returned an unexpected response.'; return }
+        $made = Get-GuestRowInfo -Rec $rec
+        $names = @($rec.PSObject.Properties | ForEach-Object { $_.Name })
+        $tooOld = ($choice.Hours -gt 0 -and $null -eq $made.ExpiresMs) -or ($choice.Code -and ($names -notcontains 'custom'))
+        if ($tooOld) {
+            # An old relay ignores ?hours= and ?code=: it made a random code that never expires.
+            # Don't leave that live - take it straight back out, and say what happened.
+            $stray = $rec.key -replace '[^A-Za-z0-9]', ''
+            & $setBusy $true 'Removing...'
+            $gone = & $callAdmin 'DELETE' "/admin/keys/$stray"
+            & $setBusy $false $null
+            if ($gone -and $gone.Status -eq 200) {
+                $codesStatus.Text = 'This relay is too old for expiry and codes you choose, so nothing was created. Update the Worker (cloudflare/README.md).'
+            } else {
+                & $addRow $rec
+                $codesList.SelectedIndex = $codesList.Items.Count - 1
+                $codesList.ScrollIntoView($codesList.SelectedItem)
+                $codesStatus.Text = "This relay is too old for expiry and codes you choose: it made the random code $($rec.key), which will NOT expire, and it could not be removed. Delete it from the list, then update the Worker (cloudflare/README.md)."
+            }
+            return
+        }
         & $addRow $rec
         $codesList.SelectedIndex = $codesList.Items.Count - 1
         # In a long list the new row can be below the visible part - bring it into view.
         $codesList.ScrollIntoView($codesList.SelectedItem)
         $copied = $false
         try { [System.Windows.Clipboard]::SetText($rec.key); $copied = $true } catch {}
-        $codesStatus.Text = $(if ($copied) { "Created $($rec.key) ('$($rec.label)') - copied to the clipboard." } else { "Created $($rec.key) ('$($rec.label)')." })
+        $when = $(if ($null -ne $made.ExpiresMs) { "expires $($made.Expires)" } else { 'never expires' })
+        $note = $(if ($copied) { ' - copied to the clipboard.' } else { '.' })
+        # Making a code you chose reads that name first, and Cloudflare caches a miss for about a
+        # minute - so someone trying it straight away can still be told no.
+        $wait = $(if ($choice.Code) { ' It can take up to a minute before it works everywhere.' } else { '' })
+        $codesStatus.Text = "Created $($rec.key) ('$($rec.label)') - $when$note$wait"
+    }.GetNewClosure())
+
+    $btnEdit.Add_Click({
+        $tag = & $selectedTag
+        if (-not $tag) { $codesStatus.Text = 'Select a code first.'; return }
+        $current = $(if ($tag.NeedsExpiry) {
+                $(if ($null -ne $tag.ExpiresMs) { "Currently: expires $($tag.ExpiresText) - not accepted, see below." } else { 'Currently: no usable expiry.' })
+            } elseif ($tag.Expired) { "Currently: expired ($($tag.ExpiresText))." } elseif ($null -ne $tag.ExpiresMs) { "Currently: expires $($tag.ExpiresText)." } else { 'Currently: never expires.' })
+        $remaining = $(if ($null -ne $tag.ExpiresMs) { ($tag.ExpiresMs - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) / 3600000.0 } else { -1.0 })
+        # An expired code, or one the relay refuses for want of a usable expiry, has nothing worth keeping.
+        $whyRefused = $(if (-not $tag.Expired) { '' }
+            elseif ($tag.NeedsExpiry -and $tag.Code.Length -lt 8) { ' A code under 8 characters needs an expiry within 24 hours - click how long it should last from now. (Enter picks 1 day.)' }
+            elseif ($tag.NeedsExpiry) { ' This code has no usable expiry - click how long it should last from now. (Enter picks 1 day.)' }
+            else { ' This code has expired - click how long it should last from now. (Enter picks 1 day.)' })
+        $choice = Show-CodeDialog -Mode edit -Owner $dialog -Title 'Edit Guest Code' -Message "Editing $($tag.Display) ('$($tag.Label)'). Change the code, its expiry, or both.$whyRefused" -CurrentCode $tag.Display -CurrentExpiry $current -CurrentRemainingHours $remaining -CurrentExpired:([bool]$tag.Expired)
+        if ($null -eq $choice) { return }
+        $renaming = [bool]$choice.Code
+        # Belt and braces: the dialog refuses "keep the expiry" with nothing else changed, but if
+        # that ever slipped through, a null Hours would be sent as 0 and REMOVE the expiry.
+        if (-not $renaming -and ($choice.Keep -or $null -eq $choice.Hours)) { $codesStatus.Text = 'Nothing changed.'; return }
+        if ($renaming) {
+            $path = "/admin/keys/$($tag.Code)/rename?to=$([uri]::EscapeDataString($choice.Code))"
+            if (-not $choice.Keep) { $path += '&hours=' + (ConvertTo-HoursQuery -Hours $choice.Hours) }
+        } else {
+            $path = "/admin/keys/$($tag.Code)/expiry?hours=$(ConvertTo-HoursQuery -Hours $choice.Hours)"
+        }
+        & $setBusy $true 'Saving...'
+        $r = & $callAdmin 'POST' $path
+        & $setBusy $false $null
+        if ($null -eq $r) { $codesStatus.Text = 'Admin code needed.'; return }
+        if ($r.Status -eq 404 -and $r.Text -and $r.Text.Trim() -eq 'Not found') {
+            # An old Worker has no /expiry or /rename route (a missing code answers "No such guest code").
+            $codesStatus.Text = 'This relay is too old to edit a code. Update the Worker (cloudflare/README.md).'
+            return
+        }
+        if ($r.Status -eq 409) { $codesStatus.Text = 'That code is already taken - choose another.'; return }
+        if ($r.Status -ne 200) { $codesStatus.Text = "Could not save the change ($(& $httpText $r)).$(& $errDetail $r)"; return }
+        $rec = $null
+        try { $rec = $r.Text | ConvertFrom-Json -ErrorAction Stop } catch {}
+        if (-not $rec) { $codesStatus.Text = 'The relay returned an unexpected response.'; return }
+        # Same swap as Toggle: remove + insert, never the indexer, then keep the row selected.
+        $idx = $codesList.SelectedIndex
+        $codesList.Items.RemoveAt($idx)
+        $codesList.Items.Insert($idx, (& $newItem $rec))
+        $codesList.SelectedIndex = $idx
+        $after = Get-GuestRowInfo -Rec $rec
+        $when = $(if ($after.Expired) { 'expired' } elseif ($null -ne $after.ExpiresMs) { "expires $($after.Expires)" } else { 'never expires' })
+        # A switched-off code stays off when it is renamed or given a new expiry - say so, or the
+        # owner expects it to work now.
+        $stillOff = $(if (-not $after.Enabled) { ' It is still switched Off - use Switch On to let it be used.' } else { '' })
+        if ($renaming) {
+            $codesStatus.Text = "$($tag.Display) is now $($rec.key) ($when). The old code stops working; this can take up to a minute to reach every Cloudflare location.$stillOff"
+        } else {
+            $codesStatus.Text = "$($rec.key) $when. It can take up to a minute to take effect everywhere.$stillOff"
+        }
     }.GetNewClosure())
 
     $btnCopy.Add_Click({
@@ -4132,7 +4533,15 @@ function Show-AccessCodesDialog {
             $codesList.Items.RemoveAt($idx)
             $codesList.Items.Insert($idx, (& $newItem $rec))
             $codesList.SelectedIndex = $idx
-            $codesStatus.Text = "$($rec.key) is now $(if ($rec.enabled) { 'On' } else { 'Off' }). It can take up to a minute to take effect everywhere."
+            $nowState = $(if ($rec.enabled) { 'On' } else { 'Off' })
+            if ($rec.expired -eq $true) {
+                # The row stays "Expired" whatever the switch says, and the code still cannot be used.
+                $codesStatus.Text = "$($rec.key) is now $nowState, but it has expired - use Edit Code... to give it a new expiry."
+            } else {
+                $codesStatus.Text = "$($rec.key) is now $nowState. It can take up to a minute to take effect everywhere."
+            }
+        } else {
+            $codesStatus.Text = 'The relay returned an unexpected response.'
         }
     }.GetNewClosure())
 
@@ -4194,7 +4603,7 @@ function Show-PairingDialog {
         if ($pair.Ok) { break }
         if ($pair.Failure -eq 'auth' -or $pair.Failure -eq 'badkey') {
             $script:RelayKeys.Access = $null
-            $promptError = $(if ($pair.Failure -eq 'badkey') { $script:RelayBadKeyText } else { 'That code was not accepted - it may be wrong or switched off. Try again.' })
+            $promptError = $(if ($pair.Failure -eq 'badkey') { $script:RelayBadKeyText } else { 'That code was not accepted - it may be wrong, switched off or expired. Try again.' })
             $pair = $null
             continue
         }
@@ -4203,6 +4612,7 @@ function Show-PairingDialog {
         $detail = ([string]$pair.Message).TrimEnd('.')
         $msg = switch ($pair.Failure) {
             'outdated' { $script:RelayOutdatedText }
+            'locked'   { 'Too many wrong access codes were entered from this connection. Wait about ten minutes and try again, or use Load a File or Pasted List.' }
             'network'  { "Could not reach the pairing relay ($detail). Check this machine's internet connection, or use Load a File or Pasted List." }
             'busy'     { 'Could not get an unused pairing code - try again in a moment.' }
             default    { "The relay is temporarily unavailable ($detail). Try again in a few minutes." }

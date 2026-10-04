@@ -14,6 +14,13 @@
     echoed. KV cost per run is roughly 8 writes and ~60 reads of the free daily budget.
     Do not run quota-exhaustion tests against production.
 
+    The relay counts every refused access code from a connection (20 per ten minutes, then 429),
+    so the waits for a change to reach Cloudflare probe only a few times (at 0, 20, 45 and 70
+    seconds). One run uses at most 16 of the 20 (one wrong admin key, one final refusal in each of
+    three "is it refused yet" waits, four refusals in each of three "is it accepted yet" waits);
+    if a run ends early with a 429 message, wait ten minutes. The admin code is never blocked, so
+    cleanup always works.
+
 .PARAMETER RelayUrl
     Base URL of the relay. Defaults to the deployed one.
 
@@ -42,6 +49,7 @@ $script:fail = 0
 $script:createdGuest = $null
 $script:openSlots = @()   # @{Code;Session} to close in finally
 $script:adminKey = $null
+$script:extraGuests = @()   # bare codes of any other throwaway guests, deleted in finally
 
 function Write-Result([string]$Name, [bool]$Ok, [string]$Detail = '') {
     if ($Ok) { $script:pass++ } else { $script:fail++ }
@@ -86,15 +94,41 @@ function New-TestCode {
     $out.ToString()
 }
 
-# Poll until a status condition holds or the timeout passes. Returns elapsed seconds, or -1.
-function Wait-ForStatus([scriptblock]$Probe, [int]$Expected, [int]$TimeoutSec, [int]$IntervalSec = 5) {
+# Poll until the probe returns the expected status. The relay counts EVERY refused access code (20 per
+# ten minutes per connection, then 429) and Workers KV can take a minute to catch up, so this probes on
+# a schedule - at 0, 20, 45 and 70 seconds - instead of every few seconds, which would use the whole
+# allowance up on one wait. Returns the seconds it took, -1 when it never matched, or -2 when the relay
+# said 429 (stop: wait ten minutes and run the test again).
+function Wait-ForStatus([scriptblock]$Probe, [int]$Expected, [int[]]$AtSec = @(0, 20, 45, 70)) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    while ($sw.Elapsed.TotalSeconds -lt $TimeoutSec) {
+    foreach ($at in $AtSec) {
+        $pause = $at - $sw.Elapsed.TotalSeconds
+        if ($pause -gt 0) { Start-Sleep -Milliseconds ([int]($pause * 1000)) }
         $s = & $Probe
         if ($s -eq $Expected) { return [int][Math]::Round($sw.Elapsed.TotalSeconds) }
-        Start-Sleep -Seconds $IntervalSec
+        if ($s -eq 429) { return -2 }
     }
     return -1
+}
+
+# The detail text for a Wait-ForStatus result: $Took is a format string for the seconds.
+function Format-Wait([int]$Secs, [string]$Took, [string]$Never) {
+    if ($Secs -ge 0) { return ($Took -f $Secs) }
+    if ($Secs -eq -2) { return 'the relay answered 429 (too many refused codes from this connection) - wait ten minutes and run the test again' }
+    return $Never
+}
+
+# A throwaway guest code that is not guessable: LIVE + 8 random characters (12 in all, so it is not a "short" code).
+function New-LiveCode {
+    $alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $out = New-Object System.Text.StringBuilder
+    $buf = New-Object byte[] 16
+    while ($out.Length -lt 8) {
+        $rng.GetBytes($buf)
+        foreach ($b in $buf) { if ($b -lt 248 -and $out.Length -lt 8) { [void]$out.Append($alphabet[$b % 31]) } }
+    }
+    return 'LIVE' + $out.ToString()
 }
 
 # Resolve the admin key without ever echoing it.
@@ -152,6 +186,7 @@ try {
     $code = New-TestCode
     $r = Invoke-Relay 'POST' "/open?code=$code" $guestHdr
     $session = $null; $gotLabel = $null
+    if ($r.Status -eq 429) { throw 'The relay answered 429: this connection has had too many access codes refused in the last ten minutes (an earlier run, or someone else on this network). Wait ten minutes and run the test again.' }
     if ($r.Status -eq 200) { try { $o = $r.Text | ConvertFrom-Json -ErrorAction Stop; $session = $o.session; $gotLabel = $o.label } catch {} }
     Write-Result '(e1) /open with guest code' ($r.Status -eq 200 -and $session -and $gotLabel -eq $label) "HTTP $($r.Status) label=$gotLabel"
     if (-not $session) { throw 'Could not open a pairing slot; stopping.' }
@@ -213,25 +248,83 @@ try {
     $r = Invoke-Relay 'POST' "/admin/keys/$guestBare/disable" $adminHdr
     Write-Result '(h1) disable guest code' ($r.Status -eq 200) "HTTP $($r.Status)"
     $probeOff = { $c = New-TestCode; $x = Invoke-Relay 'POST' "/open?code=$c" $guestHdr; if ($x.Status -eq 200) { try { $sx = ($x.Text | ConvertFrom-Json).session; $script:openSlots += @{ Code = $c; Session = $sx } } catch {} }; $x.Status }
-    $offSecs = Wait-ForStatus $probeOff 401 90 5
-    Write-Result '(h2) switched-off guest is refused' ($offSecs -ge 0) $(if ($offSecs -ge 0) { "took ${offSecs}s to take effect" } else { 'still accepted after 90s' })
+    $offSecs = Wait-ForStatus $probeOff 401
+    Write-Result '(h2) switched-off guest is refused' ($offSecs -ge 0) (Format-Wait $offSecs 'took {0}s to take effect' 'still accepted after 70s')
 
     $r = Invoke-Relay 'POST' "/admin/keys/$guestBare/enable" $adminHdr
     Write-Result '(h3) enable guest code' ($r.Status -eq 200) "HTTP $($r.Status)"
     $probeOn = { $c = New-TestCode; $x = Invoke-Relay 'POST' "/open?code=$c" $guestHdr; if ($x.Status -eq 200) { try { $sx = ($x.Text | ConvertFrom-Json).session; $script:openSlots += @{ Code = $c; Session = $sx } } catch {} }; $x.Status }
-    $onSecs = Wait-ForStatus $probeOn 200 90 5
-    Write-Result '(h4) re-enabled guest is accepted' ($onSecs -ge 0) $(if ($onSecs -ge 0) { "took ${onSecs}s to take effect" } else { 'still refused after 90s' })
+    $onSecs = Wait-ForStatus $probeOn 200
+    Write-Result '(h4) re-enabled guest is accepted' ($onSecs -ge 0) (Format-Wait $onSecs 'took {0}s to take effect' 'still refused after 70s')
 
     $r = Invoke-Relay 'DELETE' "/admin/keys/$guestBare" $adminHdr
     Write-Result '(h5) delete guest code' ($r.Status -eq 200) "HTTP $($r.Status)"
     $script:createdGuest = $null   # deleted on purpose; nothing left for finally to clean
-    $delSecs = Wait-ForStatus $probeOff 401 90 5
-    Write-Result '(h6) deleted guest is refused' ($delSecs -ge 0) $(if ($delSecs -ge 0) { "took ${delSecs}s" } else { 'still accepted after 90s' })
+    $delSecs = Wait-ForStatus $probeOff 401
+    Write-Result '(h6) deleted guest is refused' ($delSecs -ge 0) (Format-Wait $delSecs 'took {0}s' 'still accepted after 70s')
     $r = Invoke-Relay 'GET' '/admin/keys' $adminHdr
     $stillListed = $false
     # Assign, then foreach: in Windows PowerShell 5.1 `@($text | ConvertFrom-Json)` wraps a whole JSON array as one element.
     if ($r.Status -eq 200) { try { $listed = $r.Text | ConvertFrom-Json -ErrorAction Stop; foreach ($g in $listed) { if ($g.label -eq $label) { $stillListed = $true } } } catch {} }
     Write-Result '(h7) deleted guest is gone from the list' (-not $stillListed) $(if ($stillListed) { 'still listed (list may lag up to ~60s)' } else { '' })
+
+    # (i) expiry, codes the owner chooses, and /rename - newer Worker features. A Worker that
+    # predates them ignores ?hours= and ?code= and answers with a random code, so that case is
+    # reported as SKIP (and the stray code deleted), not FAIL.
+    $liveCode = New-LiveCode   # 12 random characters: not a "short" code, and not guessable if a cleanup ever fails
+    $liveLabel = 'e2e-x-' + (Get-Date -Format 'HHmmss')
+    $r = Invoke-Relay 'POST' ("/admin/keys?label=" + [uri]::EscapeDataString($liveLabel) + "&hours=1&code=$liveCode") $adminHdr
+    $made = $null
+    if ($r.Status -eq 200) { try { $made = $r.Text | ConvertFrom-Json -ErrorAction Stop } catch {} }
+    if ($made -and $made.key) { $script:extraGuests += ($made.key -replace '[^A-Za-z0-9]', '') }
+    $supportsNew = [bool]($made -and ($made.PSObject.Properties.Name -contains 'custom') -and ($made.PSObject.Properties.Name -contains 'expires'))
+    if (-not $supportsNew) {
+        Write-Output '[SKIP] (i) expiry / chosen codes / rename - this Worker predates them (paste the current cloudflare/export-relay-worker.js to enable)'
+    } else {
+        $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        $dueMs = $nowMs + 3600000
+        $expOk = [bool]($made.expires -and [Math]::Abs([long]$made.expires - $dueMs) -lt 600000)
+        Write-Result '(i1) create a code I choose, expiring in 1 hour' ($made.custom -eq $true -and $made.key -ceq $liveCode -and $expOk -and $made.expired -eq $false) "code=$(Hide-Code $liveCode) expires in ~$([int](([long]$made.expires - $nowMs) / 60000)) min"
+
+        $r = Invoke-Relay 'POST' ("/admin/keys?label=x&code=4829") $adminHdr
+        Write-Result '(i2) a short code without an expiry is refused' ($r.Status -eq 400) "HTTP $($r.Status)"
+        $r = Invoke-Relay 'POST' ("/admin/keys?label=x&hours=1&code=$liveCode") $adminHdr
+        Write-Result '(i3) a code that already exists is refused (409)' ($r.Status -eq 409) "HTTP $($r.Status)"
+
+        $liveHdr = @{ 'X-Access-Key' = $liveCode.ToLower() }
+        $probeLive = { $c = New-TestCode; $x = Invoke-Relay 'POST' "/open?code=$c" $liveHdr; if ($x.Status -eq 200) { try { $sx = ($x.Text | ConvertFrom-Json).session; $script:openSlots += @{ Code = $c; Session = $sx } } catch {} }; $x.Status }
+        $liveSecs = Wait-ForStatus $probeLive 200
+        Write-Result '(i4) the chosen code pairs (typed in lower case)' ($liveSecs -ge 0) (Format-Wait $liveSecs 'took {0}s to be accepted' 'still refused after 70s')
+
+        # rename to a second 12-character code with a new 2 hour expiry; old one stops, new one works
+        $newCode = New-LiveCode
+        # Remember it for cleanup BEFORE asking: if the relay answers 503 "BOTH work" the new code exists
+        # although no record came back (deleting a code that does not exist is harmless).
+        $script:extraGuests += $newCode
+        $r = Invoke-Relay 'POST' "/admin/keys/$liveCode/rename?to=$newCode&hours=2" $adminHdr
+        $renamed = $null
+        if ($r.Status -eq 200) { try { $renamed = $r.Text | ConvertFrom-Json -ErrorAction Stop } catch {} }
+        # A successful rename removed the old code; if it failed (503), both may exist and both stay on the list.
+        if ($renamed -and $renamed.key) { $script:extraGuests = @($script:extraGuests | Where-Object { $_ -ne $liveCode }) }
+        $dueMs2 = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + 7200000
+        $renOk = [bool]($renamed -and $renamed.key -ceq $newCode -and $renamed.label -eq $liveLabel -and $renamed.expires -and [Math]::Abs([long]$renamed.expires - $dueMs2) -lt 600000)
+        Write-Result '(i5) rename: same guest under a new code, 2 hour expiry' ($r.Status -eq 200 -and $renOk) "HTTP $($r.Status) new=$(Hide-Code $newCode)"
+        if ($renOk) {
+            $newHdr = @{ 'X-Access-Key' = $newCode }
+            $probeNew = { $c = New-TestCode; $x = Invoke-Relay 'POST' "/open?code=$c" $newHdr; if ($x.Status -eq 200) { try { $sx = ($x.Text | ConvertFrom-Json).session; $script:openSlots += @{ Code = $c; Session = $sx } } catch {} }; $x.Status }
+            $newSecs = Wait-ForStatus $probeNew 200
+            Write-Result '(i6) the new code pairs' ($newSecs -ge 0) (Format-Wait $newSecs 'took {0}s' 'still refused after 70s')
+            $oldSecs = Wait-ForStatus $probeLive 401
+            Write-Result '(i7) the old code is refused' ($oldSecs -ge 0) (Format-Wait $oldSecs 'took {0}s to take effect' 'still accepted after 70s')
+            $r = Invoke-Relay 'POST' "/admin/keys/$newCode/expiry?hours=never" $adminHdr
+            $never = $null
+            if ($r.Status -eq 200) { try { $never = $r.Text | ConvertFrom-Json -ErrorAction Stop } catch {} }
+            Write-Result '(i8) expiry can be removed from a long code' ($r.Status -eq 200 -and $never -and $null -eq $never.expires) "HTTP $($r.Status)"
+            $r = Invoke-Relay 'POST' "/admin/keys/$newCode/expiry?hours=48" $adminHdr
+            $r2 = Invoke-Relay 'POST' "/admin/keys/4829/expiry?hours=never" $adminHdr
+            Write-Result '(i9) expiry can be set again, and a missing code answers 404' ($r.Status -eq 200 -and $r2.Status -eq 404) "set=$($r.Status) missing=$($r2.Status)"
+        }
+    }
 } catch {
     Write-Output "[ABORT] $($_.Exception.Message)"
     $script:fail++
@@ -244,6 +337,10 @@ try {
         $bare = $script:createdGuest -replace '-', ''
         $r = Invoke-Relay 'DELETE' "/admin/keys/$bare" @{ 'X-Access-Key' = $script:adminKey }
         Write-Output "[CLEANUP] deleted throwaway guest code $(Hide-Code $script:createdGuest) (HTTP $($r.Status))"
+    }
+    foreach ($bare in $script:extraGuests) {
+        $r = Invoke-Relay 'DELETE' "/admin/keys/$bare" @{ 'X-Access-Key' = $script:adminKey }
+        Write-Output "[CLEANUP] deleted extra throwaway guest code $(Hide-Code $bare) (HTTP $($r.Status))"
     }
     if ($tempDownloaded -and $exportPath) { Remove-Item -LiteralPath $exportPath -ErrorAction SilentlyContinue }
     $script:adminKey = $null

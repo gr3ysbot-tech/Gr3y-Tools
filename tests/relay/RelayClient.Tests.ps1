@@ -125,6 +125,41 @@ Describe 'Relay client functions' -Skip:(-not $nodeAvailable) {
         }
     }
 
+    It 'Start-RelayPairing reports 20 wrong codes in a row as locked - and the admin code still gets through' {
+        # Its own relay: the wrong guesses lock the (shared, loopback) client out for ten minutes,
+        # which would otherwise break the tests that follow.
+        $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+        $l.Start(); $port3 = $l.LocalEndpoint.Port; $l.Stop()
+        $log3 = Join-Path ([System.IO.Path]::GetTempPath()) "relaytest-lock-$port3.log"
+        $p3 = Start-Process -FilePath 'node' -ArgumentList @($script:harnessPath, 'serve', "$port3") `
+            -PassThru -RedirectStandardOutput $log3 -RedirectStandardError "$log3.err" -WindowStyle Hidden
+        try {
+            $url3 = "http://127.0.0.1:$port3"
+            $admin3 = $null
+            $deadline = (Get-Date).AddSeconds(15)
+            while ((Get-Date) -lt $deadline -and -not $admin3) {
+                Start-Sleep -Milliseconds 300
+                $m = [regex]::Match((Get-Content $log3 -Raw -ErrorAction SilentlyContinue), 'admin=(\S+)')
+                if ($m.Success) { $admin3 = $m.Groups[1].Value }
+            }
+            $admin3 | Should -Not -BeNullOrEmpty
+            $made = Invoke-RelayRequest -RelayUrl $url3 -Method 'POST' -Path '/admin/keys?label=locktest' -Headers @{ 'X-Access-Key' = $admin3 }
+            $guest3 = ($made.Text | ConvertFrom-Json).key
+            for ($i = 0; $i -lt 20; $i++) {
+                (Start-RelayPairing -RelayUrl $url3 -AccessKey "wrong-code-$i").Failure | Should -Be 'auth'
+            }
+            # The 21st attempt is turned away - even with a good guest code.
+            $locked = Start-RelayPairing -RelayUrl $url3 -AccessKey $guest3
+            $locked.Ok | Should -BeFalse
+            $locked.Failure | Should -Be 'locked'
+            # The admin code is never blocked.
+            (Start-RelayPairing -RelayUrl $url3 -AccessKey $admin3).Ok | Should -BeTrue
+        } finally {
+            if ($p3 -and -not $p3.HasExited) { Stop-Process -Id $p3.Id -Force -ErrorAction SilentlyContinue }
+            Remove-Item $log3, "$log3.err" -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'Start-RelayPairing reports an unreachable relay as network' {
         $p = Start-RelayPairing -RelayUrl 'http://127.0.0.1:1' -AccessKey $script:admin
         $p.Ok | Should -BeFalse

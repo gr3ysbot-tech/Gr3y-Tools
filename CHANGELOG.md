@@ -14,6 +14,16 @@ phases 0-3 and part of phase 4 (optional items were deliberately not built):
 
 ### Added
 
+- **Guest-code expiry and codes you choose.** In **Manage Access Codes...** a code can expire
+  on its own (1 hour, 8 hours, 1 day, 7 days, 30 days, never, or a custom number of hours), the
+  new **Expires** column shows when, and an expired code is listed as *Expired* for a week. You
+  can pick the code yourself (4-32 letters or digits, e.g. `9989`) instead of a random one, and
+  **Edit Code...** changes the code text, its expiry, or both at any time - the old code stops
+  working. A code under 8 characters must expire within 24 hours (it can be guessed), and the
+  relay now slows down a connection that keeps sending wrong access codes (20 refused codes in
+  10 minutes, then it waits; the admin code is never blocked). Needs the updated Worker
+  (`cloudflare/export-relay-worker.js`); with the old Worker the app says so, takes back the
+  random never-expiring code that Worker makes, and creates nothing.
 - Moving a user to a replacement machine: **Export Installed Apps...** (saves a
   JSON inventory) and **Compare Against List...** on the Install Apps tab. The
   new machine takes the old machine's list by a one-time **pairing code**, an
