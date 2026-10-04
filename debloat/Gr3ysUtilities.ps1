@@ -3401,14 +3401,16 @@ function Get-GuestRowInfo {
             $text = 'Invalid'
             $expiresMs = $null
         }
-    } elseif ($expired) {
-        $text = 'Needs expiry'   # the relay refuses it but gave no usable time (a hand-edited record)
     }
-    # Expired but not lapsed: no usable time, or one well in the future (more than 10 minutes, so a
-    # clock difference cannot cause it). The relay refuses such a code for another reason - a code
-    # under 8 characters needs an expiry within a day - and "has expired" would be the wrong thing to say.
+    # Refused, but no time that can be shown (absent, damaged, or out of range): it needs an expiry.
+    if ($expired -and $null -eq $expiresMs) { $text = 'Needs expiry' }
+    # Expired but not lapsed: no usable time, or - for a code under 8 characters - one well in the future
+    # (more than 10 minutes, so a clock difference cannot cause it). The relay refuses such a code for
+    # another reason (a short code needs an expiry within a day), and "has expired" would be the wrong
+    # thing to say. A longer code with a usable time can only have lapsed. A record without a key counts as short.
+    $codeLength = $(if ($names -contains 'key') { ([string]$Rec.key -replace '[^A-Za-z0-9]', '').Length } else { 0 })
     $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-    $needsExpiry = $expired -and (($null -eq $expiresMs) -or ($expiresMs -gt ($nowMs + 600000)))
+    $needsExpiry = $expired -and (($null -eq $expiresMs) -or ($codeLength -lt 8 -and $expiresMs -gt ($nowMs + 600000)))
     return [PSCustomObject]@{ State = $state; Expires = $text; ExpiresMs = $expiresMs; Expired = $expired; NeedsExpiry = $needsExpiry; Enabled = $enabled }
 }
 
@@ -4311,6 +4313,10 @@ function Show-AccessCodesDialog {
     $errDetail = {
         param($r)
         $d = if ($r.Text) { $r.Text.Trim() } elseif ($r.Error) { $r.Error } else { '' }
+        # 429 = this connection has had too many wrong codes. The relay answers EVERY non-admin key
+        # that way (never 401), so a mistyped admin code looks like a lock-out: say that Refresh asks
+        # for the code again (the right admin code works at once - it is never blocked).
+        if ($r.Status -eq 429) { $d = "$d (Wrong admin code? Press Refresh to enter it again.)".Trim() }
         if ($d) { " $d" } else { '' }
     }.GetNewClosure()
 
@@ -4535,8 +4541,11 @@ function Show-AccessCodesDialog {
             $codesList.SelectedIndex = $idx
             $nowState = $(if ($rec.enabled) { 'On' } else { 'Off' })
             if ($rec.expired -eq $true) {
-                # The row stays "Expired" whatever the switch says, and the code still cannot be used.
-                $codesStatus.Text = "$($rec.key) is now $nowState, but it has expired - use Edit Code... to give it a new expiry."
+                # The row stays "Expired" whatever the switch says, and the code still cannot be used. Say why:
+                # a code that merely lacks a usable expiry has not "expired".
+                $nowInfo = Get-GuestRowInfo -Rec $rec
+                $why = $(if (-not $nowInfo.NeedsExpiry) { 'it has expired' } elseif ($tag.Code.Length -lt 8) { 'a code under 8 characters needs an expiry within 24 hours' } else { 'it has no usable expiry' })
+                $codesStatus.Text = "$($rec.key) is now $nowState, but $why - use Edit Code... to give it a new expiry."
             } else {
                 $codesStatus.Text = "$($rec.key) is now $nowState. It can take up to a minute to take effect everywhere."
             }
