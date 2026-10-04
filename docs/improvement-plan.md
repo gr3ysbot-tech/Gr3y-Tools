@@ -477,7 +477,12 @@ local file (`ConvertTo-SecureString -Key`) or a one-time prompt held in memory.
 profile pattern and `Win32_BIOS.SerialNumber`, trimmed to 15 chars, invalid characters
 stripped; show the computed name in Scan; warn instead of renaming if already Entra joined.
 
-### 2.5 BitLocker: status, enable, escrow (never "disable")
+### 2.5 BitLocker: status, enable, escrow (never a silent "disable")
+- Update 2026-10-04: at the owner's request the Panels tab also has a guarded **Disable BitLocker...**
+  dialog (status first, then a written-and-checked backup of every key, then decrypt the ticked
+  drives; data drives before the Windows drive; nothing is decrypted without that backup). It is
+  deliberately NOT a one-click tweak, which is what "never disable" in this plan and in section 7
+  was about.
 - Scan shows `Get-BitLockerVolume C:` ProtectionStatus/EncryptionPercentage and `Get-Tpm`
   TpmReady/TpmPresent.
 - Opt-in "Enable BitLocker": if TpmReady and ProtectionStatus Off:

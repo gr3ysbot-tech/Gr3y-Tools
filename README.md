@@ -50,7 +50,10 @@ dense two-column layout instead of a typical "settings app" look. Five tabs:
   consoles (Device Manager, Disk Management, Services, Task Scheduler, Event
   Viewer, Local Users and Groups, Windows Firewall) and diagnostic commands
   (`msinfo32`, `dxdiag`, `dsregcmd /status`, an elevated PowerShell prompt) a
-  field tech reaches for most often.
+  field tech reaches for most often; and a BitLocker section: scan every
+  drive's status, save the recovery keys, and a guarded **Disable BitLocker...**
+  that shows the status first, saves and re-reads a backup of every key, and
+  only then decrypts the drives you tick (it never turns encryption on).
 - **Provisioning** - client-profile fields (save/load as a portable JSON file, to
   either OneDrive or a USB drive, so a batch of laptops for the same client can
   reuse the same settings); hostname rename from a configurable pattern; OneDrive

@@ -14,6 +14,28 @@ phases 0-3 and part of phase 4 (optional items were deliberately not built):
 
 ### Added
 
+- **Disable BitLocker... (Panels tab).** A guarded way to turn BitLocker off on any drive, in
+  the order you asked for: it shows every drive's status first, then saves a backup of every
+  key Windows can export (recovery passwords, key IDs, a note on each other protector, and
+  Windows' own `manage-bde` output) to a file you choose, reads the file back and checks it
+  (including that each recovery password is well-formed) - and only then does the button that
+  decrypts the ticked drives become available. Nothing is ever ticked for you. The backup is
+  checked again right before each drive is decrypted (a USB stick can be pulled, or a key added,
+  while the confirmation box is open), the file is created with its permissions already
+  restricted, and an existing file is never overwritten. Extras: it offers a USB stick or other
+  unencrypted drive for the backup, warns about a backup on a drive being decrypted, on an
+  encrypted drive or inside OneDrive; offers to add a recovery password to a drive that has
+  none; decrypts data drives before the Windows drive; clears the stored auto-unlock keys that
+  stop Windows decrypting the Windows drive (and says which drives will then ask for a
+  password); can tell Windows not to turn device encryption back on by itself (only once the
+  Windows drive's decryption has started, and never by rewriting the registry key); waits while
+  a Debloat, Fixes, install or Provisioning job is running; warns about battery power and
+  policy/MDM that may re-enable encryption; and shows progress with the time so far and a rough
+  time left. Locked, hardware-encrypted, wiping, paused and already-decrypting drives are
+  listed but not offered, with the reason. Nothing here turns BitLocker on, and no recovery
+  password is ever written to a log or a message box. What was done is recorded in
+  `bitlocker-actions.log` (in `C:\ProgramData\Gr3yTools\audit`, writable only by
+  administrators, when the app runs elevated).
 - **Guest-code expiry and codes you choose.** In **Manage Access Codes...** a code can expire
   on its own (1 hour, 8 hours, 1 day, 7 days, 30 days, never, or a custom number of hours), the
   new **Expires** column shows when, and an expired code is listed as *Expired* for a week. You
