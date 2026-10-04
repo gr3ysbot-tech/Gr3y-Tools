@@ -2573,7 +2573,9 @@ foreach ($cat in $categories) {
 }
 
 function Update-SelectedCount {
-    $count = ($script:appEntries | Where-Object { $_.CheckBox.IsChecked }).Count
+    # @() around the pipeline: a single match has no .Count in Windows PowerShell 5.1, so
+    # exactly one ticked app used to read "Selected: " with no number.
+    $count = @($script:appEntries | Where-Object { $_.CheckBox.IsChecked }).Count
     $selectedCountText.Text = "Selected: $count"
 }
 
@@ -3001,20 +3003,24 @@ function Test-DotNetRuntimeNameMatch {
 # winget right-pads every column to the widest value it holds in that particular run, so
 # there's no fixed offset to hardcode - the header row's own character positions are the
 # only reliable way to slice the Id column back out of a `winget list` table.
+# Every return uses the unary comma: PowerShell unrolls a collection on return, so an EMPTY
+# set came back as $null (and a one-id set as a bare [string]), which broke the callers'
+# .Contains() - a Stop during a scan threw dozens of hidden errors, and a Compare against an
+# empty `winget list` ticked apps that were already installed here.
 function Get-WingetListedIds {
     param([string]$Path)
     $ids = New-Object 'System.Collections.Generic.HashSet[string]'
-    if (-not $Path -or -not (Test-Path $Path)) { return $ids }
+    if (-not $Path -or -not (Test-Path $Path)) { return , $ids }
     $lines = Get-Content -Path $Path -ErrorAction SilentlyContinue
     $headerIndex = -1
     for ($i = 0; $i -lt $lines.Count; $i++) {
         if ($lines[$i] -match '^Name\s+Id\s+Version') { $headerIndex = $i; break }
     }
-    if ($headerIndex -lt 0 -or $headerIndex + 1 -ge $lines.Count) { return $ids }
+    if ($headerIndex -lt 0 -or $headerIndex + 1 -ge $lines.Count) { return , $ids }
     $header = $lines[$headerIndex]
     $idCol = $header.IndexOf('Id')
     $versionCol = $header.IndexOf('Version')
-    if ($idCol -lt 0 -or $versionCol -lt 0 -or $versionCol -le $idCol) { return $ids }
+    if ($idCol -lt 0 -or $versionCol -lt 0 -or $versionCol -le $idCol) { return , $ids }
     for ($i = $headerIndex + 2; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]
         if (-not $line -or $line.Length -le $idCol) { continue }
@@ -3023,7 +3029,7 @@ function Get-WingetListedIds {
         $id = $line.Substring($idCol, $endCol - $idCol).Trim()
         if ($id) { [void]$ids.Add($id) }
     }
-    return $ids
+    return , $ids
 }
 
 function Complete-InstallQueueItem {
@@ -3247,7 +3253,8 @@ $script:ExportRelayUrl = 'https://gr3y-export-relay.gr3y-b8f.workers.dev'
 # module scope, not this file's. A handler that captures a reference to this object (see
 # Show-AccessCodesDialog) mutates the same object everyone else sees.
 $script:RelayKeys = [PSCustomObject]@{ Access = $env:GR3Y_RELAY_ACCESS_KEY; Admin = $null }
-$script:RelayOutdatedText = "The pairing relay hasn't been updated for access codes yet - redeploy cloudflare/export-relay-worker.js and add its ADMIN_KEY secret (see cloudflare/README.md)."
+$script:RelayOutdatedText = "The pairing relay hasn't been updated for access codes yet. Ask whoever runs it to deploy the new Worker (cloudflare/README.md has the steps), or use Load a File or Pasted List for now."
+$script:RelayBadKeyText = 'That code contains a character that cannot be sent (a typographic dash or an invisible character?). Retype it using plain letters, digits and hyphens.'
 
 function New-PairingCode {
     # Unambiguous alphabet (no 0/O, 1/I/L) - meant to be read aloud over a phone or typed
@@ -3265,6 +3272,7 @@ function New-PairingCode {
             if ($b -lt 248 -and $out.Length -lt 6) { [void]$out.Append($alphabet[$b % 31]) }
         }
     }
+    $rng.Dispose()
     $out.ToString()
 }
 
@@ -3281,7 +3289,7 @@ function Invoke-RelayRequest {
         [Parameter(Mandatory)][string]$Method,
         [Parameter(Mandatory)][string]$Path,
         [hashtable]$Headers = @{},
-        [int]$TimeoutSec = 20
+        [int]$TimeoutSec = 10
     )
     try {
         $response = Invoke-WebRequest -Uri "$RelayUrl$Path" -Method $Method -Headers $Headers -TimeoutSec $TimeoutSec -UseBasicParsing -ErrorAction Stop
@@ -3315,19 +3323,75 @@ function Test-RelayGated {
     # (admin required) and 400 on the old one (it only knows ?code=). Returns $true (gated),
     # $false (old Worker), or $null (could not tell - network error).
     param([Parameter(Mandatory)][string]$RelayUrl)
-    $r = Invoke-RelayRequest -RelayUrl $RelayUrl -Method 'GET' -Path '/admin/keys' -TimeoutSec 15
+    # Short timeout: this runs on the UI thread before any dialog is shown, so a relay that
+    # accepts the connection but never answers would otherwise freeze the window for the
+    # whole timeout.
+    $r = Invoke-RelayRequest -RelayUrl $RelayUrl -Method 'GET' -Path '/admin/keys' -TimeoutSec 8
     if ($r.Status -eq 401 -or $r.Status -eq 503) { return $true }
     if ($r.Status -eq 400 -or $r.Status -eq 404) { return $false }
     return $null
 }
 
+function ConvertTo-RelayKey {
+    # Cleans a typed or pasted access code so it can ride in an HTTP header. Pasting from chat,
+    # Word or a PDF often swaps the hyphens for look-alike dashes (U+2010..U+2015, U+2212) or
+    # adds invisible characters, and .NET refuses a header value with anything above U+00FF -
+    # that used to surface as "could not reach the relay" and stick until the GUI restarted.
+    # Maps those dashes back to '-', turns non-breaking spaces into plain ones, drops zero-width
+    # and direction-mark characters, trims, and returns $null if nothing was typed or anything
+    # other than printable ASCII is left. Works on code points (not a regex with escapes) so
+    # this file stays pure ASCII.
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($ch in $Text.ToCharArray()) {
+        $c = [int]$ch
+        if (($c -ge 0x2010 -and $c -le 0x2015) -or $c -eq 0x2212 -or $c -eq 0xFE58 -or $c -eq 0xFE63 -or $c -eq 0xFF0D) {
+            [void]$sb.Append('-')
+        } elseif ($c -eq 0xA0 -or $c -eq 0x2007 -or $c -eq 0x202F) {
+            [void]$sb.Append(' ')
+        } elseif (($c -ge 0x200B -and $c -le 0x200F) -or ($c -ge 0x202A -and $c -le 0x202E) -or $c -eq 0x2060 -or $c -eq 0xFEFF) {
+            # zero-width / direction marks: drop
+        } else {
+            [void]$sb.Append($ch)
+        }
+    }
+    $t = $sb.ToString().Trim()
+    if ($t -notmatch '^[\x20-\x7E]+\z') { return $null }
+    return $t
+}
+
+function ConvertFrom-RelayKeyList {
+    # Parses the GET /admin/keys response (a JSON array of guest-code records) into a real
+    # array. Windows PowerShell 5.1's ConvertFrom-Json emits a JSON array as ONE pipeline
+    # object, so `@($text | ConvertFrom-Json)` is a one-element array holding the whole list:
+    # an empty relay showed a phantom blank row and two or more codes collapsed into one
+    # garbled row. Assigning first and enumerating with foreach is right in 5.1 and 7, for
+    # 0, 1 or many records. An unparseable body, or a record without a key, yields nothing.
+    # Always returns an array (the leading comma stops an empty one unrolling to $null).
+    param([string]$Json)
+    $parsed = $null
+    try { $parsed = $Json | ConvertFrom-Json -ErrorAction Stop } catch { return , @() }
+    $rows = New-Object System.Collections.ArrayList
+    foreach ($rec in $parsed) {
+        if ($rec -and $rec.key) { [void]$rows.Add($rec) }
+    }
+    return , $rows.ToArray()
+}
+
 function Start-RelayPairing {
     # Opens a fresh pairing code with the access code. Retries a new code on 409 (collision)
-    # up to 3 times. Failure reasons: 'auth' (401), 'outdated' (404 - old Worker has no /open),
+    # up to 3 times. Failure reasons: 'auth' (401), 'badkey' (the code holds characters that
+    # cannot go in a header - nothing was sent), 'outdated' (404 - old Worker has no /open),
     # 'network' (no HTTP response), 'busy' (3 collisions), 'server' (anything else, incl. 503).
     # NOTE: no `continue` inside a switch here - in PowerShell that continues the SWITCH, not
     # the enclosing loop, so this uses if/elseif.
     param([Parameter(Mandatory)][string]$RelayUrl, [Parameter(Mandatory)][string]$AccessKey)
+    # .NET throws on a header value outside printable ASCII before anything is sent, which
+    # would otherwise read as "relay unreachable" - catch it here so the caller can re-prompt.
+    if ($AccessKey -notmatch '^[\x20-\x7E]+\z') {
+        return [PSCustomObject]@{ Ok = $false; Failure = 'badkey'; Message = 'The access code contains a character that cannot be sent.'; Attempts = 0 }
+    }
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         $code = New-PairingCode
         $r = Invoke-RelayRequest -RelayUrl $RelayUrl -Method 'POST' -Path "/open?code=$code" -Headers @{ 'X-Access-Key' = $AccessKey }
@@ -3501,6 +3565,7 @@ function Show-PromptDialog {
     $reader = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($dialogXaml))
     $dialog = [Windows.Markup.XamlReader]::Load($reader)
     $dialog.Owner = $(if ($Owner) { $Owner } else { $window })
+    $dialog.Title = $Title
 
     $dialog.FindName('PromptTitle').Text = $Title
     $dialog.FindName('PromptMessage').Text = $Message
@@ -3525,12 +3590,15 @@ function Show-PromptDialog {
 
     $resultHolder = [PSCustomObject]@{ Value = $null }
     $btnOk.Add_Click({
-        if ($Secret) {
-            $resultHolder.Value = $secretBox.Password
-            $secretBox.Clear()
-        } else {
-            $resultHolder.Value = $plainBox.Text
+        $entered = $(if ($Secret) { $secretBox.Password } else { $plainBox.Text })
+        if ([string]::IsNullOrWhiteSpace($entered)) {
+            # Stay open and say so: closing on an empty box read as "the click did nothing".
+            $promptError.Text = $(if ($Secret) { 'Enter the access code first, or press Cancel.' } else { 'Type something first, or press Cancel.' })
+            $promptError.Visibility = 'Visible'
+            return
         }
+        $resultHolder.Value = $entered
+        if ($Secret) { $secretBox.Clear() }
         $dialog.Close()
     }.GetNewClosure())
     $btnCancel.Add_Click({ if ($Secret) { $secretBox.Clear() }; $dialog.Close() }.GetNewClosure())
@@ -3547,11 +3615,23 @@ function Get-RelayAccessKey {
     # previous prompt this run), or prompts for it. Kept in memory ONLY - never written to disk,
     # since this mostly runs on client machines. -ErrorText re-prompts after a rejected key.
     param([string]$Message = 'Enter the access code (admin or a guest code) to generate a pairing code. It is kept in memory only for this session and never written to disk.', [string]$ErrorText)
-    if (-not $ErrorText -and -not [string]::IsNullOrEmpty($script:RelayKeys.Access)) { return $script:RelayKeys.Access }
-    $entered = Show-PromptDialog -Title 'Access Code' -Message $Message -Secret -ErrorText $ErrorText
-    if ([string]::IsNullOrEmpty($entered)) { return $null }
-    $script:RelayKeys.Access = $entered
-    return $entered
+    if (-not $ErrorText -and -not [string]::IsNullOrEmpty($script:RelayKeys.Access)) {
+        # A cached key (typed earlier, or from GR3Y_RELAY_ACCESS_KEY, which is typed by hand
+        # too) goes through the same clean-up; one that cannot be repaired is dropped and the
+        # user is asked again with an explanation instead of failing the same way every time.
+        $cached = ConvertTo-RelayKey -Text $script:RelayKeys.Access
+        if ($cached) { $script:RelayKeys.Access = $cached; return $cached }
+        $script:RelayKeys.Access = $null
+        $ErrorText = $script:RelayBadKeyText
+    }
+    for ($asked = 0; $asked -lt 3; $asked++) {
+        $entered = Show-PromptDialog -Title 'Access Code' -Message $Message -Secret -ErrorText $ErrorText
+        if ([string]::IsNullOrEmpty($entered)) { return $null }
+        $clean = ConvertTo-RelayKey -Text $entered
+        if ($clean) { $script:RelayKeys.Access = $clean; return $clean }
+        $ErrorText = $script:RelayBadKeyText
+    }
+    return $null
 }
 
 function Show-CompareSourceChooser {
@@ -3631,13 +3711,13 @@ function Show-CompareSourceChooser {
       <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,14"
                  Text="Checks off every catalog app that's installed on the old machine but missing here. Pick how the old machine's list gets here:"/>
 
-      <Button Name="BtnChoosePair" HorizontalAlignment="Stretch" Margin="0,0,0,8" BorderBrush="{StaticResource AccentBrush}">
+      <Button Name="BtnChoosePair" AutomationProperties.Name="Generate a Pairing Code (needs an access code)" HorizontalAlignment="Stretch" Margin="0,0,0,8" BorderBrush="{StaticResource AccentBrush}">
         <StackPanel Margin="0,4">
           <TextBlock Text="Generate a Pairing Code..." FontWeight="Bold" HorizontalAlignment="Center"/>
           <TextBlock Text="Easiest - run one command on the old machine and its list arrives here by itself. No file. Needs an access code." Foreground="{StaticResource MutedBrush}" FontSize="12" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center" Margin="0,2,0,0"/>
         </StackPanel>
       </Button>
-      <Button Name="BtnChooseFile" HorizontalAlignment="Stretch" Margin="0,0,0,18">
+      <Button Name="BtnChooseFile" AutomationProperties.Name="Load a File or Pasted List" HorizontalAlignment="Stretch" Margin="0,0,0,18">
         <StackPanel Margin="0,4">
           <TextBlock Text="Load a File or Pasted List..." FontWeight="Bold" HorizontalAlignment="Center"/>
           <TextBlock Text="An Export Installed Apps file, or a plain-text list (one app name per line, or a pasted DisplayName/DisplayVersion table)." Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap" TextAlignment="Center" Margin="0,2,0,0"/>
@@ -3666,7 +3746,7 @@ function Show-CompareSourceChooser {
               <ColumnDefinition Width="*"/>
               <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <TextBox Name="CmdFile" Grid.Column="0" MinHeight="32" VerticalContentAlignment="Center" TextWrapping="NoWrap" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Auto"/>
+            <TextBox Name="CmdFile" Grid.Column="0" MinHeight="32" VerticalContentAlignment="Center" TextWrapping="Wrap" VerticalScrollBarVisibility="Disabled" HorizontalScrollBarVisibility="Disabled"/>
             <Button Name="BtnCopyFile" Grid.Column="1" Content="Copy" Width="70" Height="32" Margin="8,0,0,0" VerticalAlignment="Top"/>
           </Grid>
         </StackPanel>
@@ -3902,6 +3982,9 @@ function Show-AccessCodesDialog {
         [System.Windows.Controls.Grid]::SetColumn($tbCreated, 3); [void]$row.Children.Add($tbCreated)
         $item = New-Object System.Windows.Controls.ListBoxItem
         $item.Content = $row
+        # A readable accessible name (screen readers, UI automation) - without it the row is
+        # announced as the type name of the item.
+        [System.Windows.Automation.AutomationProperties]::SetName($item, "$($rec.key) $($rec.label) $(if ($rec.enabled) { 'On' } else { 'Off' })")
         # Tag: the bare code (no separators) plus the enabled flag, for Toggle/Delete/Copy.
         $item.Tag = [PSCustomObject]@{ Code = ($rec.key -replace '[^A-Za-z0-9]', ''); Display = $rec.key; Enabled = [bool]$rec.enabled; Label = $rec.label }
         return $item
@@ -3925,6 +4008,15 @@ function Show-AccessCodesDialog {
         $dialog.Cursor = $(if ($busy) { [System.Windows.Input.Cursors]::Wait } else { $null })
         foreach ($b in @($btnNew, $btnCopy, $btnToggle, $btnDelete, $btnRefresh)) { $b.IsEnabled = -not $busy }
         if ($msg) { $codesStatus.Text = $msg }
+        # The relay calls below block this thread, so paint the busy state first - otherwise
+        # the "Loading..." text and wait cursor are set but never drawn until the call returns.
+        if ($busy) { try { $dialog.Dispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Render) } catch {} }
+    }.GetNewClosure()
+
+    # "HTTP 404", or plain words when there was no HTTP response at all (Status 0).
+    $httpText = {
+        param($r)
+        if ($r.Status -eq 0) { 'no answer from the relay' } else { "HTTP $($r.Status)" }
     }.GetNewClosure()
 
     # Admin key: try the cached admin code, else the pairing key (the admin may have used it
@@ -3935,16 +4027,25 @@ function Show-AccessCodesDialog {
     # reference, not $script: variables, because inside a closure `$script:` is the closure's
     # own scope.
     $keys = $script:RelayKeys
+    $badKeyText = $script:RelayBadKeyText
     $callAdmin = {
         param([string]$Method, [string]$Path)
         $key = $keys.Admin
         if ([string]::IsNullOrEmpty($key)) { $key = $keys.Access }
         $typed = $false
         $errText = $null
+        # Same clean-up as the pairing key: a cached code with a stray typographic dash would
+        # otherwise fail inside .NET and read as "no answer from the relay".
+        if (-not [string]::IsNullOrEmpty($key)) {
+            $key = ConvertTo-RelayKey -Text $key
+            if (-not $key) { $errText = $badKeyText }
+        }
         for ($tries = 0; $tries -lt 3; $tries++) {
             if ([string]::IsNullOrEmpty($key)) {
                 $key = Show-PromptDialog -Owner $dialog -Title 'Admin Code' -Message 'Enter the ADMIN code (the ADMIN_KEY Worker secret) to manage guest codes. Kept in memory only.' -Secret -ErrorText $errText
                 if ([string]::IsNullOrEmpty($key)) { return $null }  # cancelled
+                $key = ConvertTo-RelayKey -Text $key
+                if (-not $key) { $errText = $badKeyText; continue }  # nothing was sent; ask again
                 $typed = $true
             }
             $r = Invoke-RelayRequest -RelayUrl $relayUrl -Method $Method -Path $Path -Headers @{ 'X-Access-Key' = $key }
@@ -3967,30 +4068,38 @@ function Show-AccessCodesDialog {
         $r = & $callAdmin 'GET' '/admin/keys'
         & $setBusy $false $null
         if ($null -eq $r) { $codesStatus.Text = 'Admin code needed to manage access codes.'; return }
-        if ($r.Status -ne 200) { $codesStatus.Text = "Could not load codes (HTTP $($r.Status)).$(& $errDetail $r)"; return }
-        $rows = @()
-        try { $rows = @($r.Text | ConvertFrom-Json -ErrorAction Stop) } catch {}
+        if ($r.Status -ne 200) { $codesStatus.Text = "Could not load codes ($(& $httpText $r)).$(& $errDetail $r)"; return }
+        $rows = ConvertFrom-RelayKeyList -Json $r.Text
         foreach ($rec in $rows) { & $addRow $rec }
         $codesStatus.Text = "$($rows.Count) guest code(s). Switching a code off or deleting it can take up to a minute to reach every Cloudflare location."
     }.GetNewClosure()
 
-    $selectedTag = { if ($codesList.SelectedItem) { $codesList.SelectedItem.Tag } else { $null } }.GetNewClosure()
+    # The selected row's Tag, or $null when nothing is selected or the row somehow has no code
+    # (so Copy/Switch/Delete can never send an empty code to the relay).
+    $selectedTag = {
+        $t = $null
+        if ($codesList.SelectedItem) { $t = $codesList.SelectedItem.Tag }
+        if ($t -and $t.Code) { $t } else { $null }
+    }.GetNewClosure()
 
     $btnRefresh.Add_Click({ & $refresh }.GetNewClosure())
 
     $btnNew.Add_Click({
         $label = Show-PromptDialog -Owner $dialog -Title 'New Guest Code' -Message 'Give the new guest code a label (for example the name of the person or site it is for).'
-        if ([string]::IsNullOrEmpty($label)) { return }
+        if ([string]::IsNullOrWhiteSpace($label)) { return }
+        $label = $label.Trim()
         & $setBusy $true 'Creating...'
         $r = & $callAdmin 'POST' "/admin/keys?label=$([uri]::EscapeDataString($label))"
         & $setBusy $false $null
         if ($null -eq $r) { $codesStatus.Text = 'Admin code needed.'; return }
-        if ($r.Status -ne 200) { $codesStatus.Text = "Could not create the code (HTTP $($r.Status)).$(& $errDetail $r)"; return }
+        if ($r.Status -ne 200) { $codesStatus.Text = "Could not create the code ($(& $httpText $r)).$(& $errDetail $r)"; return }
         $rec = $null
         try { $rec = $r.Text | ConvertFrom-Json -ErrorAction Stop } catch {}
         if (-not $rec) { $codesStatus.Text = 'The relay returned an unexpected response.'; return }
         & $addRow $rec
         $codesList.SelectedIndex = $codesList.Items.Count - 1
+        # In a long list the new row can be below the visible part - bring it into view.
+        $codesList.ScrollIntoView($codesList.SelectedItem)
         $copied = $false
         try { [System.Windows.Clipboard]::SetText($rec.key); $copied = $true } catch {}
         $codesStatus.Text = $(if ($copied) { "Created $($rec.key) ('$($rec.label)') - copied to the clipboard." } else { "Created $($rec.key) ('$($rec.label)')." })
@@ -4011,14 +4120,17 @@ function Show-AccessCodesDialog {
         $r = & $callAdmin 'POST' "/admin/keys/$($tag.Code)/$action"
         & $setBusy $false $null
         if ($null -eq $r) { $codesStatus.Text = 'Admin code needed.'; return }
-        if ($r.Status -ne 200) { $codesStatus.Text = "Could not switch the code (HTTP $($r.Status)).$(& $errDetail $r)"; return }
+        if ($r.Status -ne 200) { $codesStatus.Text = "Could not switch the code ($(& $httpText $r)).$(& $errDetail $r)"; return }
         $rec = $null
         try { $rec = $r.Text | ConvertFrom-Json -ErrorAction Stop } catch {}
         if ($rec) {
             # Swap a freshly built item into the same slot rather than re-listing (KV reads
-            # are eventually consistent), and keep the row selected.
+            # are eventually consistent), and keep the row selected. Remove + insert, NOT
+            # `Items[$idx] = ...`: assigning through the indexer makes WPF reuse the old
+            # container and draw the new ListBoxItem's ToString() as the row's text.
             $idx = $codesList.SelectedIndex
-            $codesList.Items[$idx] = & $newItem $rec
+            $codesList.Items.RemoveAt($idx)
+            $codesList.Items.Insert($idx, (& $newItem $rec))
             $codesList.SelectedIndex = $idx
             $codesStatus.Text = "$($rec.key) is now $(if ($rec.enabled) { 'On' } else { 'Off' }). It can take up to a minute to take effect everywhere."
         }
@@ -4033,16 +4145,17 @@ function Show-AccessCodesDialog {
         $r = & $callAdmin 'DELETE' "/admin/keys/$($tag.Code)"
         & $setBusy $false $null
         if ($null -eq $r) { $codesStatus.Text = 'Admin code needed.'; return }
-        if ($r.Status -ne 200) { $codesStatus.Text = "Could not delete the code (HTTP $($r.Status)).$(& $errDetail $r)"; return }
+        if ($r.Status -ne 200) { $codesStatus.Text = "Could not delete the code ($(& $httpText $r)).$(& $errDetail $r)"; return }
         $idx = $codesList.SelectedIndex
         if ($idx -ge 0) { $codesList.Items.RemoveAt($idx) }
         $codesStatus.Text = "Deleted $($tag.Display)."
     }.GetNewClosure())
 
-    # Toggle the button label to match the selected row's state.
+    # Toggle the button label to match the selected row's state ("Switch Off" when nothing is
+    # selected, so it never keeps the previous row's "Switch On").
     $codesList.Add_SelectionChanged({
         $tag = & $selectedTag
-        if ($tag) { $btnToggle.Content = $(if ($tag.Enabled) { 'Switch Off' } else { 'Switch On' }) }
+        $btnToggle.Content = $(if ($tag -and -not $tag.Enabled) { 'Switch On' } else { 'Switch Off' })
     }.GetNewClosure())
 
     $btnClose.Add_Click({ $dialog.Close() }.GetNewClosure())
@@ -4079,18 +4192,20 @@ function Show-PairingDialog {
         if ([string]::IsNullOrEmpty($key)) { return }  # user cancelled
         $pair = Start-RelayPairing -RelayUrl $relayUrl -AccessKey $key
         if ($pair.Ok) { break }
-        if ($pair.Failure -eq 'auth') {
+        if ($pair.Failure -eq 'auth' -or $pair.Failure -eq 'badkey') {
             $script:RelayKeys.Access = $null
-            $promptError = 'That code was not accepted - it may be wrong or switched off. Try again.'
+            $promptError = $(if ($pair.Failure -eq 'badkey') { $script:RelayBadKeyText } else { 'That code was not accepted - it may be wrong or switched off. Try again.' })
             $pair = $null
             continue
         }
-        # Any other failure is not something a re-prompt fixes.
+        # Any other failure is not something a re-prompt fixes. The detail text already ends
+        # with a full stop, so drop it before it goes inside the brackets.
+        $detail = ([string]$pair.Message).TrimEnd('.')
         $msg = switch ($pair.Failure) {
             'outdated' { $script:RelayOutdatedText }
-            'network'  { "Could not reach the pairing relay ($($pair.Message)). Check this machine's internet connection, or use Load a File or Pasted List." }
+            'network'  { "Could not reach the pairing relay ($detail). Check this machine's internet connection, or use Load a File or Pasted List." }
             'busy'     { 'Could not get an unused pairing code - try again in a moment.' }
-            default    { "The relay is temporarily unavailable ($($pair.Message)). Try again in a few minutes." }
+            default    { "The relay is temporarily unavailable ($detail). Try again in a few minutes." }
         }
         [System.Windows.MessageBox]::Show($msg, 'Gr3y Tools', 'OK', 'Warning') | Out-Null
         return
@@ -4184,8 +4299,8 @@ function Show-PairingDialog {
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
-        <TextBox Name="CmdPair" Grid.Column="0" MinHeight="32" VerticalContentAlignment="Center" TextWrapping="NoWrap" HorizontalScrollBarVisibility="Auto"/>
-        <Button Name="BtnCopyPair" Grid.Column="1" Content="Copy" Width="70" Height="32" Margin="8,0,0,0"/>
+        <TextBox Name="CmdPair" Grid.Column="0" MinHeight="32" VerticalContentAlignment="Center" TextWrapping="Wrap" VerticalScrollBarVisibility="Disabled" HorizontalScrollBarVisibility="Disabled"/>
+        <Button Name="BtnCopyPair" Grid.Column="1" Content="Copy" Width="70" Height="32" Margin="8,0,0,0" VerticalAlignment="Top"/>
       </Grid>
 
       <TextBlock Name="StatusText" Text="Waiting for data..." Foreground="{StaticResource MutedBrush}" Margin="0,0,0,16" TextWrapping="Wrap"/>
@@ -4253,7 +4368,8 @@ function Show-PairingDialog {
         try { $pollPS.Dispose() } catch {}
         try { $rs.Dispose() } catch {}
         if (-not $pairClosed.Consumed) {
-            Invoke-RelayRequest -RelayUrl $relayUrl -Method 'POST' -Path "/close?code=$code" -Headers @{ 'X-Session' = $session } -TimeoutSec 5 | Out-Null
+            # Short timeout: this runs on the UI thread as the dialog closes.
+            Invoke-RelayRequest -RelayUrl $relayUrl -Method 'POST' -Path "/close?code=$code" -Headers @{ 'X-Session' = $session } -TimeoutSec 3 | Out-Null
         }
     }.GetNewClosure()
 
@@ -4275,8 +4391,12 @@ function Show-PairingDialog {
             }
             $hostName = if ($d.hostname) { $d.hostname } else { 'the old machine' }
             $exportedAt = if ($d.exportedAt) { $d.exportedAt } else { 'unknown time' }
-            $wingetCount = @($d.wingetIds).Count
-            $nameCount = @($d.installedProgramNames).Count
+            # Count real entries only: @($null).Count is 1 in PowerShell, so an export that
+            # lacks one of the lists would claim "1 winget app(s)".
+            $wingetIds = @($d.wingetIds | Where-Object { $_ })
+            $programNames = @($d.installedProgramNames | Where-Object { $_ })
+            $wingetCount = $wingetIds.Count
+            $nameCount = $programNames.Count
             # Confirm the received machine before applying it - the one-time claim is
             # best-effort on eventually-consistent storage, so let the tech eyeball it.
             $confirm = [System.Windows.MessageBox]::Show(
@@ -4284,10 +4404,10 @@ function Show-PairingDialog {
                 'Gr3y Tools', 'YesNo', 'Question')
             if ($confirm -ne 'Yes') { $dialog.Close(); return }
             $baseline = [PSCustomObject]@{
-                hostname = $d.hostname
-                exportedAt = $d.exportedAt
-                wingetIds = @($d.wingetIds)
-                installedProgramNames = @($d.installedProgramNames)
+                hostname = $hostName
+                exportedAt = $exportedAt
+                wingetIds = $wingetIds
+                installedProgramNames = $programNames
             }
             $dialog.Close()
             Set-CompareBaseline -Baseline $baseline
@@ -4363,15 +4483,23 @@ function Import-CompareBaselineFromFile {
 
 $btnCompareBaseline.Add_Click({
     if ($script:installProc -and -not $script:installProc.HasExited) { return }
-    # Loop so "Manage Access Codes..." returns to the chooser afterwards instead of closing
-    # the whole flow.
-    do {
-        $choice = Show-CompareSourceChooser
-        if ($choice -eq 'manage') { Show-AccessCodesDialog }
-    } while ($choice -eq 'manage')
-    switch ($choice) {
-        'file' { Import-CompareBaselineFromFile }
-        'pair' { Show-PairingDialog }
+    # Re-entrancy guard: two quick activations (a double-click, a held Enter) would stack two
+    # chooser dialogs, because each one runs its own nested message loop.
+    if ($script:compareFlowOpen) { return }
+    $script:compareFlowOpen = $true
+    try {
+        # Loop so "Manage Access Codes..." returns to the chooser afterwards instead of
+        # closing the whole flow.
+        do {
+            $choice = Show-CompareSourceChooser
+            if ($choice -eq 'manage') { Show-AccessCodesDialog }
+        } while ($choice -eq 'manage')
+        switch ($choice) {
+            'file' { Import-CompareBaselineFromFile }
+            'pair' { Show-PairingDialog }
+        }
+    } finally {
+        $script:compareFlowOpen = $false
     }
 })
 
@@ -4405,6 +4533,9 @@ $btnStopInstall.Add_Click({
     $script:installQueue.Clear()
     $script:currentQueueEntry = $null
     $script:installPendingAction = $null
+    # Forget the killed process: left in place, the poll timer sees it as a job that just
+    # finished and overwrites "Stopped." with a wrong "Done" status a moment later.
+    $script:installProc = $null
     $installStatusText.Text = 'Stopped.'
     $btnInstallSelected.IsEnabled = $true
     $btnUninstallSelected.IsEnabled = $true
@@ -4589,7 +4720,14 @@ $timer.Add_Tick({
                     foreach ($entry in $script:appEntries) {
                         # Reset first - a second Compare run (a different export file, or a
                         # re-run after installing some of the first batch) must not leave
-                        # last time's matches stuck in the Compare Results view.
+                        # last time's matches stuck: the Compare Results view, the ticks and
+                        # the "(missing - on old machine)" labels all go back to normal, or
+                        # Install Selected would install rows the new result no longer lists.
+                        if ($entry.CompareMatch) {
+                            $entry.CheckBox.IsChecked = $false
+                            $entry.CheckBox.ClearValue([System.Windows.Controls.Control]::ForegroundProperty)
+                            $entry.CheckBox.Content = $entry.Name
+                        }
                         $entry.CompareMatch = $false
                         $onBaseline = ($entry.WingetId -and ($baseline.wingetIds -contains $entry.WingetId)) -or
                                       [bool]($baseline.installedProgramNames | Where-Object { $_ -and (($_ -like "*$($entry.Name)*") -or (Test-DotNetRuntimeNameMatch -CatalogName $entry.Name -CandidateName $_)) } | Select-Object -First 1)
@@ -4650,7 +4788,8 @@ $timer.Add_Tick({
                     } else {
                         $lines.Add('No catalog app was missing here that is installed on the old machine.')
                         # Don't strand the view on a now-empty Compare Results filter from a
-                        # previous run.
+                        # previous run, and hide its button - it would only list nothing.
+                        $catCompareResultsBtn.Visibility = 'Collapsed'
                         if ($script:activeCategory -eq 'Compare Results') {
                             $script:activeCategory = 'Business Baseline'
                             Update-AppVisibility

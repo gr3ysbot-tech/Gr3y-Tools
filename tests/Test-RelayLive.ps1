@@ -132,7 +132,7 @@ try {
     # (c) admin key -> 200 JSON array (proves ADMIN_KEY is bound and >= 16 chars)
     $r = Invoke-Relay 'GET' '/admin/keys' $adminHdr
     $isArray = $false
-    if ($r.Status -eq 200) { try { $null = $r.Text | ConvertFrom-Json -ErrorAction Stop; $isArray = $true } catch {} }
+    if ($r.Status -eq 200) { try { $null = $r.Text | ConvertFrom-Json -ErrorAction Stop; $isArray = $r.Text.TrimStart().StartsWith('[') } catch {} }
     Write-Result '(c) admin key -> 200 list' ($r.Status -eq 200 -and $isArray) "HTTP $($r.Status)"
     if ($r.Status -ne 200) { throw 'Admin key was not accepted; stopping. Check it matches the ADMIN_KEY secret exactly.' }
 
@@ -229,7 +229,8 @@ try {
     Write-Result '(h6) deleted guest is refused' ($delSecs -ge 0) $(if ($delSecs -ge 0) { "took ${delSecs}s" } else { 'still accepted after 90s' })
     $r = Invoke-Relay 'GET' '/admin/keys' $adminHdr
     $stillListed = $false
-    if ($r.Status -eq 200) { try { $stillListed = [bool](@($r.Text | ConvertFrom-Json) | Where-Object { $_.label -eq $label }) } catch {} }
+    # Assign, then foreach: in Windows PowerShell 5.1 `@($text | ConvertFrom-Json)` wraps a whole JSON array as one element.
+    if ($r.Status -eq 200) { try { $listed = $r.Text | ConvertFrom-Json -ErrorAction Stop; foreach ($g in $listed) { if ($g.label -eq $label) { $stillListed = $true } } } catch {} }
     Write-Result '(h7) deleted guest is gone from the list' (-not $stillListed) $(if ($stillListed) { 'still listed (list may lag up to ~60s)' } else { '' })
 } catch {
     Write-Output "[ABORT] $($_.Exception.Message)"

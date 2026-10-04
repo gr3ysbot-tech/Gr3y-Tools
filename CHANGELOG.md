@@ -76,6 +76,29 @@ phases 0-3 and part of phase 4 (optional items were deliberately not built):
 - Compare Against List no longer lists already-installed catalog apps as
   "install manually"; a false "Saved" message and truncated console output from
   the export were also fixed.
+- Found by driving the real GUI through UI Automation (Windows PowerShell 5.1):
+  - **Manage Access Codes** showed a phantom blank row for an empty list, merged
+    two or more codes into one garbled row (whose Switch/Delete then failed), and
+    turned a row into the text `System.Windows.Controls.ListBoxItem` after
+    Switch Off/On. Both were 5.1-only quirks the unit tests could not see.
+  - A pasted access code containing a typographic dash (non-breaking hyphen,
+    en-dash) or an invisible character failed as "could not reach the pairing
+    relay" and stayed that way until the GUI was restarted. Codes are now cleaned
+    up (look-alike dashes back to `-`, invisible characters dropped) and a code
+    that still cannot be sent re-prompts with an explanation.
+  - **Stop** during a scan or install was overwritten by a false "Done" status and
+    threw dozens of hidden errors; **Compare** against an empty `winget list`
+    ticked apps that were already installed; with exactly one app ticked the
+    counter read "Selected: " with no number; a second Compare kept the first
+    run's ticks and labels; a double activation of **Compare Against List...**
+    stacked two dialogs.
+  - Smaller: the pairing command box clipped the end of the command (the part
+    with the code) - it now wraps; an empty OK in the access-code prompt closed it
+    silently; prompt titles; a non-numeric "HTTP 0" in status text; a minimal
+    export (no hostname or winget list) showed "1 winget app(s)"; the new code is
+    scrolled into view; accessible names for list rows and the two chooser
+    buttons; shorter relay timeouts so a relay that never answers freezes the
+    window for seconds, not tens of seconds.
 
 ### Known gaps
 
