@@ -161,7 +161,8 @@
     Enables BitLocker on C: (XtsAes256, used-space-only, TPM protector) and adds a
     recovery password protector, only if a ready TPM is present and protection is
     currently Off. On an Entra-joined device, backs the recovery password up to Entra ID.
-    Never disables or decrypts - that is out of scope for this tool by design.
+    This script never disables or decrypts. Turning BitLocker off is a separate, guarded
+    action in the GUI (Panels > Disable BitLocker...), which backs up every key first.
 
 .PARAMETER PreventAutomaticDeviceEncryption
     Sets HKLM\SYSTEM\CurrentControlSet\Control\BitLocker PreventDeviceEncryption=1, so
@@ -2833,10 +2834,11 @@ function Get-BitLockerKeyData {
 
 function Enable-BitLockerProtection {
     # Opt-in only, and deliberately not undo-tracked - improvement-plan.md 2.5 scopes
-    # this feature as "status, enable, escrow (never disable)". Disabling/decrypting a
-    # drive is destructive enough that it must always be a separate, deliberate action
-    # taken with BitLocker's own tools, never an automatic side effect of reverting
-    # something else via Revert Last Run.
+    # this feature as "status, enable, escrow (never a silent disable)". Disabling/decrypting
+    # a drive is destructive enough that it must always be a separate, deliberate action
+    # (the GUI's Panels > Disable BitLocker..., which backs up every key first, or
+    # BitLocker's own tools), never an automatic side effect of reverting something else
+    # via Revert Last Run.
     param([string]$MountPoint = 'C:')
     Invoke-Step "Enabling BitLocker on $MountPoint" {
         try {
