@@ -157,6 +157,45 @@ if (Test-Path $guiPath) {
             Write-LintError "Gr3ysUtilities.ps1's embedded XAML failed to parse: $($_.Exception.Message)"
         }
     }
+
+    # Each dialog (Compare chooser, pairing, access-code prompt, Manage Access Codes) has its
+    # own $dialogXaml here-string. Parse every one, so a broken dialog fails here instead of
+    # only surfacing when someone clicks its button.
+    $guiTokens = $null
+    $guiParseErrors = $null
+    $guiAst = [System.Management.Automation.Language.Parser]::ParseFile($guiPath, [ref]$guiTokens, [ref]$guiParseErrors)
+    $dialogAssigns = @($guiAst.FindAll({
+        param($n)
+        $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$dialogXaml'
+    }, $true))
+    $badDialogs = 0
+    foreach ($a in $dialogAssigns) {
+        $line = $a.Extent.StartLineNumber
+        $value = $null
+        if ($a.Right.Expression -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+            $value = $a.Right.Expression.Value
+        }
+        if (-not $value) {
+            Write-LintError "Gr3ysUtilities.ps1 line ${line}: `$dialogXaml is not a plain here-string"
+            $badDialogs++
+            continue
+        }
+        try {
+            $null = [xml]$value
+        } catch {
+            # The [xml] cast wraps the real XmlException; its message names the bad tag and the
+            # line/position inside the XAML, where the outer message just echoes the whole string.
+            $xmlErr = $_.Exception
+            while ($xmlErr.InnerException) { $xmlErr = $xmlErr.InnerException }
+            Write-LintError "Gr3ysUtilities.ps1 line ${line} (dialog XAML): $($xmlErr.Message)"
+            $badDialogs++
+        }
+    }
+    if ($dialogAssigns.Count -eq 0) {
+        Write-LintError 'Could not find any $dialogXaml here-strings in Gr3ysUtilities.ps1 (script structure may have changed - update this check)'
+    } elseif ($badDialogs -eq 0) {
+        Write-LintOk "$($dialogAssigns.Count) dialog XAML here-string(s) in Gr3ysUtilities.ps1 are well-formed XML"
+    }
 }
 
 Write-Host '--- PowerShell syntax parse (PSParser) ---'
