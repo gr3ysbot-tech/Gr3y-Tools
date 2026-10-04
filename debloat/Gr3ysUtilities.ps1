@@ -1163,7 +1163,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
             <Button Name="BtnExportInstalled" Content="Export Installed Apps..." BorderBrush="{StaticResource AccentBrush}"
                     ToolTip="Run this on the OLD machine, if you can - saves a small JSON file listing everything winget sees as installed, plus every other installed program's name. Not required: Compare Against List also accepts a plain-text app-name list (e.g. copy-pasted Get-ItemProperty/RMM output), for when the old machine is still in use and this tool can't run there at all."/>
             <Button Name="BtnCompareBaseline" Content="Compare Against List..." BorderBrush="{StaticResource AccentBrush}"
-                    ToolTip="Run this on the NEW machine. Get the old machine's list here by pairing code (run one command on the old machine, its list arrives by itself), or by loading an Export Installed Apps JSON file or a plain-text list. The dialog also has the command-line export commands for an old machine with no GUI. Then checks the box for every catalog app that's on the old list but missing here, in a Compare Results filter - pick which ones you want, then Install Selected. Apps already installed here are listed as such, and anything with no catalog match is listed for manual install."/>
+                    ToolTip="Run this on the NEW machine. Get the old machine's list here by pairing code (needs an access code; run one command on the old machine and its list arrives by itself), or by loading an Export Installed Apps JSON file or a plain-text list. The dialog also has the command-line export commands for an old machine with no GUI, and Manage Access Codes for handing out guest codes. Then checks the box for every catalog app that's on the old list but missing here, in a Compare Results filter - pick which ones you want, then Install Selected. Apps already installed here are listed as such, and anything with no catalog match is listed for manual install."/>
             <Button Name="BtnStopInstall" Content="Stop" Visibility="Collapsed"/>
             <TextBlock Name="InstallStatusText" Text="Idle" VerticalAlignment="Center" Margin="12,0,0,0"/>
           </StackPanel>
@@ -3235,16 +3235,323 @@ $btnExportInstalled.Add_Click({
 # Matches Export-InstalledApps.ps1's own $RelayUrl default - keep both in sync.
 $script:ExportRelayUrl = 'https://gr3y-export-relay.gr3y-b8f.workers.dev'
 
+# Access codes, kept in memory only so a second pairing/management action in the same run
+# doesn't ask again. Never written to disk: this mostly runs on client machines, where a
+# saved code would be left behind. On a machine you own, set GR3Y_RELAY_ACCESS_KEY to skip
+# the pairing prompt.
+#   Access = the code (admin or guest) that unlocked pairing
+#   Admin  = the admin code, used only for Manage Access Codes - kept separate so a guest
+#            code cached for pairing is never sent to an admin route as if it were the admin key
+# This is ONE shared object, not two $script: variables, on purpose: dialog event handlers are
+# built with .GetNewClosure(), and inside a closure `$script:` points at the closure's own
+# module scope, not this file's. A handler that captures a reference to this object (see
+# Show-AccessCodesDialog) mutates the same object everyone else sees.
+$script:RelayKeys = [PSCustomObject]@{ Access = $env:GR3Y_RELAY_ACCESS_KEY; Admin = $null }
+$script:RelayOutdatedText = "The pairing relay hasn't been updated for access codes yet - redeploy cloudflare/export-relay-worker.js and add its ADMIN_KEY secret (see cloudflare/README.md)."
+
 function New-PairingCode {
     # Unambiguous alphabet (no 0/O, 1/I/L) - meant to be read aloud over a phone or typed
-    # into an RMM console without confusion. RandomNumberGenerator over Get-Random purely
-    # because it's already on hand and equally simple to use here, not for any real
-    # security need - a short-lived, one-time-claim code has nothing to brute-force.
+    # into an RMM console without confusion. With the access gate, this 6-char code is the
+    # only secret protecting /submit for an open slot, so it is generated without modulo
+    # bias: 256 is not a multiple of 31, so a plain byte % 31 would make the first 8 symbols
+    # 12.5% more likely. Reject bytes >= 248 (248 = 31 * 8) so every symbol is equally likely.
     $alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    $bytes = New-Object byte[] 6
-    $rng.GetBytes($bytes)
-    -join ($bytes | ForEach-Object { $alphabet[$_ % $alphabet.Length] })
+    $out = New-Object System.Text.StringBuilder
+    $buf = New-Object byte[] 12
+    while ($out.Length -lt 6) {
+        $rng.GetBytes($buf)
+        foreach ($b in $buf) {
+            if ($b -lt 248 -and $out.Length -lt 6) { [void]$out.Append($alphabet[$b % 31]) }
+        }
+    }
+    $out.ToString()
+}
+
+function Invoke-RelayRequest {
+    # One HTTP call to the relay -> { Status; Text; Error }. Status is the HTTP status code,
+    # or 0 when there was no HTTP response at all (DNS/TLS/connect failure or timeout).
+    # Works the same in Windows PowerShell 5.1 and PowerShell 7: [int]$_.Exception.Response.StatusCode
+    # is valid in both (HttpWebResponse vs HttpResponseMessage), and the body is decoded as
+    # UTF-8 from RawContentStream because 5.1's Invoke-RestMethod decodes a charset-less
+    # application/json response as ISO-8859-1. Parameterised on $RelayUrl (no $script: reads)
+    # so it can be injected into the polling runspace.
+    param(
+        [Parameter(Mandatory)][string]$RelayUrl,
+        [Parameter(Mandatory)][string]$Method,
+        [Parameter(Mandatory)][string]$Path,
+        [hashtable]$Headers = @{},
+        [int]$TimeoutSec = 20
+    )
+    try {
+        $response = Invoke-WebRequest -Uri "$RelayUrl$Path" -Method $Method -Headers $Headers -TimeoutSec $TimeoutSec -UseBasicParsing -ErrorAction Stop
+        $stream = New-Object System.IO.MemoryStream
+        $response.RawContentStream.CopyTo($stream)
+        return [PSCustomObject]@{ Status = [int]$response.StatusCode; Text = [System.Text.Encoding]::UTF8.GetString($stream.ToArray()); Error = $null }
+    } catch {
+        $err = $_
+        $status = 0
+        try { $status = [int]$err.Exception.Response.StatusCode } catch {}
+        # Best-effort server message for an HTTP error (e.g. 503 "Admin access is not
+        # configured ..."): PowerShell 7 puts the body in ErrorDetails; Windows PowerShell 5.1
+        # needs the response stream read. Never throws - a missing body just stays $null.
+        $body = $null
+        try {
+            if ($err.ErrorDetails -and $err.ErrorDetails.Message) {
+                $body = $err.ErrorDetails.Message
+            } elseif ($err.Exception.Response -and ($err.Exception.Response | Get-Member -Name GetResponseStream -ErrorAction SilentlyContinue)) {
+                $sr = New-Object System.IO.StreamReader($err.Exception.Response.GetResponseStream(), [System.Text.Encoding]::UTF8)
+                $body = $sr.ReadToEnd()
+                $sr.Dispose()
+            }
+        } catch {}
+        return [PSCustomObject]@{ Status = $status; Text = $body; Error = $err.Exception.Message }
+    }
+}
+
+function Test-RelayGated {
+    # Cheap, zero-KV-cost probe to tell the access-gated Worker from the old anonymous one
+    # BEFORE asking the user for a code: GET /admin/keys with no key is 401 on the new Worker
+    # (admin required) and 400 on the old one (it only knows ?code=). Returns $true (gated),
+    # $false (old Worker), or $null (could not tell - network error).
+    param([Parameter(Mandatory)][string]$RelayUrl)
+    $r = Invoke-RelayRequest -RelayUrl $RelayUrl -Method 'GET' -Path '/admin/keys' -TimeoutSec 15
+    if ($r.Status -eq 401 -or $r.Status -eq 503) { return $true }
+    if ($r.Status -eq 400 -or $r.Status -eq 404) { return $false }
+    return $null
+}
+
+function Start-RelayPairing {
+    # Opens a fresh pairing code with the access code. Retries a new code on 409 (collision)
+    # up to 3 times. Failure reasons: 'auth' (401), 'outdated' (404 - old Worker has no /open),
+    # 'network' (no HTTP response), 'busy' (3 collisions), 'server' (anything else, incl. 503).
+    # NOTE: no `continue` inside a switch here - in PowerShell that continues the SWITCH, not
+    # the enclosing loop, so this uses if/elseif.
+    param([Parameter(Mandatory)][string]$RelayUrl, [Parameter(Mandatory)][string]$AccessKey)
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $code = New-PairingCode
+        $r = Invoke-RelayRequest -RelayUrl $RelayUrl -Method 'POST' -Path "/open?code=$code" -Headers @{ 'X-Access-Key' = $AccessKey }
+        if ($r.Status -eq 200) {
+            $o = $null
+            try { $o = $r.Text | ConvertFrom-Json -ErrorAction Stop } catch {}
+            if (-not $o -or -not $o.session) {
+                return [PSCustomObject]@{ Ok = $false; Failure = 'server'; Message = 'The relay answered 200 but without a session.'; Attempts = $attempt }
+            }
+            return [PSCustomObject]@{ Ok = $true; Code = $code; Session = [string]$o.session; Label = [string]$o.label; Attempts = $attempt }
+        }
+        if ($r.Status -eq 401) { return [PSCustomObject]@{ Ok = $false; Failure = 'auth'; Message = 'The access code was not accepted (wrong, or switched off).'; Attempts = $attempt } }
+        if ($r.Status -eq 404) { return [PSCustomObject]@{ Ok = $false; Failure = 'outdated'; Message = $script:RelayOutdatedText; Attempts = $attempt } }
+        if ($r.Status -eq 0) { return [PSCustomObject]@{ Ok = $false; Failure = 'network'; Message = $r.Error; Attempts = $attempt } }
+        if ($r.Status -ne 409) { return [PSCustomObject]@{ Ok = $false; Failure = 'server'; Message = "The relay answered HTTP $($r.Status)."; Attempts = $attempt } }
+        # 409 = this code is already open elsewhere; loop and try a brand new code.
+    }
+    return [PSCustomObject]@{ Ok = $false; Failure = 'busy'; Message = 'Could not get an unused pairing code after 3 tries.'; Attempts = 3 }
+}
+
+function Wait-RelayExport {
+    # Poll loop for the background runspace. 404 = nothing yet (keep waiting). 401 = the
+    # session is no longer valid (stop). Anything else is a transient failure: keep going but
+    # surface it through the shared $State hashtable so the UI timer can show "relay
+    # unreachable, still trying". Returns Kind = data | session | invalid | timeout.
+    param(
+        [Parameter(Mandatory)][string]$RelayUrl,
+        [Parameter(Mandatory)][string]$Code,
+        [Parameter(Mandatory)][string]$Session,
+        [int]$TimeoutSeconds = 600,
+        [int]$IntervalSeconds = 5,
+        [hashtable]$State
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastError = $null
+    while ((Get-Date) -lt $deadline) {
+        $r = Invoke-RelayRequest -RelayUrl $RelayUrl -Method 'GET' -Path "/poll?code=$Code" -Headers @{ 'X-Session' = $Session } -TimeoutSec 15
+        if ($r.Status -eq 200) {
+            try { return [PSCustomObject]@{ Kind = 'data'; Data = ($r.Text | ConvertFrom-Json -ErrorAction Stop); Detail = $null } }
+            catch { return [PSCustomObject]@{ Kind = 'invalid'; Data = $null; Detail = 'The relay returned something that is not valid JSON.' } }
+        }
+        if ($r.Status -eq 401) { return [PSCustomObject]@{ Kind = 'session'; Data = $null; Detail = 'The relay no longer recognises this pairing session.' } }
+        if ($r.Status -eq 404) {
+            if ($State) { $State.Message = $null }
+        } else {
+            $lastError = if ($r.Error) { $r.Error } else { "HTTP $($r.Status)" }
+            if ($State) { $State.Message = "Relay not reachable ($lastError) - still trying." }
+        }
+        Start-Sleep -Seconds $IntervalSeconds
+    }
+    return [PSCustomObject]@{ Kind = 'timeout'; Data = $null; Detail = $lastError }
+}
+
+function Show-PromptDialog {
+    # A small themed input prompt (its own XAML tree, like the other dialogs). -Secret uses a
+    # PasswordBox so the code isn't shown or captured; otherwise a plain TextBox (used for the
+    # guest-code label). Returns the entered string, or $null on Cancel/Esc. The two dialogs'
+    # shared TextBox style forces IsReadOnly=True, so this dialog declares its own input styles.
+    param(
+        [string]$Title = 'Access Code',
+        [string]$Message = 'Enter the access code you were given to pair with an old machine.',
+        [switch]$Secret,
+        [string]$ErrorText,
+        [string]$DefaultText,
+        # The window to centre on and sit above. Defaults to the main window; a prompt raised
+        # from inside another dialog (Manage Access Codes) passes that dialog instead.
+        [System.Windows.Window]$Owner
+    )
+    $dialogXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Access Code" Width="480" Height="270" MinWidth="420" MinHeight="250"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize" ShowInTaskbar="False"
+        Background="#232629" FontFamily="Segoe UI" FontSize="13">
+  <Window.Resources>
+    <SolidColorBrush x:Key="BgBrush" Color="#232629"/>
+    <SolidColorBrush x:Key="ButtonBrush" Color="#1E3747"/>
+    <SolidColorBrush x:Key="ButtonHoverBrush" Color="#2A4C69"/>
+    <SolidColorBrush x:Key="ControlBorderBrush" Color="#707070"/>
+    <SolidColorBrush x:Key="TextBrush" Color="#F7F7F7"/>
+    <SolidColorBrush x:Key="MutedBrush" Color="#9AA3AB"/>
+    <SolidColorBrush x:Key="HeaderBrush" Color="#5BDCFF"/>
+    <SolidColorBrush x:Key="AccentBrush" Color="#5BDCFF"/>
+    <SolidColorBrush x:Key="ErrorBrush" Color="#F85149"/>
+    <SolidColorBrush x:Key="LogBgBrush" Color="#1B1E21"/>
+    <SolidColorBrush x:Key="PanelBorderBrush" Color="#2F373D"/>
+    <SolidColorBrush x:Key="NavSelectedBrush" Color="#5E81AC"/>
+    <Style TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+    </Style>
+    <Style TargetType="Button">
+      <Setter Property="Background" Value="{StaticResource ButtonBrush}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource ControlBorderBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="10,4"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource ButtonHoverBrush}"/>
+              </Trigger>
+              <Trigger Property="IsDefault" Value="True">
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType="TextBox">
+      <Setter Property="Background" Value="{StaticResource LogBgBrush}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource ControlBorderBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="8,6"/>
+      <Setter Property="FontFamily" Value="Consolas"/>
+      <Setter Property="SelectionBrush" Value="{StaticResource NavSelectedBrush}"/>
+      <Setter Property="CaretBrush" Value="{StaticResource TextBrush}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TextBox">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+              <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType="PasswordBox">
+      <Setter Property="Background" Value="{StaticResource LogBgBrush}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource ControlBorderBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="8,6"/>
+      <Setter Property="FontFamily" Value="Consolas"/>
+      <Setter Property="SelectionBrush" Value="{StaticResource NavSelectedBrush}"/>
+      <Setter Property="CaretBrush" Value="{StaticResource TextBrush}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="PasswordBox">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+              <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+  <Border Padding="20">
+    <StackPanel>
+      <TextBlock Name="PromptTitle" Text="Access Code" FontFamily="Consolas" FontSize="16" Foreground="{StaticResource HeaderBrush}" Margin="0,0,0,10"/>
+      <TextBlock Name="PromptMessage" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,12"
+                 Text="Enter the access code you were given to pair with an old machine."/>
+      <PasswordBox Name="SecretBox" MinHeight="32" VerticalContentAlignment="Center"/>
+      <TextBox Name="PlainBox" MinHeight="32" VerticalContentAlignment="Center" Visibility="Collapsed"/>
+      <TextBlock Name="PromptError" TextWrapping="Wrap" Foreground="{StaticResource ErrorBrush}" Margin="0,8,0,0" Visibility="Collapsed"/>
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+        <Button Name="BtnPromptOk" Content="OK" Width="90" IsDefault="True" Margin="0,0,8,0"/>
+        <Button Name="BtnPromptCancel" Content="Cancel" Width="90" IsCancel="True"/>
+      </StackPanel>
+    </StackPanel>
+  </Border>
+</Window>
+'@
+    $reader = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($dialogXaml))
+    $dialog = [Windows.Markup.XamlReader]::Load($reader)
+    $dialog.Owner = $(if ($Owner) { $Owner } else { $window })
+
+    $dialog.FindName('PromptTitle').Text = $Title
+    $dialog.FindName('PromptMessage').Text = $Message
+    $secretBox = $dialog.FindName('SecretBox')
+    $plainBox = $dialog.FindName('PlainBox')
+    $promptError = $dialog.FindName('PromptError')
+    $btnOk = $dialog.FindName('BtnPromptOk')
+    $btnCancel = $dialog.FindName('BtnPromptCancel')
+
+    if ($Secret) {
+        $plainBox.Visibility = 'Collapsed'
+        $secretBox.Visibility = 'Visible'
+    } else {
+        $secretBox.Visibility = 'Collapsed'
+        $plainBox.Visibility = 'Visible'
+        if ($DefaultText) { $plainBox.Text = $DefaultText }
+    }
+    if ($ErrorText) {
+        $promptError.Text = $ErrorText
+        $promptError.Visibility = 'Visible'
+    }
+
+    $resultHolder = [PSCustomObject]@{ Value = $null }
+    $btnOk.Add_Click({
+        if ($Secret) {
+            $resultHolder.Value = $secretBox.Password
+            $secretBox.Clear()
+        } else {
+            $resultHolder.Value = $plainBox.Text
+        }
+        $dialog.Close()
+    }.GetNewClosure())
+    $btnCancel.Add_Click({ if ($Secret) { $secretBox.Clear() }; $dialog.Close() }.GetNewClosure())
+
+    $dialog.Add_Loaded({ if ($Secret) { $secretBox.Focus() } else { $plainBox.Focus() } }.GetNewClosure())
+    $dialog.ShowDialog() | Out-Null
+    # Empty string counts as cancel (nothing typed), so callers only get a non-empty code.
+    if ([string]::IsNullOrEmpty($resultHolder.Value)) { return $null }
+    return $resultHolder.Value
+}
+
+function Get-RelayAccessKey {
+    # Returns the pairing access key: the in-memory cached one (from GR3Y_RELAY_ACCESS_KEY or a
+    # previous prompt this run), or prompts for it. Kept in memory ONLY - never written to disk,
+    # since this mostly runs on client machines. -ErrorText re-prompts after a rejected key.
+    param([string]$Message = 'Enter the access code (admin or a guest code) to generate a pairing code. It is kept in memory only for this session and never written to disk.', [string]$ErrorText)
+    if (-not $ErrorText -and -not [string]::IsNullOrEmpty($script:RelayKeys.Access)) { return $script:RelayKeys.Access }
+    $entered = Show-PromptDialog -Title 'Access Code' -Message $Message -Secret -ErrorText $ErrorText
+    if ([string]::IsNullOrEmpty($entered)) { return $null }
+    $script:RelayKeys.Access = $entered
+    return $entered
 }
 
 function Show-CompareSourceChooser {
@@ -3327,7 +3634,7 @@ function Show-CompareSourceChooser {
       <Button Name="BtnChoosePair" HorizontalAlignment="Stretch" Margin="0,0,0,8" BorderBrush="{StaticResource AccentBrush}">
         <StackPanel Margin="0,4">
           <TextBlock Text="Generate a Pairing Code..." FontWeight="Bold" HorizontalAlignment="Center"/>
-          <TextBlock Text="Easiest - run one command on the old machine and its list arrives here by itself. No file." Foreground="{StaticResource MutedBrush}" FontSize="12" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+          <TextBlock Text="Easiest - run one command on the old machine and its list arrives here by itself. No file. Needs an access code." Foreground="{StaticResource MutedBrush}" FontSize="12" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center" Margin="0,2,0,0"/>
         </StackPanel>
       </Button>
       <Button Name="BtnChooseFile" HorizontalAlignment="Stretch" Margin="0,0,0,18">
@@ -3365,7 +3672,10 @@ function Show-CompareSourceChooser {
         </StackPanel>
       </Border>
 
-      <Button Name="BtnChooseCancel" Content="Cancel" HorizontalAlignment="Right" Width="90" Margin="0,18,0,0"/>
+      <DockPanel Margin="0,18,0,0" LastChildFill="False">
+        <Button Name="BtnChooseManage" Content="Manage Access Codes..." Width="180" DockPanel.Dock="Left"/>
+        <Button Name="BtnChooseCancel" Content="Cancel" Width="90" DockPanel.Dock="Right"/>
+      </DockPanel>
     </StackPanel>
   </Border>
   </ScrollViewer>
@@ -3377,6 +3687,7 @@ function Show-CompareSourceChooser {
 
     $btnChooseFile = $dialog.FindName('BtnChooseFile')
     $btnChoosePair = $dialog.FindName('BtnChoosePair')
+    $btnChooseManage = $dialog.FindName('BtnChooseManage')
     $btnChooseCancel = $dialog.FindName('BtnChooseCancel')
     $cmdPrint = $dialog.FindName('CmdPrint')
     $cmdFile = $dialog.FindName('CmdFile')
@@ -3411,10 +3722,332 @@ function Show-CompareSourceChooser {
     $resultHolder = [PSCustomObject]@{ Value = $null }
     $btnChooseFile.Add_Click({ $resultHolder.Value = 'file'; $dialog.Close() }.GetNewClosure())
     $btnChoosePair.Add_Click({ $resultHolder.Value = 'pair'; $dialog.Close() }.GetNewClosure())
+    $btnChooseManage.Add_Click({ $resultHolder.Value = 'manage'; $dialog.Close() }.GetNewClosure())
     $btnChooseCancel.Add_Click({ $dialog.Close() }.GetNewClosure())
 
     $dialog.ShowDialog() | Out-Null
     return $resultHolder.Value
+}
+
+function Show-AccessCodesDialog {
+    # Admin-only management of guest access codes (create / copy / switch off-on / delete),
+    # reached from the Compare chooser. Uses $script:RelayKeys.Admin (kept separate from the
+    # pairing access key so a guest code cached for pairing is never sent as the admin key).
+    # Rows are updated from each call's response rather than re-listing, because KV is
+    # eventually consistent. All calls are short, blocking requests on the UI thread with a
+    # wait cursor, consistent with the script's other small inline fetches.
+    $relayUrl = $script:ExportRelayUrl
+    if ($script:ExportRelayUrl -match 'REPLACE-WITH-YOUR-WORKER-URL') {
+        [System.Windows.MessageBox]::Show('The pairing relay is not configured yet in this build - see cloudflare/README.md.', 'Gr3y Tools', 'OK', 'Warning') | Out-Null
+        return
+    }
+    $gated = Test-RelayGated -RelayUrl $relayUrl
+    if ($gated -eq $false) {
+        [System.Windows.MessageBox]::Show($script:RelayOutdatedText, 'Gr3y Tools', 'OK', 'Warning') | Out-Null
+        return
+    }
+    if ($null -eq $gated) {
+        [System.Windows.MessageBox]::Show("Could not reach the pairing relay. Check this machine's internet connection.", 'Gr3y Tools', 'OK', 'Warning') | Out-Null
+        return
+    }
+
+    $dialogXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Manage Access Codes" Width="760" Height="560" MinWidth="640" MinHeight="460"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
+        Background="#232629" FontFamily="Segoe UI" FontSize="13">
+  <Window.Resources>
+    <SolidColorBrush x:Key="BgBrush" Color="#232629"/>
+    <SolidColorBrush x:Key="ButtonBrush" Color="#1E3747"/>
+    <SolidColorBrush x:Key="ButtonHoverBrush" Color="#2A4C69"/>
+    <SolidColorBrush x:Key="ControlBorderBrush" Color="#707070"/>
+    <SolidColorBrush x:Key="TextBrush" Color="#F7F7F7"/>
+    <SolidColorBrush x:Key="MutedBrush" Color="#9AA3AB"/>
+    <SolidColorBrush x:Key="HeaderBrush" Color="#5BDCFF"/>
+    <SolidColorBrush x:Key="AccentBrush" Color="#5BDCFF"/>
+    <SolidColorBrush x:Key="GreenBrush" Color="#3FB950"/>
+    <SolidColorBrush x:Key="ErrorBrush" Color="#F85149"/>
+    <SolidColorBrush x:Key="LogBgBrush" Color="#1B1E21"/>
+    <SolidColorBrush x:Key="PanelBorderBrush" Color="#2F373D"/>
+    <SolidColorBrush x:Key="NavSelectedBrush" Color="#5E81AC"/>
+    <Style TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+    </Style>
+    <Style TargetType="Button">
+      <Setter Property="Background" Value="{StaticResource ButtonBrush}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource ControlBorderBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="10,4"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource ButtonHoverBrush}"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="Bd" Property="Opacity" Value="0.45"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType="ListBoxItem">
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+      <Setter Property="Padding" Value="8,6"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBoxItem">
+            <Border x:Name="Bd" Background="Transparent" Padding="{TemplateBinding Padding}">
+              <ContentPresenter/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsSelected" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource NavSelectedBrush}"/>
+              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource ButtonHoverBrush}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+  <Border Padding="20">
+    <Grid>
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+      </Grid.RowDefinitions>
+      <TextBlock Grid.Row="0" Text="Manage Access Codes" FontFamily="Consolas" FontSize="16" Foreground="{StaticResource HeaderBrush}" Margin="0,0,0,10"/>
+      <TextBlock Grid.Row="1" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,12"
+                 Text="Guest codes let someone else pair with an old machine without knowing the admin code. Changes can take up to a minute to reach every Cloudflare location."/>
+      <Grid Grid.Row="2" Margin="8,0,8,4">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="170"/>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="70"/>
+          <ColumnDefinition Width="100"/>
+        </Grid.ColumnDefinitions>
+        <TextBlock Grid.Column="0" Text="Code" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
+        <TextBlock Grid.Column="1" Text="Label" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
+        <TextBlock Grid.Column="2" Text="State" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
+        <TextBlock Grid.Column="3" Text="Created" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
+      </Grid>
+      <ListBox Grid.Row="3" Name="CodesList" SelectionMode="Single" Background="{StaticResource LogBgBrush}"
+               BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1"/>
+      <TextBlock Grid.Row="4" Name="CodesStatus" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,10,0,0" Text="Loading..."/>
+      <DockPanel Grid.Row="5" Margin="0,14,0,0" LastChildFill="False">
+        <Button Name="BtnCodeNew" Content="New Code..." Width="110" Margin="0,0,8,0" DockPanel.Dock="Left" BorderBrush="{StaticResource AccentBrush}"/>
+        <Button Name="BtnCodeCopy" Content="Copy Code" Width="100" Margin="0,0,8,0" DockPanel.Dock="Left"/>
+        <Button Name="BtnCodeToggle" Content="Switch Off" Width="100" Margin="0,0,8,0" DockPanel.Dock="Left"/>
+        <Button Name="BtnCodeDelete" Content="Delete..." Width="90" Margin="0,0,8,0" DockPanel.Dock="Left"/>
+        <Button Name="BtnCodeClose" Content="Close" Width="90" DockPanel.Dock="Right"/>
+        <Button Name="BtnCodeRefresh" Content="Refresh" Width="90" Margin="0,0,8,0" DockPanel.Dock="Right"/>
+      </DockPanel>
+    </Grid>
+  </Border>
+</Window>
+'@
+    $reader = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($dialogXaml))
+    $dialog = [Windows.Markup.XamlReader]::Load($reader)
+    $dialog.Owner = $window
+
+    $codesList = $dialog.FindName('CodesList')
+    $codesStatus = $dialog.FindName('CodesStatus')
+    $btnNew = $dialog.FindName('BtnCodeNew')
+    $btnCopy = $dialog.FindName('BtnCodeCopy')
+    $btnToggle = $dialog.FindName('BtnCodeToggle')
+    $btnDelete = $dialog.FindName('BtnCodeDelete')
+    $btnRefresh = $dialog.FindName('BtnCodeRefresh')
+    $btnClose = $dialog.FindName('BtnCodeClose')
+
+    # Build one ListBox item (a Grid of TextBlocks, no data binding - matching the rest of the
+    # GUI). Tag carries the bare code (no dashes) for the admin calls. The green "On"/red
+    # "Off" is its own TextBlock so the colour reads on the selected (blue) row too. This only
+    # BUILDS the item; callers add it ($addRow) or swap it into an existing slot (Toggle) -
+    # a ListBoxItem already in the list can't be inserted a second time.
+    $newItem = {
+        param($rec)
+        $row = New-Object System.Windows.Controls.Grid
+        foreach ($w in @('170', '*', '70', '100')) {
+            $cd = New-Object System.Windows.Controls.ColumnDefinition
+            $cd.Width = [System.Windows.GridLength]::new([double]($w -replace '\*', '1'), $(if ($w -eq '*') { 'Star' } else { 'Pixel' }))
+            $row.ColumnDefinitions.Add($cd)
+        }
+        $tbCode = New-Object System.Windows.Controls.TextBlock
+        $tbCode.Text = $rec.key; $tbCode.FontFamily = 'Consolas'
+        [System.Windows.Controls.Grid]::SetColumn($tbCode, 0); [void]$row.Children.Add($tbCode)
+        $tbLabel = New-Object System.Windows.Controls.TextBlock
+        $tbLabel.Text = $rec.label; $tbLabel.TextTrimming = 'CharacterEllipsis'
+        [System.Windows.Controls.Grid]::SetColumn($tbLabel, 1); [void]$row.Children.Add($tbLabel)
+        $tbState = New-Object System.Windows.Controls.TextBlock
+        $tbState.Text = $(if ($rec.enabled) { 'On' } else { 'Off' }); $tbState.FontWeight = 'Bold'
+        $tbState.Foreground = $dialog.FindResource($(if ($rec.enabled) { 'GreenBrush' } else { 'ErrorBrush' }))
+        [System.Windows.Controls.Grid]::SetColumn($tbState, 2); [void]$row.Children.Add($tbState)
+        $tbCreated = New-Object System.Windows.Controls.TextBlock
+        $tbCreated.Text = $rec.created; $tbCreated.Foreground = $dialog.FindResource('MutedBrush')
+        [System.Windows.Controls.Grid]::SetColumn($tbCreated, 3); [void]$row.Children.Add($tbCreated)
+        $item = New-Object System.Windows.Controls.ListBoxItem
+        $item.Content = $row
+        # Tag: the bare code (no separators) plus the enabled flag, for Toggle/Delete/Copy.
+        $item.Tag = [PSCustomObject]@{ Code = ($rec.key -replace '[^A-Za-z0-9]', ''); Display = $rec.key; Enabled = [bool]$rec.enabled; Label = $rec.label }
+        return $item
+    }.GetNewClosure()
+
+    $addRow = {
+        param($rec)
+        [void]$codesList.Items.Add((& $newItem $rec))
+    }.GetNewClosure()
+
+    # Server-supplied detail for a failed call (e.g. "Admin access is not configured ..."),
+    # as " <text>", or nothing when there is none.
+    $errDetail = {
+        param($r)
+        $d = if ($r.Text) { $r.Text.Trim() } elseif ($r.Error) { $r.Error } else { '' }
+        if ($d) { " $d" } else { '' }
+    }.GetNewClosure()
+
+    $setBusy = {
+        param([bool]$busy, [string]$msg)
+        $dialog.Cursor = $(if ($busy) { [System.Windows.Input.Cursors]::Wait } else { $null })
+        foreach ($b in @($btnNew, $btnCopy, $btnToggle, $btnDelete, $btnRefresh)) { $b.IsEnabled = -not $busy }
+        if ($msg) { $codesStatus.Text = $msg }
+    }.GetNewClosure()
+
+    # Admin key: try the cached admin code, else the pairing key (the admin may have used it
+    # for pairing), else prompt. A 401 clears the key and re-prompts (a silently-tried cached
+    # key that fails doesn't show an error; a typed one does). Gives up after two typed
+    # attempts. Any other status (e.g. 503 = ADMIN_KEY not configured on the relay) is
+    # returned as-is - re-prompting can't fix those. $keys is the shared key holder: a
+    # reference, not $script: variables, because inside a closure `$script:` is the closure's
+    # own scope.
+    $keys = $script:RelayKeys
+    $callAdmin = {
+        param([string]$Method, [string]$Path)
+        $key = $keys.Admin
+        if ([string]::IsNullOrEmpty($key)) { $key = $keys.Access }
+        $typed = $false
+        $errText = $null
+        for ($tries = 0; $tries -lt 3; $tries++) {
+            if ([string]::IsNullOrEmpty($key)) {
+                $key = Show-PromptDialog -Owner $dialog -Title 'Admin Code' -Message 'Enter the ADMIN code (the ADMIN_KEY Worker secret) to manage guest codes. Kept in memory only.' -Secret -ErrorText $errText
+                if ([string]::IsNullOrEmpty($key)) { return $null }  # cancelled
+                $typed = $true
+            }
+            $r = Invoke-RelayRequest -RelayUrl $relayUrl -Method $Method -Path $Path -Headers @{ 'X-Access-Key' = $key }
+            if ($r.Status -eq 401) {
+                $errText = $(if ($typed) { 'That admin code was not accepted. Try again.' } else { $null })
+                $key = $null
+                $keys.Admin = $null
+                $typed = $false
+                continue
+            }
+            if ($r.Status -ge 200 -and $r.Status -lt 300) { $keys.Admin = $key }
+            return $r
+        }
+        return [PSCustomObject]@{ Status = 401; Text = 'The admin code was not accepted.'; Error = $null }
+    }.GetNewClosure()
+
+    $refresh = {
+        & $setBusy $true 'Loading...'
+        $codesList.Items.Clear()
+        $r = & $callAdmin 'GET' '/admin/keys'
+        & $setBusy $false $null
+        if ($null -eq $r) { $codesStatus.Text = 'Admin code needed to manage access codes.'; return }
+        if ($r.Status -ne 200) { $codesStatus.Text = "Could not load codes (HTTP $($r.Status)).$(& $errDetail $r)"; return }
+        $rows = @()
+        try { $rows = @($r.Text | ConvertFrom-Json -ErrorAction Stop) } catch {}
+        foreach ($rec in $rows) { & $addRow $rec }
+        $codesStatus.Text = "$($rows.Count) guest code(s). Switching a code off or deleting it can take up to a minute to reach every Cloudflare location."
+    }.GetNewClosure()
+
+    $selectedTag = { if ($codesList.SelectedItem) { $codesList.SelectedItem.Tag } else { $null } }.GetNewClosure()
+
+    $btnRefresh.Add_Click({ & $refresh }.GetNewClosure())
+
+    $btnNew.Add_Click({
+        $label = Show-PromptDialog -Owner $dialog -Title 'New Guest Code' -Message 'Give the new guest code a label (for example the name of the person or site it is for).'
+        if ([string]::IsNullOrEmpty($label)) { return }
+        & $setBusy $true 'Creating...'
+        $r = & $callAdmin 'POST' "/admin/keys?label=$([uri]::EscapeDataString($label))"
+        & $setBusy $false $null
+        if ($null -eq $r) { $codesStatus.Text = 'Admin code needed.'; return }
+        if ($r.Status -ne 200) { $codesStatus.Text = "Could not create the code (HTTP $($r.Status)).$(& $errDetail $r)"; return }
+        $rec = $null
+        try { $rec = $r.Text | ConvertFrom-Json -ErrorAction Stop } catch {}
+        if (-not $rec) { $codesStatus.Text = 'The relay returned an unexpected response.'; return }
+        & $addRow $rec
+        $codesList.SelectedIndex = $codesList.Items.Count - 1
+        $copied = $false
+        try { [System.Windows.Clipboard]::SetText($rec.key); $copied = $true } catch {}
+        $codesStatus.Text = $(if ($copied) { "Created $($rec.key) ('$($rec.label)') - copied to the clipboard." } else { "Created $($rec.key) ('$($rec.label)')." })
+    }.GetNewClosure())
+
+    $btnCopy.Add_Click({
+        $tag = & $selectedTag
+        if (-not $tag) { $codesStatus.Text = 'Select a code first.'; return }
+        try { [System.Windows.Clipboard]::SetText($tag.Display); $codesStatus.Text = "Copied $($tag.Display) to the clipboard." }
+        catch { $codesStatus.Text = 'Could not access the clipboard.' }
+    }.GetNewClosure())
+
+    $btnToggle.Add_Click({
+        $tag = & $selectedTag
+        if (-not $tag) { $codesStatus.Text = 'Select a code first.'; return }
+        $action = if ($tag.Enabled) { 'disable' } else { 'enable' }
+        & $setBusy $true "Switching $($action)..."
+        $r = & $callAdmin 'POST' "/admin/keys/$($tag.Code)/$action"
+        & $setBusy $false $null
+        if ($null -eq $r) { $codesStatus.Text = 'Admin code needed.'; return }
+        if ($r.Status -ne 200) { $codesStatus.Text = "Could not switch the code (HTTP $($r.Status)).$(& $errDetail $r)"; return }
+        $rec = $null
+        try { $rec = $r.Text | ConvertFrom-Json -ErrorAction Stop } catch {}
+        if ($rec) {
+            # Swap a freshly built item into the same slot rather than re-listing (KV reads
+            # are eventually consistent), and keep the row selected.
+            $idx = $codesList.SelectedIndex
+            $codesList.Items[$idx] = & $newItem $rec
+            $codesList.SelectedIndex = $idx
+            $codesStatus.Text = "$($rec.key) is now $(if ($rec.enabled) { 'On' } else { 'Off' }). It can take up to a minute to take effect everywhere."
+        }
+    }.GetNewClosure())
+
+    $btnDelete.Add_Click({
+        $tag = & $selectedTag
+        if (-not $tag) { $codesStatus.Text = 'Select a code first.'; return }
+        $confirm = [System.Windows.MessageBox]::Show("Delete guest code $($tag.Display) ('$($tag.Label)')? Anyone using it will no longer be able to pair. This cannot be undone.", 'Gr3y Tools', 'YesNo', 'Warning')
+        if ($confirm -ne 'Yes') { return }
+        & $setBusy $true 'Deleting...'
+        $r = & $callAdmin 'DELETE' "/admin/keys/$($tag.Code)"
+        & $setBusy $false $null
+        if ($null -eq $r) { $codesStatus.Text = 'Admin code needed.'; return }
+        if ($r.Status -ne 200) { $codesStatus.Text = "Could not delete the code (HTTP $($r.Status)).$(& $errDetail $r)"; return }
+        $idx = $codesList.SelectedIndex
+        if ($idx -ge 0) { $codesList.Items.RemoveAt($idx) }
+        $codesStatus.Text = "Deleted $($tag.Display)."
+    }.GetNewClosure())
+
+    # Toggle the button label to match the selected row's state.
+    $codesList.Add_SelectionChanged({
+        $tag = & $selectedTag
+        if ($tag) { $btnToggle.Content = $(if ($tag.Enabled) { 'Switch Off' } else { 'Switch On' }) }
+    }.GetNewClosure())
+
+    $btnClose.Add_Click({ $dialog.Close() }.GetNewClosure())
+    $dialog.Add_Loaded({ & $refresh }.GetNewClosure())
+    $dialog.ShowDialog() | Out-Null
 }
 
 function Show-PairingDialog {
@@ -3422,7 +4055,53 @@ function Show-PairingDialog {
         [System.Windows.MessageBox]::Show('The pairing relay is not configured yet in this build - see cloudflare/README.md.', 'Gr3y Tools', 'OK', 'Warning') | Out-Null
         return
     }
-    $code = New-PairingCode
+    $relayUrl = $script:ExportRelayUrl
+
+    # Probe the relay BEFORE asking for a code: an old (ungated) Worker has no /open route, so
+    # pairing can't work against it, and there's no point prompting for an access code.
+    $gated = Test-RelayGated -RelayUrl $relayUrl
+    if ($gated -eq $false) {
+        [System.Windows.MessageBox]::Show($script:RelayOutdatedText, 'Gr3y Tools', 'OK', 'Warning') | Out-Null
+        return
+    }
+    if ($null -eq $gated) {
+        [System.Windows.MessageBox]::Show("Could not reach the pairing relay. Check this machine's internet connection, or use Load a File or Pasted List instead.", 'Gr3y Tools', 'OK', 'Warning') | Out-Null
+        return
+    }
+
+    # Ask for the access code and open a pairing slot. Re-prompt once on a rejected code,
+    # then give up. The access key is cached in memory (Get-RelayAccessKey) so a second
+    # pairing this run doesn't ask again; a rejected key is cleared so it isn't reused.
+    $pair = $null
+    $promptError = $null
+    for ($tries = 0; $tries -lt 2; $tries++) {
+        $key = Get-RelayAccessKey -ErrorText $promptError
+        if ([string]::IsNullOrEmpty($key)) { return }  # user cancelled
+        $pair = Start-RelayPairing -RelayUrl $relayUrl -AccessKey $key
+        if ($pair.Ok) { break }
+        if ($pair.Failure -eq 'auth') {
+            $script:RelayKeys.Access = $null
+            $promptError = 'That code was not accepted - it may be wrong or switched off. Try again.'
+            $pair = $null
+            continue
+        }
+        # Any other failure is not something a re-prompt fixes.
+        $msg = switch ($pair.Failure) {
+            'outdated' { $script:RelayOutdatedText }
+            'network'  { "Could not reach the pairing relay ($($pair.Message)). Check this machine's internet connection, or use Load a File or Pasted List." }
+            'busy'     { 'Could not get an unused pairing code - try again in a moment.' }
+            default    { "The relay is temporarily unavailable ($($pair.Message)). Try again in a few minutes." }
+        }
+        [System.Windows.MessageBox]::Show($msg, 'Gr3y Tools', 'OK', 'Warning') | Out-Null
+        return
+    }
+    if (-not ($pair -and $pair.Ok)) {
+        [System.Windows.MessageBox]::Show('That code was not accepted. Pairing cancelled.', 'Gr3y Tools', 'OK', 'Warning') | Out-Null
+        return
+    }
+    $code = $pair.Code
+    $session = $pair.Session
+    $label = $pair.Label
 
     $dialogXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -3493,10 +4172,11 @@ function Show-PairingDialog {
     <StackPanel>
       <TextBlock Text="Pair with Old Machine" FontFamily="Consolas" FontSize="16" Foreground="{StaticResource HeaderBrush}" Margin="0,0,0,10"/>
       <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,16"
-                 Text="Run the command below on the OLD machine through whatever command-line access you have. The export is sent straight here - one-time use, and lost if this dialog is closed before it arrives."/>
+                 Text="Run the command below on the OLD machine through whatever command-line access you have - it needs no access code. The export is sent straight here: one-time use, and lost if this dialog is closed before it arrives. It can take up to a minute to appear after the old machine says Sent."/>
 
       <TextBlock Text="Code:" FontWeight="Bold" Margin="0,0,0,4"/>
-      <TextBlock Name="CodeDisplay" FontFamily="Consolas" FontSize="26" FontWeight="Bold" Foreground="{StaticResource HeaderBrush}" Margin="0,0,0,16"/>
+      <TextBlock Name="CodeDisplay" FontFamily="Consolas" FontSize="26" FontWeight="Bold" Foreground="{StaticResource HeaderBrush}" Margin="0,0,0,2"/>
+      <TextBlock Name="AccessText" Foreground="{StaticResource GreenBrush}" FontSize="12" Margin="0,0,0,16"/>
 
       <TextBlock Text="Run on the old machine:" FontWeight="Bold" Margin="0,0,0,4"/>
       <Grid Margin="0,0,0,16">
@@ -3521,12 +4201,14 @@ function Show-PairingDialog {
     $dialog.Owner = $window
 
     $codeDisplay = $dialog.FindName('CodeDisplay')
+    $accessText = $dialog.FindName('AccessText')
     $cmdPair = $dialog.FindName('CmdPair')
     $btnCopyPair = $dialog.FindName('BtnCopyPair')
     $statusText = $dialog.FindName('StatusText')
     $btnCancelPairing = $dialog.FindName('BtnCancelPairing')
 
     $codeDisplay.Text = $code
+    $accessText.Text = "Unlocked as: $label"
     $cmdPair.Text = "`$s = irm get.gr3y.io/debloat-export; & ([scriptblock]::Create(`$s)) -Code $code"
 
     $btnCopyPair.Add_Click({
@@ -3538,60 +4220,90 @@ function Show-PairingDialog {
         $revertTimer.Start()
     }.GetNewClosure())
 
-    # Poll in a background runspace, not inline - each poll is a network round-trip and
-    # this repeats every few seconds for up to 10 minutes, unlike the other small one-off
-    # inline fetches elsewhere in this script. A DispatcherTimer here only ever checks
-    # "is the background call done yet" (cheap, no UI hitch), same async-plus-polling
-    # pattern already used for Scan and the direct-download queue path.
-    $relayUrl = $script:ExportRelayUrl
+    # Poll in a background runspace, not inline - each poll is a network round-trip repeating
+    # for up to 10 minutes. The runspace runs Wait-RelayExport, which needs this script's
+    # Invoke-RelayRequest too, so both are injected via an InitialSessionState (a background
+    # runspace shares nothing else with the script). A synchronized hashtable lets the loop
+    # surface a transient-error message to the UI without sharing anything else. A 500 ms
+    # DispatcherTimer only checks "is the call done yet" and copies that message across.
+    $state = [hashtable]::Synchronized(@{ Message = $null })
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    $iss.Commands.Add([System.Management.Automation.Runspaces.SessionStateFunctionEntry]::new('Invoke-RelayRequest', (Get-Command Invoke-RelayRequest).Definition))
+    $iss.Commands.Add([System.Management.Automation.Runspaces.SessionStateFunctionEntry]::new('Wait-RelayExport', (Get-Command Wait-RelayExport).Definition))
+    $rs = [runspacefactory]::CreateRunspace($iss)
+    $rs.Open()
     $pollPS = [powershell]::Create()
-    [void]$pollPS.AddScript({
-        param($RelayUrl, $Code, $TimeoutSeconds)
-        $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-        while ((Get-Date) -lt $deadline) {
-            try {
-                return Invoke-RestMethod -Uri "$RelayUrl/poll?code=$Code" -Method Get -ErrorAction Stop
-            } catch {
-                Start-Sleep -Seconds 3
-            }
-        }
-        return $null
-    })
-    [void]$pollPS.AddArgument($relayUrl)
-    [void]$pollPS.AddArgument($code)
-    [void]$pollPS.AddArgument(600)
+    $pollPS.Runspace = $rs
+    [void]$pollPS.AddCommand('Wait-RelayExport').AddParameter('RelayUrl', $relayUrl).AddParameter('Code', $code).AddParameter('Session', $session).AddParameter('TimeoutSeconds', 600).AddParameter('State', $state)
     $pollHandle = $pollPS.BeginInvoke()
 
+    # One cleanup path shared by Cancel and the window X (the old code only stopped the timer
+    # on close, leaving the poll runspace running up to 10 minutes and able to consume the
+    # export). Idempotent via $cleanedUp. Best-effort /close so the old machine can't submit
+    # into a gone dialog; skipped once the export has been claimed.
+    $pairClosed = [PSCustomObject]@{ Done = $false; Consumed = $false }
+    # Create the timer BEFORE $cleanup so the closure captures the real object, not $null.
     $checkTimer = New-Object System.Windows.Threading.DispatcherTimer
     $checkTimer.Interval = [TimeSpan]::FromMilliseconds(500)
+    $cleanup = {
+        if ($pairClosed.Done) { return }
+        $pairClosed.Done = $true
+        try { $checkTimer.Stop() } catch {}
+        if (-not $pollHandle.IsCompleted) { try { $pollPS.Stop() } catch {} }
+        try { $pollPS.Dispose() } catch {}
+        try { $rs.Dispose() } catch {}
+        if (-not $pairClosed.Consumed) {
+            Invoke-RelayRequest -RelayUrl $relayUrl -Method 'POST' -Path "/close?code=$code" -Headers @{ 'X-Session' = $session } -TimeoutSec 5 | Out-Null
+        }
+    }.GetNewClosure()
+
     $checkTimer.Add_Tick({
-        if (-not $pollHandle.IsCompleted) { return }
+        if (-not $pollHandle.IsCompleted) {
+            if ($state.Message) { $statusText.Text = $state.Message } else { $statusText.Text = 'Waiting for the old machine...' }
+            return
+        }
         $checkTimer.Stop()
         $result = $null
-        try { $result = $pollPS.EndInvoke($pollHandle) } catch {}
-        $pollPS.Dispose()
-        if ($result) {
+        try { $result = @($pollPS.EndInvoke($pollHandle))[0] } catch {}
+        if ($result -and $result.Kind -eq 'data') {
+            $pairClosed.Consumed = $true
+            $d = $result.Data
+            $hasShape = $d -and (($d.PSObject.Properties.Name -contains 'installedProgramNames') -or ($d.PSObject.Properties.Name -contains 'wingetIds'))
+            if (-not $hasShape) {
+                $statusText.Text = 'The old machine sent something that is not a valid app export. Close this and try again.'
+                return
+            }
+            $hostName = if ($d.hostname) { $d.hostname } else { 'the old machine' }
+            $exportedAt = if ($d.exportedAt) { $d.exportedAt } else { 'unknown time' }
+            $wingetCount = @($d.wingetIds).Count
+            $nameCount = @($d.installedProgramNames).Count
+            # Confirm the received machine before applying it - the one-time claim is
+            # best-effort on eventually-consistent storage, so let the tech eyeball it.
+            $confirm = [System.Windows.MessageBox]::Show(
+                "Received an app list from:`n`n  $hostName  (exported $exportedAt)`n  $wingetCount winget app(s), $nameCount program name(s)`n`nCompare this machine against it?",
+                'Gr3y Tools', 'YesNo', 'Question')
+            if ($confirm -ne 'Yes') { $dialog.Close(); return }
             $baseline = [PSCustomObject]@{
-                hostname = $result.hostname
-                exportedAt = $result.exportedAt
-                wingetIds = @($result.wingetIds)
-                installedProgramNames = @($result.installedProgramNames)
+                hostname = $d.hostname
+                exportedAt = $d.exportedAt
+                wingetIds = @($d.wingetIds)
+                installedProgramNames = @($d.installedProgramNames)
             }
             $dialog.Close()
             Set-CompareBaseline -Baseline $baseline
+        } elseif ($result -and $result.Kind -eq 'session') {
+            $statusText.Text = 'This pairing session is no longer valid. Close this and try again.'
+        } elseif ($result -and $result.Kind -eq 'invalid') {
+            $statusText.Text = $result.Detail
         } else {
-            $statusText.Text = 'Timed out - no data received in 10 minutes. Close this and try again if needed.'
+            $extra = if ($result -and $result.Detail) { " (last error: $($result.Detail))" } else { '' }
+            $statusText.Text = "Timed out - no data received in 10 minutes$extra. Close this and try again if needed."
         }
     }.GetNewClosure())
     $checkTimer.Start()
 
-    $btnCancelPairing.Add_Click({
-        $checkTimer.Stop()
-        if (-not $pollHandle.IsCompleted) { try { $pollPS.Stop() } catch {} }
-        $pollPS.Dispose()
-        $dialog.Close()
-    }.GetNewClosure())
-    $dialog.Add_Closing({ $checkTimer.Stop() }.GetNewClosure())
+    $btnCancelPairing.Add_Click({ $dialog.Close() }.GetNewClosure())
+    $dialog.Add_Closing($cleanup)
 
     $dialog.ShowDialog() | Out-Null
 }
@@ -3651,7 +4363,13 @@ function Import-CompareBaselineFromFile {
 
 $btnCompareBaseline.Add_Click({
     if ($script:installProc -and -not $script:installProc.HasExited) { return }
-    switch (Show-CompareSourceChooser) {
+    # Loop so "Manage Access Codes..." returns to the chooser afterwards instead of closing
+    # the whole flow.
+    do {
+        $choice = Show-CompareSourceChooser
+        if ($choice -eq 'manage') { Show-AccessCodesDialog }
+    } while ($choice -eq 'manage')
+    switch ($choice) {
         'file' { Import-CompareBaselineFromFile }
         'pair' { Show-PairingDialog }
     }
