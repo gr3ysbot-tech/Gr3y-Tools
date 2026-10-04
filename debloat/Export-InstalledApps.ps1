@@ -28,13 +28,13 @@
     Optional. Writes the export as JSON to this path instead of the pipeline.
 
 .PARAMETER Code
-    Optional. A pairing code shown by Gr3ysUtilities.ps1's "Pair with Old Machine..."
+    Optional. A pairing code shown by Gr3ysUtilities.ps1's "Pair with Old Machine"
     dialog (Compare Against List...). Sends the export straight to that running app
     instance via a short-lived Cloudflare Worker relay instead of printing it or saving a
     file - nothing to copy-paste or transfer by hand. Takes priority over -OutputPath if
-    both are given. The code is one-time and expires in 10 minutes - if nothing is
-    actively polling for it (the GUI isn't open to that dialog), the export goes nowhere
-    and isn't retried.
+    both are given. No access code is needed on this side - the app unlocked the pairing
+    code with one already. The code is one-time and expires in 10 minutes; if no app has
+    it open, the relay refuses the export and nothing is stored.
 
 .PARAMETER RelayUrl
     Base URL of the pairing relay Worker. Defaults to the deployed Gr3y Tools relay -
@@ -103,13 +103,52 @@ if ($Code) {
         Write-Error "This copy of Export-InstalledApps.ps1 has no relay configured yet (RelayUrl is still the placeholder). Deploy cloudflare/export-relay-worker.js and update RelayUrl's default, or pass -RelayUrl explicitly."
         return
     }
-    try {
-        Invoke-RestMethod -Uri "$RelayUrl/submit?code=$Code" -Method Post -ContentType 'application/json' `
-            -Body ($export | ConvertTo-Json -Depth 4) -ErrorAction Stop | Out-Null
-        Write-Output "Sent to pairing code $Code - check the Pair with Old Machine... dialog on the other machine. (One-time use - if that dialog isn't open and waiting, this export goes nowhere.)"
-    } catch {
-        Write-Error "Could not send to pairing code $Code - $($_.Exception.Message)"
+    $body = $export | ConvertTo-Json -Depth 4
+    # The relay only takes an export for a code the app has actually opened (with its access
+    # code). A freshly opened code can take up to a minute (or more) to be visible from
+    # wherever this machine reaches Cloudflare, and KV also caches "not found", so a 404 - or
+    # a transient connection/5xx error - is retried for a while before giving up; it usually
+    # just means "not yet". charset=utf-8 so Windows PowerShell 5.1 doesn't send non-ASCII
+    # program names as ISO-8859-1.
+    $deadline = (Get-Date).AddSeconds(120)
+    $announcedRetry = $false
+    $sendOk = $false
+    while ($true) {
+        try {
+            Invoke-RestMethod -Uri "$RelayUrl/submit?code=$Code" -Method Post -ContentType 'application/json; charset=utf-8' `
+                -Body $body -TimeoutSec 30 -ErrorAction Stop | Out-Null
+            Write-Output "Sent to pairing code $Code - check the Pair with Old Machine dialog on the other machine."
+            $sendOk = $true
+            break
+        } catch {
+            $err = $_
+            $status = 0
+            try { $status = [int]$err.Exception.Response.StatusCode } catch {}
+            # 404 = code not open yet; 0 = no HTTP response (DNS/TLS/connect/timeout); 429/5xx
+            # = transient. All are worth retrying until the deadline.
+            $transient = ($status -eq 404) -or ($status -eq 0) -or ($status -eq 429) -or ($status -ge 500 -and $status -le 599)
+            if ($transient -and (Get-Date) -lt $deadline) {
+                if (-not $announcedRetry) {
+                    Write-Output "Pairing code $Code isn't ready yet - retrying for up to 2 minutes..."
+                    $announcedRetry = $true
+                }
+                Start-Sleep -Seconds 10
+                continue
+            }
+            $reason = switch ($status) {
+                404 { "nothing is waiting for that code. Check it matches the Pair with Old Machine dialog exactly, and that the dialog is still open." }
+                409 { "something was already sent for that code. Generate a new code and try again." }
+                503 { "the relay is temporarily unavailable. Try again in a few minutes." }
+                default { $err.Exception.Message }
+            }
+            Write-Error "Could not send to pairing code $Code - $reason"
+            break
+        }
     }
+    # An RMM runs this with -File; Write-Error alone leaves the exit code 0, so a failed send
+    # would look like success. $PSCommandPath is set only for a file run (empty for irm|iex and
+    # & ([scriptblock]::Create(...))), so this doesn't close an interactive session.
+    if (-not $sendOk -and $PSCommandPath) { exit 1 }
 } elseif ($OutputPath) {
     # Set-Content fails if the target directory doesn't exist yet (e.g. a fresh machine
     # with no C:\Temp) - that's a non-terminating error by default, so without -ErrorAction
@@ -125,6 +164,8 @@ if ($Code) {
         Write-Output "Saved $($export.wingetIds.Count) winget app(s) and $($export.installedProgramNames.Count) program name(s) to $OutputPath"
     } catch {
         Write-Error "Could not save to $OutputPath - $($_.Exception.Message)"
+        # Non-zero exit for an RMM -File run (see the -Code branch note).
+        if ($PSCommandPath) { exit 1 }
     }
 } else {
     # Not -OutputPath | Format-List or just `$export` - either lets PowerShell's default
