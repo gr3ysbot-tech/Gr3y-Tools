@@ -2870,8 +2870,11 @@ function Enable-BitLockerProtection {
             # recovery password protector is added in a second, separate call, matching
             # the plan's own two-step sequence.
             Enable-BitLocker -MountPoint $MountPoint -EncryptionMethod XtsAes256 -UsedSpaceOnly -TpmProtector -SkipHardwareTest -ErrorAction Stop | Out-Null
-            Add-BitLockerKeyProtector -MountPoint $MountPoint -RecoveryPasswordProtector -ErrorAction Stop | Out-Null
-            Write-Log "BitLocker enabled on $MountPoint (XtsAes256, used-space-only, TPM protector + recovery password protector added)."
+            # Add-BitLockerKeyProtector prints the NEW recovery password in the warning stream, which the run
+            # transcript (and so the log the GUI can zip) would keep: silenced here. The password is read from
+            # Windows when it is needed (Panels > BitLocker status, or manage-bde -protectors -get).
+            Add-BitLockerKeyProtector -MountPoint $MountPoint -RecoveryPasswordProtector -WarningAction SilentlyContinue -ErrorAction Stop | Out-Null
+            Write-Log "BitLocker enabled on $MountPoint (XtsAes256, used-space-only, TPM protector + recovery password protector added; the recovery password is not written to this log)."
         } catch {
             Write-Log "Could not enable BitLocker on $MountPoint`: $($_.Exception.Message)" 'WARN'
             return

@@ -349,8 +349,11 @@ function New-TestVhdVolume {
     param(
         # BitLocker refuses volumes that are "too small" (0x8031006F); the exact minimum is undocumented, so 256 is the default.
         [ValidateRange(128, 2048)][int]$SizeMB = 256,
-        # Optional preference; it must still pass the same "free" checks. Default: highest free letter F-Z.
-        [ValidatePattern('^[F-Zf-z]:?$')][string]$DriveLetter
+        # Optional preference; it must still pass the same "free" checks (Assert-BlTestLetterFree accepts F-Z only, and runs
+        # twice before the letter is used). No [ValidatePattern] here on purpose: in Windows PowerShell 5.1 a parameter with a
+        # validation attribute that was NOT supplied makes .GetNewClosure() throw "The attribute cannot be added because
+        # variable DriveLetter with value would no longer be valid" - and this function makes closures below.
+        [string]$DriveLetter
     )
 
     Assert-BlTestElevated

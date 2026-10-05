@@ -14,7 +14,7 @@ Describe 'Disable BitLocker helpers' {
             'Get-BitLockerDisableState', 'Get-BitLockerProtectorSummary', 'Get-BitLockerKeyIds', 'Test-BitLockerKeysCovered',
             'Get-BitLockerMountsWithoutRecoveryPassword', 'New-BitLockerBackupText', 'Test-BitLockerRecoveryPasswordFormat',
             'Test-BitLockerBackupText', 'Get-BitLockerBackupPlaceNote', 'Get-BitLockerDefaultBackupFolder', 'Test-BitLockerBackupPath', 'Test-BitLockerBackupStillGood',
-            'Get-BitLockerKeyIdSet', 'Get-RunningToolJobs', 'Save-BitLockerBackupFile', 'Get-BitLockerRawOutput', 'Get-BitLockerAuditFolder', 'Write-BitLockerActionLog',
+            'Get-BitLockerKeyIdSet', 'Get-RunningToolJobs', 'Get-BitLockerPathFileSystem', 'Save-BitLockerBackupFile', 'Get-BitLockerRawOutput', 'Get-BitLockerAuditFolder', 'Write-BitLockerActionLog',
             'Get-BitLockerFriendlyError', 'Clear-BitLockerStoredAutoUnlock', 'Start-BitLockerDecrypt', 'Add-BitLockerRecoveryProtector',
             'Get-PreventDeviceEncryptionValue', 'Set-PreventDeviceEncryption', 'Test-BitLockerPolicyPresent', 'Test-BitLockerManagedText', 'Get-BitLockerDecryptWarnings',
             'Get-BitLockerDecryptOrder', 'Get-BitLockerAutoUnlockAffected', 'Get-BitLockerElapsedText', 'Get-BitLockerProgressText',
@@ -26,6 +26,12 @@ Describe 'Disable BitLocker helpers' {
         $script:pwdC = '111111-222222-333333-444444-555555-666666-707707-000011'
         $script:idTpm = '{AAAAAAAA-0000-0000-0000-000000000001}'
         $script:idRec = '{D8542C81-40F6-45DC-9E68-8594BB27FC34}'
+
+        # A place nothing can ever be created: a path UNDER A PLAIN FILE. (Never use a drive letter as "a drive that does not
+        # exist" - this PC may have it mapped, and the test would then write into a real share.)
+        $script:blockedFile = Join-Path $TestDrive 'a-plain-file'
+        Set-Content -LiteralPath $script:blockedFile -Value 'not a folder' -Encoding ASCII
+        $script:blockedRoot = Join-Path $script:blockedFile 'sub'
 
         # --- stand-ins for the BitLocker module (same names, so the real code calls them) ---
         $script:fake = $null
@@ -317,7 +323,7 @@ Describe 'Disable BitLocker helpers' {
     Context 'the recovery password format' {
         It 'accepts well-formed passwords, including the edges of the allowed range' {
             Test-BitLockerRecoveryPasswordFormat -Candidate $script:pwdC | Should -BeTrue
-            Test-BitLockerRecoveryPasswordFormat -Candidate '303853-558635-091828-709577-000891-120549-364804-297176' | Should -BeTrue
+            Test-BitLockerRecoveryPasswordFormat -Candidate '000011-000022-000033-000044-000055-000066-000077-000088' | Should -BeTrue    # clearly synthetic, checksum-valid
             Test-BitLockerRecoveryPasswordFormat -Candidate '000000-000000-000000-000000-000000-000000-000000-000000' | Should -BeTrue
             Test-BitLockerRecoveryPasswordFormat -Candidate '720885-720885-720885-720885-720885-720885-720885-720885' | Should -BeTrue
         }
@@ -407,6 +413,18 @@ Describe 'Disable BitLocker helpers' {
             $t.TrimEnd() | Should -Match 'END OF BACKUP$'
         }
 
+        It 'says which volumes BitLocker could not read, so a missing drive is never mistaken for a complete backup' {
+            $t = New-BitLockerBackupText -Volumes $script:vols -Info $script:info -RawStatus '' -RawProtectors @{} -Unreadable @('Volume G: could not be read')
+            $t | Should -Match 'NOT IN THIS BACKUP: BitLocker could not read some volumes when it was made, so their keys are missing: Volume G: could not be read'
+            (New-BitLockerBackupText -Volumes $script:vols -Info $script:info -RawStatus '' -RawProtectors @{}) | Should -Not -Match 'NOT IN THIS BACKUP'
+            (New-BitLockerBackupText -Volumes $script:vols -Info $script:info -RawStatus '' -RawProtectors @{} -Unreadable @()) | Should -Not -Match 'NOT IN THIS BACKUP'
+            (Test-BitLockerBackupText -Text $t -Volumes $script:vols).Ok | Should -BeTrue
+        }
+
+        It 'tells the person to keep the file off the encrypted drives and off a drive being decrypted' {
+            $script:text | Should -Match 'keep it OFF the encrypted drives listed below and off any drive that is being decrypted'
+        }
+
         It 'passes its own check, and fails it when anything is missing or damaged' {
             (Test-BitLockerBackupText -Text $script:text -Volumes $script:vols).Ok | Should -BeTrue
             $badPassword = $script:text.Replace($script:pwdC, $script:pwdC.Replace('1', '2'))
@@ -454,6 +472,15 @@ Describe 'Disable BitLocker helpers' {
             $n = Get-BitLockerBackupPlaceNote -Path 'C:\Users\x\k.txt' -Volumes $script:placeVols -Mounts @('D:') -CloudRoots @()
             $n | Should -Match 'on C:, which is encrypted'
             $n | Should -Match 'locked inside it'
+        }
+
+        It 'sees through this PC''s own administrative share (\\localhost\C$\...) to the drive it really is' {
+            Get-BitLockerBackupPlaceNote -Path '\\localhost\C$\Backups\x.txt' -Volumes $script:placeVols -Mounts @('C:') -CloudRoots @() | Should -Match 'about to be decrypted'
+            Get-BitLockerBackupPlaceNote -Path '\\127.0.0.1\c$\x.txt' -Volumes $script:placeVols -Mounts @('C:') -CloudRoots @() | Should -Match 'about to be decrypted'
+            Get-BitLockerBackupPlaceNote -Path ("\\$env:COMPUTERNAME\D`$\x.txt") -Volumes $script:placeVols -Mounts @('C:') -CloudRoots @() | Should -Match 'which is encrypted'
+            # another PC's share, and a drive that is not encrypted, say nothing
+            Get-BitLockerBackupPlaceNote -Path '\\otherserver\C$\x.txt' -Volumes $script:placeVols -Mounts @('C:') -CloudRoots @() | Should -BeNullOrEmpty
+            Get-BitLockerBackupPlaceNote -Path '\\localhost\E$\x.txt' -Volumes $script:placeVols -Mounts @('C:') -CloudRoots @() | Should -BeNullOrEmpty
         }
 
         It 'says a file inside OneDrive also goes to the cloud, whatever drive it is on' {
@@ -515,6 +542,40 @@ Describe 'Disable BitLocker helpers' {
             New-Item -ItemType Directory -Path $dir | Out-Null
             (Test-BitLockerBackupPath -Path (Join-Path $dir 'ok.txt')).Ok | Should -BeTrue
             @(Get-ChildItem -LiteralPath $dir -Force).Count | Should -Be 0
+        }
+
+        It 'refuses a file name Windows cannot create, a folder, a device name and an extended path - and never throws' {
+            foreach ($n in 'a*b.txt', 'a?b.txt', 'x:y.txt', 'NUL.txt', 'con', 'COM1.log', 'LPT9', 'trailing.', 'trailing ', 'a"b.txt', 'a<b.txt', 'a|b.txt') {
+                $r = Test-BitLockerBackupPath -Path "$TestDrive\$n"
+                $r.Ok | Should -BeFalse -Because $n
+                $r.Error | Should -Match 'not a usable file name' -Because $n
+            }
+            (Test-BitLockerBackupPath -Path "$TestDrive\").Error | Should -Match 'ends in a folder'
+            (Test-BitLockerBackupPath -Path 'C:\').Error | Should -Match 'ends in a folder'
+            (Test-BitLockerBackupPath -Path '\\?\C:\x.txt').Error | Should -Match 'normal path'
+            (Test-BitLockerBackupPath -Path '\\.\C:\x.txt').Error | Should -Match 'normal path'
+            New-Item -ItemType Directory -Path (Join-Path $TestDrive 'a-folder') | Out-Null
+            (Test-BitLockerBackupPath -Path (Join-Path $TestDrive 'a-folder')).Error | Should -Match 'folder'
+            { Test-BitLockerBackupPath -Path $null } | Should -Not -Throw
+            # a name that is too long for Windows passes every name rule above; only really trying to create that file shows it
+            $tooLong = "$TestDrive\" + ('a' * 300) + '.txt'
+            { Test-BitLockerBackupPath -Path $tooLong } | Should -Not -Throw
+            (Test-BitLockerBackupPath -Path $tooLong).Ok | Should -BeFalse
+        }
+
+        It 'accepts ordinary names, including spaces, dots and several dots inside them' {
+            foreach ($n in 'BitLocker-Backup_PC_20261004_121500.txt', 'my keys (1).txt', 'keys.v2.final.txt', 'CONSOLE.txt', 'com10.txt') {
+                (Test-BitLockerBackupPath -Path "$TestDrive\$n").Ok | Should -BeTrue -Because $n
+            }
+        }
+
+        It 'tells the file system of a drive, and gives nothing for a network path or an unused letter, without throwing' {
+            Get-BitLockerPathFileSystem -Path $TestDrive | Should -Not -BeNullOrEmpty
+            Get-BitLockerPathFileSystem -Path '\\server\share\x.txt' | Should -Be ''
+            Get-BitLockerPathFileSystem -Path '' | Should -Be ''
+            $used = @([System.IO.DriveInfo]::GetDrives() | ForEach-Object { ([string]$_.Name)[0] })
+            $free = @('Z', 'Y', 'X', 'W', 'V', 'U') | Where-Object { $used -notcontains $_ } | Select-Object -First 1
+            Get-BitLockerPathFileSystem -Path "${free}:\no\such\folder" | Should -Be ''
         }
 
         It 'sorts a drive''s key IDs into one comparable text' {
@@ -609,6 +670,44 @@ Describe 'Disable BitLocker helpers' {
             $r.Ok | Should -BeFalse
             $r.Error | Should -Match 'does not exist'
             Test-Path -LiteralPath $missing | Should -BeFalse
+        }
+
+        It 'deletes the file and fails when it cannot be restricted on an NTFS drive (a key file anyone could read is not kept)' {
+            function icacls.exe { $global:LASTEXITCODE = 5; 'Access is denied.' }
+            function Get-BitLockerPathFileSystem { 'NTFS' }
+            $path = Join-Path $TestDrive 'acl-fails-ntfs.txt'
+            $r = Save-BitLockerBackupFile -Path $path -Text $script:text2
+            $r.Ok | Should -BeFalse
+            $r.Error | Should -Match 'Could not restrict who can read the file'
+            $r.Error | Should -Match 'deleted'
+            Test-Path -LiteralPath $path | Should -BeFalse
+        }
+
+        It 'only warns, and keeps the file, on a drive that cannot hold permissions (FAT, exFAT, a share)' {
+            function icacls.exe { $global:LASTEXITCODE = 5; 'Access is denied.' }
+            function Get-BitLockerPathFileSystem { 'exFAT' }
+            $path = Join-Path $TestDrive 'acl-fails-exfat.txt'
+            $r = Save-BitLockerBackupFile -Path $path -Text $script:text2
+            $r.Ok | Should -BeTrue
+            $r.AclWarning | Should -Match 'Could not restrict who can read the file'
+            Test-Path -LiteralPath $path | Should -BeTrue
+            $r.Text | Should -BeExactly $script:text2
+        }
+
+        It 'holds the file locked while it is made, so it cannot be deleted or swapped for another between the steps' {
+            $script:swap = ''
+            function icacls.exe {
+                # somebody else tries to delete, and to overwrite, the file while the save is under way
+                try { Remove-Item -LiteralPath $args[0] -Force -ErrorAction Stop; $script:swap += 'DELETED;' } catch { $script:swap += 'delete-blocked;' }
+                try { [System.IO.File]::WriteAllText($args[0], 'SOMEONE ELSES CONTENT'); $script:swap += 'OVERWRITTEN;' } catch { $script:swap += 'write-blocked;' }
+                $global:LASTEXITCODE = 0
+            }
+            function Get-BitLockerPathFileSystem { 'NTFS' }
+            $path = Join-Path $TestDrive 'held-open.txt'
+            $r = Save-BitLockerBackupFile -Path $path -Text $script:text2
+            $r.Ok | Should -BeTrue
+            $script:swap | Should -Be 'delete-blocked;write-blocked;'
+            $r.Text | Should -BeExactly $script:text2
         }
     }
 
@@ -720,6 +819,51 @@ Describe 'Disable BitLocker helpers' {
             $r2.Ok | Should -BeFalse
             $r2.Error | Should -Match 'still reports'
             $script:fake.DisableCalls.Count | Should -Be 0
+        }
+
+        It 'says the auto-unlock keys WERE cleared when the clear ran but the check afterwards failed, or the decrypt then failed' {
+            # the clear ran, but Windows still reports stored keys
+            $script:fake.Volumes = @(New-FakeVolume -Mount 'C:' -AutoUnlockKeyStored $true)
+            $script:fake.ClearIsNoOp = $true
+            $r = Start-BitLockerDecrypt -MountPoint 'C:' -ClearAutoUnlock
+            $r.Ok | Should -BeFalse
+            $r.ClearedAutoUnlock | Should -BeTrue
+            $r.Error | Should -Match 'were cleared, but the result could not be confirmed'
+            $script:fake.DisableCalls.Count | Should -Be 0
+            # the clear ran and worked, the decrypt then failed
+            $script:fake.ClearIsNoOp = $false
+            $script:fake.Volumes = @(New-FakeVolume -Mount 'C:' -AutoUnlockKeyStored $true)
+            $script:fake.DisableThrows = 'Access is denied'
+            $r2 = Start-BitLockerDecrypt -MountPoint 'C:' -ClearAutoUnlock
+            $r2.Ok | Should -BeFalse
+            $r2.ClearedAutoUnlock | Should -BeTrue
+            # the clear command itself failed: nothing was cleared
+            $script:fake.DisableThrows = $null
+            $script:fake.ClearThrows = 'Access is denied'
+            $script:fake.Volumes = @(New-FakeVolume -Mount 'C:' -AutoUnlockKeyStored $true)
+            $r3 = Start-BitLockerDecrypt -MountPoint 'C:' -ClearAutoUnlock
+            $r3.ClearedAutoUnlock | Should -BeFalse
+            $r3.Error | Should -Match 'Could not clear the auto-unlock keys'
+        }
+
+        It 'reports from Clear-BitLockerStoredAutoUnlock whether the clear command ran, apart from whether the check passed' {
+            $script:fake.Volumes = @(New-FakeVolume -Mount 'C:' -AutoUnlockKeyStored $true)
+            $ok = Clear-BitLockerStoredAutoUnlock
+            $ok.Ok | Should -BeTrue; $ok.Cleared | Should -BeTrue
+            $script:fake.Volumes = @(New-FakeVolume -Mount 'C:' -AutoUnlockKeyStored $true)
+            $script:fake.ClearIsNoOp = $true
+            $still = Clear-BitLockerStoredAutoUnlock
+            $still.Ok | Should -BeFalse; $still.Cleared | Should -BeTrue
+            $script:fake.ClearIsNoOp = $false
+            $script:fake.ClearThrows = 'Access is denied'
+            $failed = Clear-BitLockerStoredAutoUnlock
+            $failed.Ok | Should -BeFalse; $failed.Cleared | Should -BeFalse
+            # the clear ran, but the Windows drive cannot be read afterwards to check
+            $script:fake.ClearThrows = $null
+            $script:fake.GetThrows = 'WMI hiccup'
+            $unchecked = Clear-BitLockerStoredAutoUnlock
+            $unchecked.Ok | Should -BeFalse; $unchecked.Cleared | Should -BeTrue
+            $unchecked.Error | Should -Match 'Could not re-read the Windows drive to check'
         }
 
         It 'never clears auto-unlock keys when the drive being decrypted is a data drive' {
@@ -838,6 +982,23 @@ Describe 'Disable BitLocker helpers' {
             Get-BitLockerProgressText -Volume (& $vol 'DecryptionSuspended' 55) -Started $started -Now $t0.AddMinutes(7) | Should -Be 'Decryption paused (55% still encrypted) - running 7 min'
             Get-BitLockerProgressText -Volume (& $vol 'DecryptionInProgress' 80) -Started $null -Now $t0 | Should -Be 'Decrypting (80% still encrypted)'
         }
+
+        It 'stops the clock of a drive that has finished while another drive is still working' {
+            $t0 = Get-Date '2026-10-04 12:00:00'
+            $done = ConvertTo-BitLockerVolumeDetail -Volume (New-FakeVolume -Mount 'D:' -Type 'Data' -Status 'FullyDecrypted' -Protection 'Off' -Percent 0)
+            $finished = [pscustomobject]@{ At = $t0; StartPercent = 100; Finished = $t0.AddMinutes(2) }
+            Get-BitLockerProgressText -Volume $done -Started $finished -Now $t0.AddHours(3) | Should -Be 'Decrypted - took 2 min'
+            # no finish time recorded yet: the clock runs to now
+            Get-BitLockerProgressText -Volume $done -Started ([pscustomobject]@{ At = $t0; StartPercent = 100; Finished = $null }) -Now $t0.AddMinutes(41) | Should -Be 'Decrypted - took 41 min'
+        }
+
+        It 'says "under a minute left" and not "about under a minute left"' {
+            $t0 = Get-Date '2026-10-04 12:00:00'
+            $nearlyDone = ConvertTo-BitLockerVolumeDetail -Volume (New-FakeVolume -Mount 'D:' -Type 'Data' -Status 'DecryptionInProgress' -Protection 'Off' -Percent 1)
+            $text = Get-BitLockerProgressText -Volume $nearlyDone -Started ([pscustomobject]@{ At = $t0; StartPercent = 100 }) -Now $t0.AddMinutes(10)
+            $text | Should -Be 'Decrypting (1% still encrypted) - running 10 min, under a minute left'
+            $text | Should -Not -Match 'about under'
+        }
     }
 
     Context 'what kind of drive it is' {
@@ -907,7 +1068,7 @@ Describe 'Disable BitLocker helpers' {
         It 'gives no audit folder, instead of throwing, when ProgramData is not usable' {
             $oldPd = $env:ProgramData
             try {
-                $env:ProgramData = 'Z:\no-such-drive-for-sure'
+                $env:ProgramData = $script:blockedRoot
                 { Get-BitLockerAuditFolder } | Should -Not -Throw
                 Get-BitLockerAuditFolder | Should -BeNullOrEmpty
                 $env:ProgramData = ''
@@ -919,13 +1080,56 @@ Describe 'Disable BitLocker helpers' {
             $oldPd = $env:ProgramData
             $script:workDirBackup = $workDir
             try {
-                $env:ProgramData = 'Z:\no-such-drive-for-sure'
+                $env:ProgramData = $script:blockedRoot
                 $workDir = Join-Path $TestDrive 'logs'
                 Write-BitLockerActionLog 'Decryption started: C:'
                 (Get-Content -LiteralPath (Join-Path $workDir 'bitlocker-actions.log') -Raw) | Should -Match 'Decryption started: C:'
-                $workDir = 'Z:\no-such-drive-for-sure\logs'
+                $workDir = Join-Path $script:blockedRoot 'logs'
                 { Write-BitLockerActionLog 'ignored' } | Should -Not -Throw
             } finally { $env:ProgramData = $oldPd; $workDir = $script:workDirBackup }
+        }
+
+        It 'returns nothing by default, and with -PassThru says whether the line was written anywhere' {
+            $oldPd = $env:ProgramData
+            $script:workDirBackup = $workDir
+            try {
+                $env:ProgramData = $script:blockedRoot
+                $workDir = Join-Path $TestDrive 'logs-passthru'
+                @(Write-BitLockerActionLog 'quiet line').Count | Should -Be 0
+                Write-BitLockerActionLog 'loud line' -PassThru | Should -BeTrue
+                (Get-Content -LiteralPath (Join-Path $workDir 'bitlocker-actions.log') -Raw) | Should -Match 'loud line'
+                $workDir = Join-Path $script:blockedRoot 'logs'
+                Write-BitLockerActionLog 'lost line' -PassThru | Should -BeFalse
+            } finally { $env:ProgramData = $oldPd; $workDir = $script:workDirBackup }
+        }
+
+        It 'does not trust an audit folder that ordinary users can reach, or one that sits behind a junction' {
+            $isAdmin = ([System.Security.Principal.WindowsPrincipal][System.Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+            if (-not $isAdmin) { Set-ItResult -Skipped -Because 'needs an elevated session: the folder is restricted to elevated administrators'; return }
+            $oldPd = $env:ProgramData
+            try {
+                # a folder that was made correctly and then opened up to Users is no longer trusted
+                $env:ProgramData = Join-Path $TestDrive 'ProgramDataTrust1'
+                New-Item -ItemType Directory -Path $env:ProgramData | Out-Null
+                $audit = Get-BitLockerAuditFolder
+                $audit | Should -Not -BeNullOrEmpty
+                & icacls.exe $audit '/grant' '*S-1-5-32-545:(OI)(CI)R' | Out-Null
+                Get-BitLockerAuditFolder | Should -BeNullOrEmpty
+                # a Gr3yTools folder that is really a junction to somewhere else is not trusted either
+                $env:ProgramData = Join-Path $TestDrive 'ProgramDataTrust2'
+                New-Item -ItemType Directory -Path $env:ProgramData | Out-Null
+                $elsewhere = Join-Path $TestDrive 'elsewhere'
+                New-Item -ItemType Directory -Path $elsewhere | Out-Null
+                & cmd.exe /c mklink /J "$env:ProgramData\Gr3yTools" $elsewhere | Out-Null
+                Get-BitLockerAuditFolder | Should -BeNullOrEmpty
+                # a folder whose permissions are inherited again (no longer protected) is not trusted
+                $env:ProgramData = Join-Path $TestDrive 'ProgramDataTrust3'
+                New-Item -ItemType Directory -Path $env:ProgramData | Out-Null
+                $audit3 = Get-BitLockerAuditFolder
+                $audit3 | Should -Not -BeNullOrEmpty
+                & icacls.exe $audit3 '/inheritance:e' | Out-Null
+                Get-BitLockerAuditFolder | Should -BeNullOrEmpty
+            } finally { $env:ProgramData = $oldPd }
         }
     }
 

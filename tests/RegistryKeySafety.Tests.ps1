@@ -74,8 +74,11 @@ Describe 'Confirm-RegistryKey' {
     }
 
     It 'returns $false instead of throwing when the key cannot be made, and keeps the reason' {
-        { Confirm-RegistryKey -Path 'Q:\no-such-drive-for-sure\Key' } | Should -Not -Throw
-        Confirm-RegistryKey -Path 'Q:\no-such-drive-for-sure\Key' | Should -BeFalse
+        # a registry key name over 255 characters cannot be made (never use a drive letter as "a drive that does not exist":
+        # it may be a real drive on this PC, and the file system would then get the folders)
+        $tooLong = 'TestRegistry:\' + ('a' * 300)
+        { Confirm-RegistryKey -Path $tooLong } | Should -Not -Throw
+        Confirm-RegistryKey -Path $tooLong | Should -BeFalse
         $script:LastRegistryKeyError | Should -Not -BeNullOrEmpty
         Confirm-RegistryKey -Path '' | Should -BeFalse
         $script:LastRegistryKeyError | Should -Match 'no registry path'

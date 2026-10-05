@@ -52,9 +52,21 @@ function Write-Log {
 
 if ($CleanupOnly) {
     $folder = Get-BlTestFolder
-    $left = @(Get-ChildItem -LiteralPath $folder -Filter 'BLTEST-*.vhdx' -File -ErrorAction SilentlyContinue)
+    # only files that pass the helper's own name guard (BLTEST-<8 hex>.vhdx); one that cannot be removed does not stop the others
+    $left = @(Get-ChildItem -LiteralPath $folder -Filter 'BLTEST-*.vhdx' -File -ErrorAction SilentlyContinue | Where-Object { Test-BlTestVhdPath -Path $_.FullName })
     Write-Log "Cleanup only: $($left.Count) test VHDX file(s) in $folder"
-    foreach ($f in $left) { Remove-TestVolume -VhdPath $f.FullName -Confirm:$false; Write-Log "Removed $($f.Name)" }
+    foreach ($f in $left) {
+        try { Remove-TestVolume -VhdPath $f.FullName -Confirm:$false -ErrorAction Stop; Write-Log "Removed $($f.Name)" }
+        catch {
+            Write-Log "COULD NOT remove $($f.Name): $($_.Exception.Message)"
+            Write-Log "  By hand: Disk Management > right-click the 1 GB 'Virtual' disk (label BLTEST) > Detach VHD, then delete $($f.FullName)"
+        }
+    }
+    # what an interrupted run leaves in %TEMP% (only these names, which only this script makes)
+    foreach ($leftover in @(Get-ChildItem -LiteralPath $env:TEMP -Filter 'bl-e2e-backup-*.txt' -File -ErrorAction SilentlyContinue) + @(Get-ChildItem -LiteralPath $env:TEMP -Filter 'bl-e2e-programdata-*' -Directory -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $leftover.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Log "Removed $($leftover.Name)"
+    }
     return
 }
 
@@ -67,7 +79,8 @@ $appFunctions = @(
     'Add-BitLockerRecoveryProtector', 'Get-PreventDeviceEncryptionValue', 'Test-BitLockerPolicyPresent', 'Get-BitLockerDecryptWarnings',
     'Get-BitLockerDecryptOrder', 'Get-BitLockerAutoUnlockAffected', 'Get-BitLockerElapsedText', 'Get-BitLockerProgressText',
     'Get-BitLockerDriveDescription', 'Get-BitLockerTypeText', 'Test-BitLockerBackupPath', 'Test-BitLockerBackupStillGood', 'Get-BitLockerKeyIdSet',
-    'Get-BitLockerBackupPlaceNote', 'Get-BitLockerDefaultBackupFolder', 'Get-BitLockerAuditFolder', 'Write-BitLockerActionLog'
+    'Get-BitLockerBackupPlaceNote', 'Get-BitLockerDefaultBackupFolder', 'Get-BitLockerAuditFolder', 'Write-BitLockerActionLog',
+    'Test-BitLockerManagedText', 'Get-BitLockerPathFileSystem'     # called by Get-BitLockerDecryptWarnings and Save-BitLockerBackupFile
 )
 foreach ($fn in $appFunctions) { . ([scriptblock]::Create((Get-FunctionSource -ScriptPath $GuiScript -FunctionName $fn))) }
 
@@ -90,14 +103,19 @@ function Check {
 }
 
 function Get-RealVolumeSnapshot {
-    # Non-secret facts about every volume; each KeyProtector is reduced to its ID. Read-only.
+    # Non-secret facts about every volume; each KeyProtector is reduced to its ID. Read-only. A volume BitLocker cannot
+    # read is a NON-terminating error in the module (it carries on with the others): it is recorded as text, so it is
+    # compared before and after like everything else, instead of aborting the run (-ErrorAction Stop would).
     $snap = @{}
-    foreach ($v in @(Get-BitLockerVolume -ErrorAction Stop)) {
+    $readProblems = @()
+    foreach ($v in @(Get-BitLockerVolume -ErrorAction SilentlyContinue -ErrorVariable readProblems)) {
         if ([string]$v.MountPoint -cnotmatch '^[A-Za-z]:\z') { continue }     # only drive letters (a stray volume path is not a "drive")
         if ($null -ne $t -and [string]$v.MountPoint -ceq $t.MountPoint) { continue }   # the throwaway drive is not a real one
         $ids = @(@($v.KeyProtector) | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_.KeyProtectorId } | Sort-Object)
         $snap[[string]$v.MountPoint] = ('{0}|{1}|{2}|{3}|{4}|auto={5}|stored={6}|{7}' -f $v.VolumeType, $v.VolumeStatus, $v.ProtectionStatus, $v.LockStatus, $v.EncryptionMethod, $v.AutoUnlockEnabled, $v.AutoUnlockKeyStored, ($ids -join ','))
     }
+    $unreadable = @(@($readProblems) | ForEach-Object { [string]$_.Exception.Message } | Where-Object { $_ } | Sort-Object -Unique)
+    if ($unreadable.Count -gt 0) { $snap['(unreadable volumes)'] = ($unreadable -join ' | ') }
     return $snap
 }
 
@@ -121,7 +139,13 @@ function Assert-Target {
     param([string]$Mount, [switch]$Locked)
     if ($null -eq $t) { throw 'SAFETY: there is no throwaway volume.' }
     if ($Mount -cne $t.MountPoint) { throw "SAFETY: refusing to touch '$Mount' - only $($t.MountPoint), the throwaway drive, may be changed." }
-    if ($Locked) { $null = Assert-BlTestIdentity -VhdPath $t.VhdPath }
+    if ($Locked) {
+        # a locked volume may not answer Get-Volume, so the full letter check cannot run - but the letter must still be the
+        # throwaway's: exactly one partition of the test VHDX's disk holds it (a different drive that took the letter has none)
+        $id = Assert-BlTestIdentity -VhdPath $t.VhdPath
+        $own = @(Get-Partition -DiskNumber $id.DiskNumber -ErrorAction Stop | Where-Object { ([string]$_.DriveLetter).ToUpperInvariant() -ceq $t.DriveLetter })
+        if ($own.Count -ne 1) { throw "SAFETY: $Mount is not a partition of the throwaway VHDX any more." }
+    }
     else { $null = Assert-BlTestIdentity -VhdPath $t.VhdPath -DriveLetter $t.DriveLetter }
 }
 
@@ -129,6 +153,7 @@ Write-Log 'Disable BitLocker - end-to-end test on a throwaway virtual disk'
 Write-Log "App script : $GuiScript (SHA256 $((Get-FileHash -LiteralPath $GuiScript -Algorithm SHA256).Hash.Substring(0, 16)))"
 Write-Log "Log file   : $LogPath"
 Write-Log ("PowerShell : {0} {1}; Windows {2}" -f $PSVersionTable.PSEdition, $PSVersionTable.PSVersion, [System.Environment]::OSVersion.Version)
+Write-Log 'NOTE: while the throwaway disk is being prepared Windows may pop up "You need to format the disk in drive X: before you can use it" - click CANCEL (never Format), and do not open the new drive in Explorer or Disk Management until the run has finished.'
 
 try {
     # ================= 1. what is on this PC now (read-only) =================
@@ -184,6 +209,8 @@ try {
     Write-Log "Throwaway drive: $($t.MountPoint)  ($($t.VhdPath), disk $($t.DiskNumber), $($t.SizeMB) MB)"
     $target = $t.MountPoint
     Check 'the throwaway drive letter is not any real volume, and not the system drive' { (@($before.Keys) -notcontains $target) -and ($target -cne $env:SystemDrive) -and ($target -cne 'C:') }
+    # a detector is not a stop: a wrong target ends the run here, before any BitLocker call
+    if (($before.Keys -contains $target) -or ($target -ceq $env:SystemDrive) -or ($target -ceq 'C:')) { throw "SAFETY: the throwaway drive letter $target is a real drive." }
 
     $en = Enable-TestVolumeBitLocker -VhdPath $t.VhdPath -DriveLetter $t.DriveLetter -FullEncryption
     $pw = $en.TestPassword
@@ -236,6 +263,7 @@ try {
         $names = @($acl.Access | ForEach-Object { $_.IdentityReference.Value })
         ($save.Text -ceq $text) -and $acl.AreAccessRulesProtected -and (@($names | Where-Object { $_ -match 'Everyone|Users$|Authenticated' }).Count -eq 0)
     }
+    Check 'the file system of the backup place is read as NTFS (what decides whether an unrestrictable key file is deleted)' { (Get-BitLockerPathFileSystem -Path $backup1) -ceq 'NTFS' }
     $verify = Test-BitLockerBackupText -Text $save.Text -Volumes $vols
     Check 'the backup check passes on the real file' { if (-not $verify.Ok) { throw ($verify.Missing -join '; ') }; return $true }
     Check 'the file holds the recovery password, every key ID and the raw manage-bde text' {
@@ -371,8 +399,9 @@ try {
         Write-Log ("  INFO Windows' own error when asked to decrypt a drive that is not encrypted: threw={0} 0x{1:X8} - {2}" -f ($null -ne $notOnErr), $notOnHr, $notOnMsg)
     }
 
-    # ================= 8. an unreadable drive =================
+    # ================= 8. a drive letter that does not exist =================
     $free = Get-BlTestFreeDriveLetter
+    $null = Assert-BlTestLetterFree -Letter $free      # throws (and so stops the step) when anything uses that letter any more: this call must hit nothing
     $ghost = Start-BitLockerDecrypt -MountPoint ($free + ':')
     Check 'a drive letter that does not exist is reported, not decrypted' { (-not $ghost.Ok) -and [bool]$ghost.Error }
 

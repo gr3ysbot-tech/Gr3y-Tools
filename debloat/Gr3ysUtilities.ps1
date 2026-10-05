@@ -20,7 +20,8 @@
          presets, and Revert Last Run.
       4. Panels - direct shortcuts to built-in Windows applets (Computer Management,
          Control Panel, Programs and Features, Windows Firewall, and the like), plus a
-         read-only BitLocker status scan and recovery key fetch.
+         read-only BitLocker status scan and recovery key fetch, and a guarded Disable
+         BitLocker... (it backs up every key Windows can export before decrypting).
       5. Provisioning - client profile save/load, hostname rename, OneDrive Known
          Folder Move, regional/power/lock baseline, OEM driver/BIOS updates, Windows
          Update to completion, validation report and handoff package generation, and
@@ -1351,7 +1352,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
               </WrapPanel>
 
               <TextBlock Style="{StaticResource Header}" Text="BitLocker" Margin="0,16,0,0"/>
-              <TextBlock Style="{StaticResource Hint}" Text="Scan and Save only READ status and recovery keys. Disable BitLocker... is the one separate, guarded action that decrypts a drive: it shows the status, saves and checks a backup of every key, and only then decrypts the drives you tick. Nothing here ever turns BitLocker on (that is on the Provisioning tab)."
+              <TextBlock Style="{StaticResource Hint}" Text="Scan and Save only READ status and recovery keys. Disable BitLocker... is the one separate, guarded action that decrypts a drive: it shows the status, saves and checks a backup of every key Windows can export, and only then decrypts the drives you tick. Nothing here ever turns BitLocker on (that is on the Provisioning tab)."
                          TextWrapping="Wrap" Margin="0,0,0,8" Opacity="0.7"/>
               <WrapPanel Margin="0,0,0,8">
                 <Button Name="BtnBitLockerScan" Content="Scan BitLocker Status" Width="220" Margin="0,0,10,0"/>
@@ -1450,7 +1451,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
 
               <Separator Margin="0,10,0,10"/>
               <TextBlock Style="{StaticResource Header}" Text="BitLocker Enable"/>
-              <TextBlock Style="{StaticResource Hint}" Text="Opt-in only - these buttons never disable or decrypt BitLocker (turning it off is a separate, guarded action on the Panels tab: Disable BitLocker..., which backs up every key first). Enable BitLocker turns on XtsAes256 used-space-only encryption with a TPM protector plus a recovery password protector, only if a ready TPM is present and protection is currently Off; on an Entra-joined device the recovery password is also backed up to Entra ID automatically, otherwise it goes into the handoff package only. Prevent Automatic Device Encryption is the opposite case - for a machine staying on local accounts, it stops Windows silently turning encryption on by itself at first Microsoft-account sign-in (24H2), which could otherwise leave the only recovery key in a personal account. Use one or the other, not usually both. Run after OEM Driver/BIOS Updates and after Entra join."
+              <TextBlock Style="{StaticResource Hint}" Text="Opt-in only - these buttons never disable or decrypt BitLocker (turning it off is a separate, guarded action on the Panels tab: Disable BitLocker..., which backs up every key Windows can export first). Enable BitLocker turns on XtsAes256 used-space-only encryption with a TPM protector plus a recovery password protector, only if a ready TPM is present and protection is currently Off; on an Entra-joined device the recovery password is also backed up to Entra ID automatically, otherwise it goes into the handoff package only. Prevent Automatic Device Encryption is the opposite case - for a machine staying on local accounts, it stops Windows silently turning encryption on by itself at first Microsoft-account sign-in (24H2), which could otherwise leave the only recovery key in a personal account. Use one or the other, not usually both. Run after OEM Driver/BIOS Updates and after Entra join."
                          TextWrapping="Wrap" Margin="0,0,0,6" Opacity="0.7"/>
               <WrapPanel>
                 <Button Name="BtnEnableBitLocker" Content="Enable BitLocker" Width="180" Margin="0,0,10,0"/>
@@ -2054,7 +2055,8 @@ function New-BitLockerBackupText {
     # The key backup as text (CRLF lines). It holds decryption secrets in plain text, on purpose:
     # that is what an emergency needs. $Info: ComputerName, UserName, Date, Os, Machine, Tpm.
     # $RawStatus / $RawProtectors: the text of manage-bde -status and manage-bde -protectors -get <drive>.
-    param($Volumes, $Info, [string]$RawStatus, $RawProtectors)
+    # $Unreadable: texts of volumes BitLocker could not read when this was made - their keys are NOT in it.
+    param($Volumes, $Info, [string]$RawStatus, $RawProtectors, $Unreadable)
     $t = New-Object System.Collections.Generic.List[string]
     $t.Add('BITLOCKER KEY BACKUP')
     $t.Add("Computer : $($Info.ComputerName)    User: $($Info.UserName)    Made: $($Info.Date)")
@@ -2063,13 +2065,17 @@ function New-BitLockerBackupText {
     if ($Info.Tpm) { $t.Add("TPM      : $($Info.Tpm)") }
     $t.Add('')
     $t.Add('Made by Gr3yLabs Support BEFORE BitLocker was disabled. THIS FILE HOLDS DECRYPTION SECRETS IN PLAIN TEXT:')
-    $t.Add('keep it OFF the drives listed below, store it somewhere safe, and delete it when you no longer need it.')
+    $t.Add('keep it OFF the encrypted drives listed below and off any drive that is being decrypted, store it somewhere safe, and delete it when you no longer need it.')
     $t.Add('When BitLocker is turned on again Windows makes NEW keys - this backup does not unlock a drive encrypted later.')
     $t.Add('It holds every key Windows can export (recovery passwords and key IDs). A PIN, a password you typed and a startup-key (.BEK) file cannot be read back from Windows, so they are not in it.')
     $t.Add('')
     $t.Add("SUMMARY ($(@($Volumes).Count) volume(s))")
     foreach ($v in @($Volumes)) {
         $t.Add(("  {0,-4} {1,-16} {2,-22} protection {3,-4} protectors: {4}" -f $v.MountPoint, $v.VolumeType, $v.VolumeStatus, $v.ProtectionStatus, (Get-BitLockerProtectorSummary -Volume $v)))
+    }
+    $unreadableTexts = @(@($Unreadable) | Where-Object { $_ })
+    if ($unreadableTexts.Count -gt 0) {
+        $t.Add('NOT IN THIS BACKUP: BitLocker could not read some volumes when it was made, so their keys are missing: ' + ($unreadableTexts -join '; '))
     }
     foreach ($v in @($Volumes)) {
         $t.Add('')
@@ -2164,6 +2170,11 @@ function Get-BitLockerBackupPlaceNote {
     # cloud). '' when it is somewhere unremarkable. $Volumes: the volume details; $Mounts: the ticked drives.
     param([string]$Path, $Volumes, [string[]]$Mounts, [string[]]$CloudRoots)
     if (-not $Path -or $Path.Length -lt 3) { return '' }
+    # a path through this PC's own administrative share (\\localhost\C$\... or \\<this PC>\C$\...) is the same place as C:\...
+    $self = @('localhost', '127.0.0.1')
+    if ($env:COMPUTERNAME) { $self += [string]$env:COMPUTERNAME }
+    $admin = [regex]::Match($Path, '^\\\\([^\\]+)\\([A-Za-z])\$(\\.*)?$')
+    if ($admin.Success -and ($self -contains $admin.Groups[1].Value)) { $Path = $admin.Groups[2].Value + ':' + $(if ($admin.Groups[3].Success) { $admin.Groups[3].Value } else { '\' }) }
     $notes = New-Object System.Collections.Generic.List[string]
     $drive = $Path.Substring(0, 2)
     if ($Path.Substring(2, 1) -eq '\') {
@@ -2198,26 +2209,47 @@ function Get-BitLockerDefaultBackupFolder {
 }
 
 function Test-BitLockerBackupPath {
-    # Is this a place the backup can be written? Checked BEFORE anything is changed: a full path, an existing
-    # folder you can create a file in, and no file of that name yet. { Ok; Error }.
+    # Is this a place the backup can be written? Checked BEFORE anything is changed: a full path, a usable file
+    # name, an existing folder you can create that very file in, and no file of that name yet. Never throws.
+    # { Ok; Error }.
     param([string]$Path)
     $r = [PSCustomObject]@{ Ok = $false; Error = $null }
-    # a full path: a drive letter and a backslash, or a network path (a drive-relative "C:name.txt" is rooted but not full)
-    if (-not $Path -or $Path -cnotmatch '^([A-Za-z]:\\|\\\\)') { $r.Error = 'Give a full path, such as D:\Backups\bitlocker.txt'; return $r }
-    try { $dir = [System.IO.Path]::GetDirectoryName($Path) } catch { $r.Error = "That is not a valid file name: $($_.Exception.Message)"; return $r }
-    if (-not $dir -or -not (Test-Path -LiteralPath $dir -PathType Container)) { $r.Error = "The folder does not exist: $dir"; return $r }
-    if (Test-Path -LiteralPath $Path) { $r.Error = 'That file already exists - choose a new name so an earlier backup is not overwritten.'; return $r }
-    $probe = Join-Path $dir ('.gr3y-write-test-' + [guid]::NewGuid().ToString('N') + '.tmp')
     try {
-        [System.IO.File]::WriteAllText($probe, 'x')
-        Remove-Item -LiteralPath $probe -Force -ErrorAction Stop
+        # a full path: a drive letter and a backslash, or a network path (a drive-relative "C:name.txt" is rooted but not full)
+        if (-not $Path -or $Path -cnotmatch '^([A-Za-z]:\\|\\\\)') { $r.Error = 'Give a full path, such as D:\Backups\bitlocker.txt'; return $r }
+        if ($Path -match '^\\\\[?.]\\') { $r.Error = 'Give a normal path, such as D:\Backups\bitlocker.txt (paths that start with \\?\ or \\.\ are not supported).'; return $r }
+        if ($Path.IndexOfAny([System.IO.Path]::GetInvalidPathChars()) -ge 0) { $r.Error = 'That is not a usable file name: it contains a character Windows does not allow (a double quote, < > | or a control character).'; return $r }
+        $leaf = [System.IO.Path]::GetFileName($Path)
+        if (-not $leaf) { $r.Error = 'That path ends in a folder - add a file name, such as D:\Backups\bitlocker.txt'; return $r }
+        # a name Windows cannot create (* ? : and the like, a reserved device name such as NUL.txt, a trailing dot or space)
+        # is refused here, before the person is asked to change anything on a drive
+        $afterRoot = $(if ($Path -match '^[A-Za-z]:') { $Path.Substring(2) } else { $Path })
+        if ($leaf.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0 -or $afterRoot.IndexOf(':') -ge 0 -or $leaf -match '^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(\..*)?$' -or $leaf -match '[. ]$') {
+            $r.Error = "That is not a usable file name: $leaf"
+            return $r
+        }
+        $dir = [System.IO.Path]::GetDirectoryName($Path)
+        if (-not $dir -or -not (Test-Path -LiteralPath $dir -PathType Container)) { $r.Error = "The folder does not exist: $dir"; return $r }
+        if (Test-Path -LiteralPath $Path -PathType Container) { $r.Error = 'That is a folder - add a file name, such as D:\Backups\bitlocker.txt'; return $r }
+        if (Test-Path -LiteralPath $Path) { $r.Error = 'That file already exists - choose a new name so an earlier backup is not overwritten.'; return $r }
+        # prove the folder is writable and the name can really be created: make the real file and take it away again
+        # (it holds nothing; the same name is made again, for real, by Save-BitLockerBackupFile)
+        $probe = $Path
+        try {
+            $made = [System.IO.File]::Open($probe, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+            $made.Close()
+            Remove-Item -LiteralPath $probe -Force -ErrorAction Stop
+        } catch {
+            $r.Error = "You cannot save a file with that name there: $($_.Exception.Message)"
+            try { if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue } } catch { }
+            return $r
+        }
+        $r.Ok = $true
+        return $r
     } catch {
-        $r.Error = "You cannot write to that folder: $($_.Exception.Message)"
-        try { if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue } } catch { }
+        $r.Error = "That is not a place the backup can be saved: $($_.Exception.Message)"
         return $r
     }
-    $r.Ok = $true
-    return $r
 }
 
 function Test-BitLockerBackupStillGood {
@@ -2255,35 +2287,63 @@ function Get-RunningToolJobs {
     return $running.ToArray()   # callers wrap the call in @()
 }
 
+function Get-BitLockerPathFileSystem {
+    # The file system of the drive a path is on ('NTFS', 'exFAT', ...), or '' when it cannot be told (a network
+    # path, a drive that is gone). Never throws.
+    param([string]$Path)
+    try { return [string](New-Object System.IO.DriveInfo([System.IO.Path]::GetPathRoot($Path))).DriveFormat } catch { return '' }
+}
+
 function Save-BitLockerBackupFile {
-    # Writes the backup (UTF-8, no BOM) and returns { Ok; Error; AclWarning; Hash; Text }. The file is first
-    # created EMPTY with CreateNew (which fails if the name is taken, so an earlier backup can never be
-    # clobbered, even in a race), its permissions are then restricted to you, administrators and SYSTEM
-    # (not inherited from the folder), and only then are the keys written into it. It is read back afterwards.
+    # Writes the backup (UTF-8, no BOM) and returns { Ok; Error; AclWarning; Hash; Text }. The file is created
+    # EMPTY with CreateNew (which fails if the name is taken, so an earlier backup can never be clobbered, even in
+    # a race) and that handle is KEPT, nobody else allowed to open, rename or delete the file, until the keys are
+    # written: it cannot be swapped for another file in between. Its permissions are restricted to you,
+    # administrators and SYSTEM (not inherited from the folder) before any key goes in; when that cannot be done
+    # on an NTFS or ReFS drive the file is deleted and the save fails, on a FAT/exFAT stick or a share (which may
+    # not hold permissions) it is only a warning. It is read back afterwards.
     param([string]$Path, [string]$Text)
     $result = [PSCustomObject]@{ Ok = $false; Error = $null; AclWarning = $null; Hash = $null; Text = $null }
     $check = Test-BitLockerBackupPath -Path $Path
     if (-not $check.Ok) { $result.Error = $check.Error; return $result }
+    $stream = $null
     try {
-        $created = [System.IO.File]::Open($Path, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-        $created.Close()
-    } catch {
-        $result.Error = $(if (Test-Path -LiteralPath $Path) { 'That file already exists - choose a new name so an earlier backup is not overwritten.' } else { "Could not create the file: $($_.Exception.Message)" })
-        return $result
-    }
-    try {
-        $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-        $icaclsOut = & icacls.exe $Path '/inheritance:r' '/grant:r' "*${userSid}:F" '*S-1-5-32-544:F' '*S-1-5-18:F' 2>&1 | Out-String
-        if ($LASTEXITCODE -ne 0) { $result.AclWarning = "Could not restrict who can read the file (a USB stick or network share may not support it): $($icaclsOut.Trim())" }
-    } catch {
-        $result.AclWarning = "Could not restrict who can read the file: $($_.Exception.Message)"
-    }
-    try {
-        [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
-    } catch {
-        $result.Error = "Could not write the file: $($_.Exception.Message)"
-        try { Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue } catch { }
-        return $result
+        try {
+            $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        } catch {
+            $result.Error = $(if (Test-Path -LiteralPath $Path) { 'That file already exists - choose a new name so an earlier backup is not overwritten.' } else { "Could not create the file: $($_.Exception.Message)" })
+            return $result
+        }
+        $aclProblem = $null
+        try {
+            $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            $icaclsOut = & icacls.exe $Path '/inheritance:r' '/grant:r' "*${userSid}:F" '*S-1-5-32-544:F' '*S-1-5-18:F' 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { $aclProblem = "Could not restrict who can read the file: $($icaclsOut.Trim())" }
+        } catch {
+            $aclProblem = "Could not restrict who can read the file: $($_.Exception.Message)"
+        }
+        if ($aclProblem) {
+            if (@('NTFS', 'ReFS') -contains (Get-BitLockerPathFileSystem -Path $Path)) {
+                $stream.Close(); $stream = $null
+                try { Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue } catch { }
+                $result.Error = "$aclProblem The file was deleted rather than left readable by other people - choose another place."
+                return $result
+            }
+            $result.AclWarning = "$aclProblem (a USB stick or network share may not support it)"
+        }
+        try {
+            $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($Text)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+            $stream.Close(); $stream = $null
+        } catch {
+            if ($stream) { try { $stream.Close() } catch { }; $stream = $null }
+            $result.Error = "Could not write the file: $($_.Exception.Message)"
+            try { Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue } catch { }
+            return $result
+        }
+    } finally {
+        if ($stream) { try { $stream.Close() } catch { } }
     }
     try {
         $result.Text = [System.IO.File]::ReadAllText($Path, (New-Object System.Text.UTF8Encoding($false)))
@@ -2347,6 +2407,16 @@ function Get-BitLockerAuditFolder {
         }
         $owner = [string](Get-Acl -LiteralPath $dir -ErrorAction Stop).Owner
         if ($owner -notmatch '^(BUILTIN\\Administrators|NT AUTHORITY\\SYSTEM)$') { return $null }
+        # trusted only while it is still what was made: not a junction or link (here or in its parent), its permissions
+        # still protected (not inherited from ProgramData), and no ordinary users or Everyone with access
+        foreach ($p in @($dir, (Split-Path -Parent $dir))) {
+            if ((Get-Item -LiteralPath $p -Force -ErrorAction Stop).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return $null }
+        }
+        $acl = Get-Acl -LiteralPath $dir -ErrorAction Stop
+        if (-not $acl.AreAccessRulesProtected) { return $null }
+        foreach ($rule in @($acl.Access)) {
+            if ($rule.AccessControlType -eq 'Allow' -and ([string]$rule.IdentityReference -match '(^|\\)(Everyone|Users|Authenticated Users)$')) { return $null }
+        }
         return $dir
     } catch {
         return $null
@@ -2355,17 +2425,23 @@ function Get-BitLockerAuditFolder {
 
 function Write-BitLockerActionLog {
     # A line in bitlocker-actions.log (what was done, when, by whom), UTF-8. Never put a key in it. It goes to
-    # the audit folder when that can be used, otherwise to the work folder.
-    param([string]$Message)
-    try {
-        $dir = Get-BitLockerAuditFolder
-        if (-not $dir) {
-            $dir = $(if ($workDir) { $workDir } else { $env:TEMP })
-            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-        }
-        $line = "{0}  {1}\{2}  {3}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $env:USERDOMAIN, $env:USERNAME, $Message
-        [System.IO.File]::AppendAllText((Join-Path $dir 'bitlocker-actions.log'), $line + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
-    } catch { }
+    # the audit folder when that can be used, and to the work folder when it cannot (or when writing there fails).
+    # Never throws and returns nothing - except with -PassThru, which returns $true when the line was written
+    # somewhere and $false when no log could be written at all.
+    param([string]$Message, [switch]$PassThru)
+    $line = "{0}  {1}\{2}  {3}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $env:USERDOMAIN, $env:USERNAME, $Message
+    $places = New-Object System.Collections.Generic.List[string]
+    try { $audit = Get-BitLockerAuditFolder; if ($audit) { $places.Add($audit) } } catch { }
+    $places.Add($(if ($workDir) { $workDir } else { $env:TEMP }))
+    foreach ($dir in $places) {
+        try {
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null }
+            [System.IO.File]::AppendAllText((Join-Path $dir 'bitlocker-actions.log'), $line + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+            if ($PassThru) { return $true }
+            return
+        } catch { }
+    }
+    if ($PassThru) { return $false }
 }
 
 function Get-BitLockerFriendlyError {
@@ -2392,21 +2468,24 @@ function Get-BitLockerFriendlyError {
 function Clear-BitLockerStoredAutoUnlock {
     # Removes every auto-unlock key stored on the Windows drive (Windows will not decrypt that drive
     # while any exist). Data drives that stay encrypted then ask for their password or recovery key
-    # instead of unlocking themselves. Re-reads the Windows drive afterwards to check. { Ok; Error }.
+    # instead of unlocking themselves. Re-reads the Windows drive afterwards to check.
+    # { Ok; Cleared; Error }: Cleared is true as soon as the clear command itself ran without an error - even
+    # when the check afterwards failed - because from then on the drives that used those keys will ask for
+    # their password or recovery key, and the person must be told so.
     try {
         Clear-BitLockerAutoUnlock -ErrorAction Stop | Out-Null
     } catch {
-        return [PSCustomObject]@{ Ok = $false; Error = (Get-BitLockerFriendlyError -Message $_.Exception.Message -HResult $_.Exception.HResult) }
+        return [PSCustomObject]@{ Ok = $false; Cleared = $false; Error = (Get-BitLockerFriendlyError -Message $_.Exception.Message -HResult $_.Exception.HResult) }
     }
     try {
         $os = @(Get-BitLockerVolume -ErrorAction Stop | Where-Object { [string]$_.VolumeType -eq 'OperatingSystem' }) | Select-Object -First 1
         if ($os -and ([string]$os.AutoUnlockKeyStored -eq 'True')) {
-            return [PSCustomObject]@{ Ok = $false; Error = 'Windows still reports stored auto-unlock keys after they were cleared.' }
+            return [PSCustomObject]@{ Ok = $false; Cleared = $true; Error = 'Windows still reports stored auto-unlock keys after they were cleared.' }
         }
     } catch {
-        return [PSCustomObject]@{ Ok = $false; Error = "Could not re-read the Windows drive to check: $($_.Exception.Message)" }
+        return [PSCustomObject]@{ Ok = $false; Cleared = $true; Error = "Could not re-read the Windows drive to check: $($_.Exception.Message)" }
     }
-    return [PSCustomObject]@{ Ok = $true; Error = $null }
+    return [PSCustomObject]@{ Ok = $true; Cleared = $true; Error = $null }
 }
 
 function Start-BitLockerDecrypt {
@@ -2431,8 +2510,13 @@ function Start-BitLockerDecrypt {
             return $r
         }
         $clear = Clear-BitLockerStoredAutoUnlock
-        if (-not $clear.Ok) { $r.Error = "Could not clear the auto-unlock keys stored on $MountPoint - $($clear.Error)"; return $r }
-        $r.ClearedAutoUnlock = $true
+        # ClearedAutoUnlock says the clear command RAN, whatever happens next: the caller must report it even when
+        # the check afterwards or the decrypt fails
+        if ($clear.Cleared) { $r.ClearedAutoUnlock = $true }
+        if (-not $clear.Ok) {
+            $r.Error = $(if ($clear.Cleared) { "The auto-unlock keys stored on $MountPoint were cleared, but the result could not be confirmed - $($clear.Error)" } else { "Could not clear the auto-unlock keys stored on $MountPoint - $($clear.Error)" })
+            return $r
+        }
     }
     try {
         Disable-BitLocker -MountPoint $MountPoint -ErrorAction Stop | Out-Null
@@ -2562,18 +2646,24 @@ function Get-BitLockerElapsedText {
 function Get-BitLockerProgressText {
     # What to show for a drive whose decryption this dialog started: its state, how long it has been
     # going and, once it has moved a few points, a rough estimate of what is left. $Started: { At;
-    # StartPercent } (the time and the "% still encrypted" when it was started), or $null.
+    # StartPercent } (the time and the "% still encrypted" when it was started), or $null. A drive that has
+    # finished keeps the time it took: { Finished } is when it was first seen finished (a drive that finished
+    # early must not go on "taking" longer while another drive is still working).
     param($Volume, $Started, [datetime]$Now)
     $text = Get-BitLockerStateText -Volume $Volume
     if (-not $Started) { return $text }
     $elapsed = $Now - [datetime]$Started.At
-    if ([string]$Volume.VolumeStatus -eq 'FullyDecrypted') { return "Decrypted - took $(Get-BitLockerElapsedText -Span $elapsed)" }
+    if ([string]$Volume.VolumeStatus -eq 'FullyDecrypted') {
+        $finishedProp = $Started.PSObject.Properties['Finished']
+        if ($finishedProp -and $finishedProp.Value) { $elapsed = [datetime]$finishedProp.Value - [datetime]$Started.At }
+        return "Decrypted - took $(Get-BitLockerElapsedText -Span $elapsed)"
+    }
     $text = "$text - running $(Get-BitLockerElapsedText -Span $elapsed)"
     if ([string]$Volume.VolumeStatus -eq 'DecryptionInProgress') {
         $done = [int]$Started.StartPercent - [int]$Volume.EncryptionPercentage
         if ($done -ge 3 -and $elapsed.TotalSeconds -ge 60) {
             $left = [timespan]::FromSeconds($elapsed.TotalSeconds * [int]$Volume.EncryptionPercentage / $done)
-            $text += ", about $(Get-BitLockerElapsedText -Span $left) left"
+            $text += $(if ($left.TotalMinutes -lt 1) { ', under a minute left' } else { ", about $(Get-BitLockerElapsedText -Span $left) left" })
         }
     }
     return $text
@@ -2612,7 +2702,7 @@ function Show-BitLockerDisableDialog {
     $dialogXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Disable BitLocker" Width="960" Height="730" MinWidth="840" MinHeight="640"
+        Title="Disable BitLocker" Width="980" Height="730" MinWidth="900" MinHeight="560"
         WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
         Background="#232629" FontFamily="Segoe UI" FontSize="13">
   <Window.Resources>
@@ -2697,14 +2787,14 @@ function Show-BitLockerDisableDialog {
       <TextBlock Grid.Row="0" Text="Disable BitLocker" FontFamily="Consolas" FontSize="16" Foreground="{StaticResource HeaderBrush}" Margin="0,0,0,8"/>
       <TextBlock Grid.Row="1" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,10"
                  Text="Decrypts a drive so it no longer needs a BitLocker key. Button 1 saves a backup of every key Windows can export (and, if you leave the first box ticked, adds a recovery password to a drive that has none), then reads the file back and checks it. Nothing is decrypted until you press button 2, which stays off until that check has passed. When decryption finishes Windows removes the drive's key protectors, so the backup is then your only record of them."/>
-      <Grid Grid.Row="2" Margin="8,0,8,4">
+      <Grid Grid.Row="2" Margin="8,0,25,4">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="34"/>
-          <ColumnDefinition Width="60"/>
-          <ColumnDefinition Width="170"/>
-          <ColumnDefinition Width="220"/>
+          <ColumnDefinition Width="56"/>
+          <ColumnDefinition Width="150"/>
+          <ColumnDefinition Width="190"/>
+          <ColumnDefinition Width="250"/>
           <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="210"/>
         </Grid.ColumnDefinitions>
         <TextBlock Grid.Column="1" Text="Drive" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
         <TextBlock Grid.Column="2" Text="Type" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
@@ -2712,7 +2802,7 @@ function Show-BitLockerDisableDialog {
         <TextBlock Grid.Column="4" Text="Key protectors" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
         <TextBlock Grid.Column="5" Text="Note" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/>
       </Grid>
-      <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" MinHeight="120">
+      <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Visible" HorizontalScrollBarVisibility="Disabled" MinHeight="90">
         <StackPanel Name="BlRows"/>
       </ScrollViewer>
       <Grid Grid.Row="4" Margin="0,12,0,0">
@@ -2726,18 +2816,20 @@ function Show-BitLockerDisableDialog {
         <Button Grid.Column="2" Name="BtnBlBrowse" Content="Browse..." Margin="8,0,0,0" MinWidth="90"/>
       </Grid>
       <TextBlock Grid.Row="5" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,4,0,8"
-                 Text="Save it on a USB stick or another drive - not on a drive you are decrypting or one that stays encrypted. The file holds decryption secrets in plain text; on this PC only you, administrators and SYSTEM can read it, but a copy in a cloud folder or on a share is only as private as that place."/>
+                 Text="Save it on a USB stick or another drive - not on a drive you are decrypting or one that stays encrypted. The file holds decryption secrets in plain text; only you, administrators and SYSTEM can read it (on another PC you need an administrator account to open it), and a copy in a cloud folder or on a share is only as private as that place."/>
       <StackPanel Grid.Row="6" Margin="0,0,0,6">
-        <CheckBox Name="BlChkAddRecovery" IsChecked="True" Margin="0,0,0,6" Content="If a drive has no recovery password, add one first (recommended: it is then in the backup, so there is something to recover with if anything goes wrong)."/>
-        <CheckBox Name="BlChkPrevent" IsChecked="True" Content="Precaution: if the Windows drive is decrypted, also set PreventDeviceEncryption = 1 (stops automatic device encryption; delete that value to undo)."/>
-        <TextBlock Name="BlStatus" TextWrapping="Wrap" Margin="0,12,0,0" MinHeight="54" Foreground="{StaticResource MutedBrush}" Text="Reading BitLocker status..." AutomationProperties.LiveSetting="Polite"/>
+        <CheckBox Name="BlChkAddRecovery" IsChecked="True" Margin="0,0,0,6"><TextBlock TextWrapping="Wrap" Text="If a drive has no recovery password, offer to add one (recommended: it is then in the backup, so there is a key to recover with)."/></CheckBox>
+        <CheckBox Name="BlChkPrevent" IsChecked="True"><TextBlock TextWrapping="Wrap" Text="Precaution: if the Windows drive is decrypted, also set PreventDeviceEncryption = 1 (stops automatic device encryption; delete that value to undo)."/></CheckBox>
+        <ScrollViewer Margin="0,12,0,0" MaxHeight="120" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+          <TextBlock Name="BlStatus" TextWrapping="Wrap" MinHeight="54" Foreground="{StaticResource MutedBrush}" Text="Reading BitLocker status..." AutomationProperties.LiveSetting="Polite"/>
+        </ScrollViewer>
       </StackPanel>
       <DockPanel Grid.Row="7" Margin="0,10,0,0" LastChildFill="False">
         <Button Name="BtnBlRefresh" Content="Refresh status" DockPanel.Dock="Left" Margin="0,0,8,0"/>
         <Button Name="BtnBlBackup" Content="1. Back up all keys" DockPanel.Dock="Left" Margin="0,0,8,0" BorderBrush="{StaticResource AccentBrush}"/>
         <Button Name="BtnBlDisable" Content="2. Disable BitLocker on ticked drives" DockPanel.Dock="Left" Margin="0,0,8,0" BorderBrush="{StaticResource AmberBrush}"/>
         <Button Name="BtnBlOpenFolder" Content="Show backup file" DockPanel.Dock="Left" Visibility="Collapsed"/>
-        <Button Name="BtnBlClose" Content="Close" DockPanel.Dock="Right" MinWidth="90"/>
+        <Button Name="BtnBlClose" Content="Close" DockPanel.Dock="Right" MinWidth="90" IsCancel="True"/>
       </DockPanel>
     </Grid>
   </Border>
@@ -2746,6 +2838,15 @@ function Show-BitLockerDisableDialog {
     $reader = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($dialogXaml))
     $dialog = [Windows.Markup.XamlReader]::Load($reader)
     $dialog.Owner = $window
+    # never taller or wider than the screen's work area (a small or highly scaled display would put the buttons
+    # off-screen with no way to reach them - the main window is clamped the same way)
+    try {
+        $work = [System.Windows.SystemParameters]::WorkArea
+        $maxH = [double]($work.Height - 20)
+        $maxW = [double]($work.Width - 20)
+        if ($maxH -gt 300) { if ($dialog.Height -gt $maxH) { $dialog.Height = $maxH }; if ($dialog.MinHeight -gt $maxH) { $dialog.MinHeight = $maxH } }
+        if ($maxW -gt 400) { if ($dialog.Width -gt $maxW) { $dialog.Width = $maxW }; if ($dialog.MinWidth -gt $maxW) { $dialog.MinWidth = $maxW } }
+    } catch { }
 
     $rowsPanel = $dialog.FindName('BlRows')
     $pathBox = $dialog.FindName('BlPathBox')
@@ -2763,7 +2864,7 @@ function Show-BitLockerDisableDialog {
     # moment it is made, so a plain variable assigned later would not be seen by an earlier handler.
     $state = [PSCustomObject]@{
         Volumes = @(); Rows = @(); BackupOk = $false; BackupPath = ''; BackupHash = ''; BackedUpIds = @()
-        Busy = $false; Started = @(); FileName = ''; InitialPath = ''
+        Busy = $false; Started = @(); FileName = ''; InitialPath = ''; FailedNote = ''
     }
     $state.FileName = "BitLocker-Backup_{0}_{1}.txt" -f (Get-MachineTag), (Get-Date -Format 'yyyyMMdd_HHmmss')
     $state.InitialPath = Join-Path ([Environment]::GetFolderPath('Desktop')) $state.FileName
@@ -2795,11 +2896,33 @@ function Show-BitLockerDisableDialog {
     # handler is made here, at the top level of the dialog, and handed to each row.
     $onTickChanged = { & $updateButtons }.GetNewClosure()
 
+    # When a backup stops counting (its file is gone, or the keys changed), offer a NEW file name in the same
+    # folder (an existing file is never overwritten, so the old name would only be refused) - but only when the
+    # box still shows the old backup's path, never over something the person typed.
+    $suggestNewName = {
+        if ($state.BackupPath -and ($pathBox.Text.Trim() -ieq $state.BackupPath)) {
+            try {
+                $dir = [System.IO.Path]::GetDirectoryName($state.BackupPath)
+                if ($dir) { $pathBox.Text = Join-Path $dir ("BitLocker-Backup_{0}_{1}.txt" -f (Get-MachineTag), (Get-Date -Format 'yyyyMMdd_HHmmss')) }
+            } catch { }
+        }
+    }.GetNewClosure()
+
+    # The rows remember each drive's key set, so a tick stays with the DRIVE that was ticked even if its letter
+    # is given to another drive. After a step that changes keys on purpose, the rows take the new sets.
+    $syncRowKeys = {
+        param($volumes)
+        foreach ($row in @($state.Rows)) {
+            $v = @($volumes | Where-Object { $_.MountPoint -eq $row.Mount }) | Select-Object -First 1
+            if ($v) { $row.KeySet = Get-BitLockerKeyIdSet -Volume $v }
+        }
+    }.GetNewClosure()
+
     $addRow = {
         param($v)
         $dis = Get-BitLockerDisableState -Volume $v
         $grid = New-Object System.Windows.Controls.Grid
-        foreach ($w in @('34', '60', '170', '220', '*', '210')) {
+        foreach ($w in @('34', '56', '150', '190', '250', '*')) {
             $cd = New-Object System.Windows.Controls.ColumnDefinition
             $cd.Width = [System.Windows.GridLength]::new([double]($w -replace '\*', '1'), $(if ($w -eq '*') { 'Star' } else { 'Pixel' }))
             [void]$grid.ColumnDefinitions.Add($cd)
@@ -2808,6 +2931,8 @@ function Show-BitLockerDisableDialog {
         $cb.VerticalAlignment = 'Center'
         $cb.IsEnabled = [bool]$dis.CanDisable
         [System.Windows.Automation.AutomationProperties]::SetName($cb, "Decrypt $($v.MountPoint)")
+        # a screen reader reads the state (and why a box cannot be ticked) after the name
+        [System.Windows.Automation.AutomationProperties]::SetHelpText($cb, "$(Get-BitLockerStateText -Volume $v). $(if ($dis.CanDisable) { [string]$dis.Note } else { 'Cannot be selected: ' + [string]$dis.Reason })")
         [System.Windows.Controls.Grid]::SetColumn($cb, 0); [void]$grid.Children.Add($cb)
         $typeText = Get-BitLockerTypeText -Volume $v -Drive (Get-BitLockerDriveDescription -MountPoint $v.MountPoint)
         $cells = @(
@@ -2833,7 +2958,7 @@ function Show-BitLockerDisableDialog {
         [void]$rowsPanel.Children.Add($border)
         $cb.Add_Checked($onTickChanged)
         $cb.Add_Unchecked($onTickChanged)
-        return [PSCustomObject]@{ Mount = [string]$v.MountPoint; CanDisable = [bool]$dis.CanDisable; CheckBox = $cb; StateBlock = $blocks[3]; NoteBlock = $blocks[5] }
+        return [PSCustomObject]@{ Mount = [string]$v.MountPoint; CanDisable = [bool]$dis.CanDisable; CheckBox = $cb; StateBlock = $blocks[3]; NoteBlock = $blocks[5]; KeySet = (Get-BitLockerKeyIdSet -Volume $v) }
     }.GetNewClosure()
 
     $refresh = {
@@ -2856,14 +2981,20 @@ function Show-BitLockerDisableDialog {
         $eligible = @($state.Rows | Where-Object { $_.CanDisable })
         foreach ($row in $eligible) { if ($keepTicked -contains $row.Mount) { $row.CheckBox.IsChecked = $true } }
         # A backup counts only while it covers every key that exists now.
+        $hadBackup = $state.BackupOk
         if ($state.BackupOk -and -not (Test-BitLockerKeysCovered -Volumes $state.Volumes -BackedUpIds $state.BackedUpIds)) { $state.BackupOk = $false }
         if ($state.BackupOk -and -not (Test-Path -LiteralPath $state.BackupPath)) { $state.BackupOk = $false }
+        $droppedBackup = ($hadBackup -and -not $state.BackupOk)
+        if ($droppedBackup) { & $suggestNewName }
         if ($state.Volumes.Count -eq 0) {
             & $setStatus 'BitLocker reported no volumes.' 'warn'
         } elseif ($eligible.Count -eq 0) {
-            & $setStatus 'No drive can be decrypted right now (none is encrypted, or the encrypted ones are locked or already decrypting). Button 1 can still save a backup of every key.' 'warn'
+            & $setStatus 'No drive can be decrypted right now (none is encrypted, or the encrypted ones are locked, paused, encrypted by the drive itself, wiping free space, or already decrypting). Button 1 can still save a backup of every key.' 'warn'
         } else {
-            & $setStatus 'Tick the drive(s) to decrypt, check the backup file name, then press button 1. Button 1 writes the backup file and, if you left the first box ticked, adds a recovery password to a drive that has none; it decrypts nothing.' 'info'
+            & $setStatus 'Tick the drive(s) to decrypt, check the backup file name, then press button 1. Button 1 writes the backup file and, if you left the first box ticked, offers to add a recovery password to a drive that has none; it decrypts nothing.' 'info'
+        }
+        if ($droppedBackup) {
+            & $setStatus "$($statusText.Text)`r`nThe backup you made earlier no longer counts (its file is gone or the keys changed): press button 1 to make a new one, under a new file name (an existing file is never overwritten)." 'warn'
         }
         # one volume BitLocker cannot read does not hide the others, but it is said
         if (@($data.Unreadable).Count -gt 0) {
@@ -2888,56 +3019,93 @@ function Show-BitLockerDisableDialog {
         $state.Busy = $true
         & $updateButtons
         try {
-            $path = $pathBox.Text.Trim()
+            # what is typed is cleaned: spaces and the quotes Explorer's "Copy as path" puts round a path
+            $path = $pathBox.Text.Trim().Trim('"').Trim()
+            if ($path -cne $pathBox.Text) { $pathBox.Text = $path }
             if (-not $path) { & $setStatus 'Type or browse to the file the backup should be saved to.' 'warn'; return }
 
-            # pressing button 1 again for a backup that is still good is not an error
+            # pressing button 1 again for a backup that is still good is not an error; one that no longer
+            # counts is replaced under a new file name (an existing file is never overwritten)
+            $newNameNote = ''
             if ($state.BackupOk -and $path -ieq $state.BackupPath) {
                 $still = Test-BitLockerBackupStillGood -Path $state.BackupPath -Hash $state.BackupHash -BackedUpIds $state.BackedUpIds
-                if ($still.Ok) { & $setStatus "That backup is still good, so there is nothing to do: $path`r`nIt covers every key that exists now. Tick the drive(s) and press button 2 when you are ready." 'ok'; return }
+                if ($still.Ok) { & $setStatus "That backup is still good, so there is nothing to do: $path`r`nIt covers every key BitLocker could read. Tick the drive(s) and press button 2 when you are ready." 'ok'; return }
+                if (-not $still.Stale) { & $setStatus $still.Reason 'error'; return }
+                $state.BackupOk = $false
+                & $suggestNewName
+                $path = $pathBox.Text.Trim()
+                $newNameNote = "`r`nThe earlier backup no longer counted (its file changed or is gone, or the keys changed), so a new file name was used."
             }
-            # the place is checked BEFORE anything is changed on a drive
+            # the place is checked BEFORE anything is changed on a drive; a failed check leaves an earlier good backup alone
             $placeCheck = Test-BitLockerBackupPath -Path $path
-            if (-not $placeCheck.Ok) { $state.BackupOk = $false; & $setStatus "The backup was NOT saved and nothing was changed: $($placeCheck.Error)" 'error'; return }
+            if (-not $placeCheck.Ok) {
+                $earlier = $(if ($state.BackupOk) { "`r`nYour earlier backup ($($state.BackupPath)) still counts." } else { '' })
+                & $setStatus "The backup was NOT saved and nothing was changed: $($placeCheck.Error)$earlier" 'error'
+                return
+            }
 
             $tickedNow = & $ticked
             $tickedMounts = @($tickedNow | ForEach-Object { $_.Mount })
             $addedTo = New-Object System.Collections.Generic.List[string]
 
-            # a recovery password is the one key a person can actually type in an emergency
+            # BitLocker is read once, before anything changes: the ticked rows must still be the drives that were
+            # listed (a letter can be given to another drive), and the place of the file is judged against the real drives
+            $pre = Get-BitLockerVolumeDetail
+            if ($pre.Error) { & $setStatus "Could not read BitLocker status: $($pre.Error)" 'error'; return }
+            $moved = @($tickedNow | Where-Object {
+                $row = $_
+                $v = @($pre.Volumes | Where-Object { $_.MountPoint -eq $row.Mount }) | Select-Object -First 1
+                (-not $v) -or ((Get-BitLockerKeyIdSet -Volume $v) -cne $row.KeySet)
+            })
+            if ($moved.Count -gt 0) {
+                foreach ($row in $moved) { $row.CheckBox.IsChecked = $false }
+                & $setStatus "$(@($moved | ForEach-Object { $_.Mount }) -join ', ') is no longer the drive that was listed (its keys are different, or BitLocker cannot read it now - was a drive swapped or unplugged?). It was unticked and nothing was changed. Press Refresh status to list the drives again, then tick what you want." 'error'
+                return
+            }
+            # a place that deserves a second thought (a drive about to be decrypted, an encrypted drive, OneDrive) is asked about BEFORE the keys are written there
+            $placeNote = Get-BitLockerBackupPlaceNote -Path $path -Volumes $pre.Volumes -Mounts $tickedMounts -CloudRoots @($env:OneDrive, $env:OneDriveCommercial, $env:OneDriveConsumer)
+            if ($placeNote) {
+                $okPlace = [System.Windows.MessageBox]::Show($dialog, "The backup would be saved here:`r`n$path`r`n`r`n$placeNote`r`n`r`nSave it there anyway?", 'Gr3y Tools', 'YesNo', 'Warning', 'No')
+                if ($okPlace -ne 'Yes') { & $setStatus 'Nothing was changed - choose another place for the backup file (a USB stick is best), then press button 1 again.' 'info'; return }
+            }
+
+            # a recovery password is the one key a person can actually type in an emergency; the question defaults to No
             if ($chkAddRecovery.IsChecked -and $tickedMounts.Count -gt 0) {
-                $fresh = Get-BitLockerVolumeDetail
-                if (-not $fresh.Error) {
-                    $lacking = @(Get-BitLockerMountsWithoutRecoveryPassword -Volumes $fresh.Volumes -Mounts $tickedMounts)
-                    if ($lacking.Count -gt 0) {
-                        $ask = [System.Windows.MessageBox]::Show($dialog, "These drives have no recovery password: $($lacking -join ', ')`r`n`r`nAdd one now? It is saved in the backup, so there is something to unlock the drive with if anything goes wrong while decrypting. This changes nothing else about the drive.", 'Gr3y Tools', 'YesNo', 'Question', 'Yes')
-                        if ($ask -eq 'Yes') {
-                            foreach ($m in $lacking) {
-                                $add = Add-BitLockerRecoveryProtector -MountPoint $m
-                                if ($add.Ok) { $addedTo.Add($m); Write-BitLockerActionLog "Added a recovery password protector to $m (before backup)" }
-                                else {
-                                    Write-BitLockerActionLog "Could not add a recovery password protector to $m - $($add.Error)"
-                                    $before = $(if ($addedTo.Count -gt 0) { "A recovery password was added to $($addedTo -join ', ') first.`r`n" } else { '' })
-                                    & $setStatus "${before}Could not add a recovery password to $m - $($add.Error)" 'error'
-                                    return
-                                }
+                $lacking = @(Get-BitLockerMountsWithoutRecoveryPassword -Volumes $pre.Volumes -Mounts $tickedMounts)
+                if ($lacking.Count -gt 0) {
+                    $ask = [System.Windows.MessageBox]::Show($dialog, "These drives have no recovery password: $($lacking -join ', ')`r`n`r`nAdd one now? It is saved in the backup, so there is something to unlock the drive with if anything goes wrong while decrypting. This changes nothing else about the drive.", 'Gr3y Tools', 'YesNo', 'Question', 'No')
+                    if ($ask -eq 'Yes') {
+                        foreach ($m in $lacking) {
+                            $add = Add-BitLockerRecoveryProtector -MountPoint $m
+                            if ($add.Ok) { $addedTo.Add($m); Write-BitLockerActionLog "Added a recovery password protector to $m (before backup)" }
+                            else {
+                                Write-BitLockerActionLog "Could not add a recovery password protector to $m - $($add.Error)"
+                                $before = $(if ($addedTo.Count -gt 0) { "A recovery password was added to $($addedTo -join ', ') first - it is in no backup yet; press button 1 again.`r`n" } else { '' })
+                                & $refresh
+                                & $setStatus "${before}Could not add a recovery password to $m - $($add.Error)" 'error'
+                                return
                             }
                         }
                     }
                 }
             }
+            # whatever happens from here on, a protector added above must be named in every failure
+            $addedFail = $(if ($addedTo.Count -gt 0) { "A recovery password WAS added to $($addedTo -join ', ') before this failed - it is in no backup file yet, so press button 1 again (it will be included).`r`n" } else { '' })
+            if ($addedTo.Count -gt 0) { & $refresh }
 
             & $setStatus 'Reading every key...' 'info'
             $data = Get-BitLockerVolumeDetail
-            if ($data.Error) { & $setStatus "Could not read BitLocker status: $($data.Error)" 'error'; return }
+            if ($data.Error) { & $setStatus "${addedFail}Could not read BitLocker status: $($data.Error)" 'error'; return }
+            # a ticked drive BitLocker cannot read now would be missing from the backup: stop instead of backing up less than was asked for
+            $missingTicked = @($tickedMounts | Where-Object { $m = $_; @($data.Volumes | Where-Object { $_.MountPoint -eq $m }).Count -eq 0 })
+            if ($missingTicked.Count -gt 0) { & $setStatus "${addedFail}The backup was NOT made: BitLocker could not read $($missingTicked -join ', ') just now, so its keys would be missing. Press Refresh status and try again." 'error'; return }
             $raw = Get-BitLockerRawOutput -Volumes $data.Volumes
-            $text = New-BitLockerBackupText -Volumes $data.Volumes -Info (Get-BitLockerBackupSystemInfo) -RawStatus $raw.Status -RawProtectors $raw.Protectors
+            $text = New-BitLockerBackupText -Volumes $data.Volumes -Info (Get-BitLockerBackupSystemInfo) -RawStatus $raw.Status -RawProtectors $raw.Protectors -Unreadable $data.Unreadable
             $save = Save-BitLockerBackupFile -Path $path -Text $text
-            if (-not $save.Ok) { $state.BackupOk = $false; & $setStatus "The backup was NOT saved: $($save.Error)" 'error'; & $updateButtons; return }
+            if (-not $save.Ok) { & $setStatus "${addedFail}The backup was NOT saved: $($save.Error)" 'error'; & $updateButtons; return }
             $check = Test-BitLockerBackupText -Text $save.Text -Volumes $data.Volumes
             if (-not $check.Ok) {
-                $state.BackupOk = $false
-                & $setStatus "The file was written but failed the check - missing: $($check.Missing -join '; '). Nothing will be decrypted. Choose another location and try again." 'error'
+                & $setStatus "${addedFail}The file was written but failed the check - missing: $($check.Missing -join '; '). Nothing will be decrypted. Choose another location and try again." 'error'
                 Write-BitLockerActionLog "Backup check FAILED for $path ($($check.Missing.Count) item(s) missing)"
                 return
             }
@@ -2946,18 +3114,19 @@ function Show-BitLockerDisableDialog {
             $state.BackupPath = $path
             $state.BackupHash = $save.Hash
             $state.BackedUpIds = @(Get-BitLockerKeyIds -Volumes $data.Volumes)
+            & $syncRowKeys $data.Volumes
             $recoveryCount = @($data.Volumes | ForEach-Object { @($_.Protectors) | Where-Object { $_.RecoveryPassword } }).Count
             Write-BitLockerActionLog "Key backup saved and verified: $path ($(@($data.Volumes).Count) volume(s), $recoveryCount recovery password(s), $(@($state.BackedUpIds).Count) key protector(s))"
             $aclNote = $(if ($save.AclWarning) { "`r`nNote: $($save.AclWarning)" } else { '' })
-            $placeNote = Get-BitLockerBackupPlaceNote -Path $path -Volumes $data.Volumes -Mounts $tickedMounts -CloudRoots @($env:OneDrive, $env:OneDriveCommercial, $env:OneDriveConsumer)
             $sameDrive = $(if ($placeNote) { "`r`nNote: $placeNote" } else { '' })
+            $unreadNote = $(if (@($data.Unreadable).Count -gt 0) { "`r`nNote: BitLocker could not read some volumes just now, so their keys are NOT in this backup: $(@($data.Unreadable) -join '; ')" } else { '' })
             # a drive that has no recovery password cannot be unlocked with this file
             $candidates = @($state.Rows | Where-Object { $_.CanDisable } | ForEach-Object { $_.Mount })
             $lackAll = @(Get-BitLockerMountsWithoutRecoveryPassword -Volumes $data.Volumes -Mounts $candidates)
             $hollow = $(if ($lackAll.Count -gt 0) { "`r`nNote: no recovery password exists for $($lackAll -join ', '), so this file cannot unlock $(if ($lackAll.Count -eq 1) { 'it' } else { 'them' }) - keep that drive's own password, PIN or key file safe." } else { '' })
             $addedText = $(if ($addedTo.Count -gt 0) { " A recovery password was added to $($addedTo -join ', ') first." } else { '' })
             $nextStep = $(if ($tickedMounts.Count -gt 0) { 'Press button 2 when you are ready.' } else { 'Now tick the drive(s) and press button 2 when you are ready.' })
-            & $setStatus "Backup saved and checked: $path`r`n$(@($data.Volumes).Count) volume(s), $recoveryCount recovery password(s).$addedText $nextStep$aclNote$sameDrive$hollow" $(if ($sameDrive -or $aclNote -or $hollow) { 'warn' } else { 'ok' })
+            & $setStatus "Backup saved and checked: $path`r`n$(@($data.Volumes).Count) volume(s), $recoveryCount recovery password(s).$addedText $nextStep$newNameNote$aclNote$sameDrive$unreadNote$hollow" $(if ($sameDrive -or $aclNote -or $hollow -or $unreadNote) { 'warn' } else { 'ok' })
         } finally {
             $state.Busy = $false
             & $updateButtons
@@ -2973,12 +3142,28 @@ function Show-BitLockerDisableDialog {
         $stillWorking = $false
         $gone = New-Object System.Collections.Generic.List[string]
         foreach ($s in @($state.Started)) {
+            if (-not $s.PSObject.Properties['Misses']) { $s | Add-Member -NotePropertyName Misses -NotePropertyValue 0 }
+            if (-not $s.PSObject.Properties['Finished']) { $s | Add-Member -NotePropertyName Finished -NotePropertyValue $null }
             $v = @($data.Volumes | Where-Object { $_.MountPoint -eq $s.Mount }) | Select-Object -First 1
             $row = @($state.Rows | Where-Object { $_.Mount -eq $s.Mount }) | Select-Object -First 1
             if (-not $v) {
+                # BitLocker answered with an error for some volume: this drive is probably still there - keep tracking
+                # it (for about half a minute) instead of calling it unplugged
+                if (@($data.Unreadable).Count -gt 0 -and [int]$s.Misses -lt 6) {
+                    $s.Misses = [int]$s.Misses + 1
+                    if ($row) { $row.StateBlock.Text = 'BitLocker could not read this drive just now - trying again...' }
+                    $stillWorking = $true
+                    continue
+                }
                 $gone.Add([string]$s.Mount)
                 if ($row) { $row.StateBlock.Text = 'No longer listed - was it unplugged?' }
                 continue
+            }
+            $s.Misses = 0
+            # the time a drive took stops running when it finishes (another drive may still be working)
+            if ([string]$v.VolumeStatus -eq 'FullyDecrypted' -and -not $s.Finished) {
+                $s.Finished = $now
+                Write-BitLockerActionLog "Decryption finished: $($s.Mount)"
             }
             if ($row) { $row.StateBlock.Text = Get-BitLockerProgressText -Volume $v -Started $s -Now $now }
             if ($v.VolumeStatus -ne 'FullyDecrypted') { $stillWorking = $true }
@@ -2986,12 +3171,20 @@ function Show-BitLockerDisableDialog {
         if (-not $stillWorking) {
             $timer.Stop()
             $done = @($state.Started | ForEach-Object { $_.Mount } | Where-Object { $gone -notcontains $_ })
-            if ($done.Count -gt 0) { Write-BitLockerActionLog "Decryption finished: $($done -join ', ')" }
             if ($gone.Count -gt 0) { Write-BitLockerActionLog "Decryption: no longer listed: $($gone -join ', ')" }
             $msg = New-Object System.Collections.Generic.List[string]
-            if ($done.Count -gt 0) { $msg.Add("Decryption finished for $($done -join ', '). The drive(s) no longer need a BitLocker key. Keep the backup file until you are sure you do not need it. (To turn BitLocker on again later: Provisioning tab, Enable BitLocker - Windows then makes NEW keys.)") }
+            if ($done.Count -gt 0) {
+                $windowsDone = (@($state.Volumes | Where-Object { $done -contains $_.MountPoint -and [string]$_.VolumeType -eq 'OperatingSystem' }).Count -gt 0)
+                $dataDone = (@($done | Where-Object { $m = $_; @($state.Volumes | Where-Object { $_.MountPoint -eq $m -and [string]$_.VolumeType -eq 'OperatingSystem' }).Count -eq 0 }).Count -gt 0)
+                $again = @()
+                if ($windowsDone) { $again += 'To turn BitLocker on again for the Windows drive later: Provisioning tab, Enable BitLocker.' }
+                if ($dataDone) { $again += 'To encrypt a data drive again later, turn BitLocker on from Windows (right-click the drive) or with manage-bde.' }
+                $msg.Add("Decryption finished for $($done -join ', '). The drive(s) no longer need a BitLocker key. Keep the backup file until you are sure you do not need it. ($($again -join ' ') Windows then makes NEW keys.)")
+            }
             if ($gone.Count -gt 0) { $msg.Add("$($gone -join ', ') is no longer listed (was it unplugged?). Plug it back in and press Refresh status to see where it got to.") }
-            & $setStatus ($msg -join "`r`n") $(if ($gone.Count -gt 0) { 'warn' } else { 'ok' })
+            # a drive that was NOT started must not disappear from the screen when the others finish
+            if ($state.FailedNote) { $msg.Add([string]$state.FailedNote) }
+            & $setStatus ($msg -join "`r`n") $(if ($gone.Count -gt 0 -or $state.FailedNote) { 'warn' } else { 'ok' })
         }
     }.GetNewClosure())
     $dialog.Add_Closing({ $timer.Stop() }.GetNewClosure())
@@ -3010,7 +3203,7 @@ function Show-BitLockerDisableDialog {
             if ($busyJobs.Count -gt 0) { & $setStatus "A job is still running ($($busyJobs -join ', ')). Wait for it to finish, then press button 2 again." 'warn'; return }
             # the backup must still exist, unchanged, and still cover every key the drives have now
             $guard = Test-BitLockerBackupStillGood -Path $state.BackupPath -Hash $state.BackupHash -BackedUpIds $state.BackedUpIds
-            if (-not $guard.Ok) { if ($guard.Stale) { $state.BackupOk = $false }; & $setStatus $guard.Reason 'error'; return }
+            if (-not $guard.Ok) { if ($guard.Stale) { $state.BackupOk = $false; & $suggestNewName }; & $setStatus $guard.Reason 'error'; return }
             $fresh = [PSCustomObject]@{ Volumes = $guard.Volumes }
             # data drives first, the Windows drive last
             $order = @(Get-BitLockerDecryptOrder -Volumes $fresh.Volumes -Mounts $mounts)
@@ -3018,7 +3211,14 @@ function Show-BitLockerDisableDialog {
             $confirmedKeys = @{}      # each drive's keys as they are now: they must be the same when Yes is pressed
             foreach ($m in $order) {
                 $v = @($fresh.Volumes | Where-Object { $_.MountPoint -eq $m }) | Select-Object -First 1
-                if ($v) { $lines.Add("  $m   $(Get-BitLockerTypeText -Volume $v -Drive $null), $(Get-BitLockerStateText -Volume $v)"); $confirmedKeys[$m] = Get-BitLockerKeyIdSet -Volume $v }
+                if ($v) {
+                    # the label and size tell two USB sticks apart, which a bare drive letter cannot
+                    $size = ''
+                    $gb = 0.0
+                    if ([double]::TryParse([string]$v.CapacityGB, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$gb) -and $gb -gt 0) { $size = (', {0:N1} GB' -f $gb) }
+                    $lines.Add("  $m   $(Get-BitLockerTypeText -Volume $v -Drive (Get-BitLockerDriveDescription -MountPoint $m))$size, $(Get-BitLockerStateText -Volume $v)")
+                    $confirmedKeys[$m] = Get-BitLockerKeyIdSet -Volume $v
+                }
             }
             # Windows will not decrypt the Windows drive while it holds auto-unlock keys for other drives
             $needClear = (@($fresh.Volumes | Where-Object { $order -contains $_.MountPoint -and $_.VolumeType -eq 'OperatingSystem' -and $_.AutoUnlockKeyStored }).Count -gt 0)
@@ -3030,7 +3230,7 @@ function Show-BitLockerDisableDialog {
             $facts.Add('Windows removes the drive''s key protectors at the end, so the backup becomes your only record of them.')
             if ($needClear) {
                 $stay = $(if ($affected.Count -gt 0) { " Drives that stay encrypted ($($affected -join ', ')) will ask for their password or recovery key from then on." } else { '' })
-                $facts.Add("The Windows drive holds auto-unlock keys for other drives, and Windows will not decrypt it until they are cleared. They will be cleared first.$stay")
+                $facts.Add("The Windows drive holds auto-unlock keys for other drives, and Windows will not decrypt it until they are cleared. They will be cleared first - all of them, including the keys of drives that are not plugged in now (a drive that is not connected is not in this backup, and will ask for its own password or recovery key next time).$stay")
             }
             if ($chkPrevent.IsChecked -and $chkPrevent.IsEnabled -and $osMounts.Count -gt 0) { $facts.Add('As a precaution Windows will also be told not to start automatic device encryption (PreventDeviceEncryption = 1; delete that value to undo). A management policy such as Intune can still re-encrypt the PC.') }
             $cautions = New-Object System.Collections.Generic.List[string]
@@ -3039,7 +3239,9 @@ function Show-BitLockerDisableDialog {
             $noRecovery = @(Get-BitLockerMountsWithoutRecoveryPassword -Volumes $fresh.Volumes -Mounts $order)
             if ($noRecovery.Count -gt 0) { $cautions.Add("No recovery password exists for $($noRecovery -join ', '), so the backup has none for it: if anything went wrong while it decrypts there would be no key to recover with.") }
             foreach ($w in @(Get-BitLockerDecryptWarnings)) { $cautions.Add($w) }
-            $cautionText = $(if ($cautions.Count -gt 0) { "`r`n`r`nBefore you go on:`r`n- " + ($cautions -join "`r`n- ") } else { '' })
+            # what is about to be asked is recorded; if no log can be written anywhere, the person is told before saying Yes
+            if (-not (Write-BitLockerActionLog "Decrypt confirmation shown for: $($order -join ', ')" -PassThru)) { $cautions.Add('The action log cannot be written on this PC, so what happens next will not be recorded.') }
+            $cautionText =$(if ($cautions.Count -gt 0) { "`r`n`r`nBefore you go on:`r`n- " + ($cautions -join "`r`n- ") } else { '' })
             $msg = "Decrypt these drives now? (data drives first, the Windows drive last)`r`n`r`n$($lines -join "`r`n")`r`n`r`nYour key backup was saved and checked:`r`n$($state.BackupPath)`r`n`r`nWhat happens:`r`n- $($facts -join "`r`n- ")$cautionText"
             $answer = [System.Windows.MessageBox]::Show($dialog, $msg, 'Disable BitLocker', 'YesNo', 'Warning', 'No')
             if ($answer -ne 'Yes') { & $setStatus 'Cancelled - nothing was changed.' 'info'; return }
@@ -3064,15 +3266,17 @@ function Show-BitLockerDisableDialog {
                     continue
                 }
                 $r = Start-BitLockerDecrypt -MountPoint $m -ClearAutoUnlock:$needClear
+                # the auto-unlock keys are gone as soon as the clear command ran - whether or not the decrypt then started
+                if ($r.ClearedAutoUnlock) { $clearedAny = $true; Write-BitLockerActionLog "Cleared the auto-unlock keys stored on $m" }
                 if ($r.Ok) {
-                    $started.Add([PSCustomObject]@{ Mount = $m; At = (Get-Date); StartPercent = [int]$nowVol.EncryptionPercentage })
+                    $started.Add([PSCustomObject]@{ Mount = $m; At = (Get-Date); StartPercent = [int]$nowVol.EncryptionPercentage; Misses = 0; Finished = $null })
                     Write-BitLockerActionLog "Decryption started: $m"
-                    if ($r.ClearedAutoUnlock) { $clearedAny = $true; Write-BitLockerActionLog "Cleared the auto-unlock keys stored on $m" }
                 } else {
                     $failed.Add("$m - $($r.Error)")
                     Write-BitLockerActionLog "Decryption NOT started for $m - $($r.Error)"
                 }
             }
+            $state.FailedNote = $(if ($failed.Count -gt 0) { "Not started: $($failed -join '; ')" } else { '' })
             $startedMounts = @($started | ForEach-Object { $_.Mount })
             # Only once the Windows drive's decryption has really started, and only then: tell Windows not to
             # re-encrypt it by itself. (The setting is read first and not rewritten when it is already 1.)
@@ -3091,7 +3295,7 @@ function Show-BitLockerDisableDialog {
             & $refresh
             foreach ($row in @($state.Rows)) { if ($startedMounts -contains $row.Mount) { $row.CheckBox.IsEnabled = $false } }
             if (@($state.Started).Count -gt 0) { $timer.Start() }
-            $clearedNote = $(if ($clearedAny) { "`r`nThe auto-unlock keys stored on the Windows drive were cleared, so a drive that is still encrypted will now ask for its password or recovery key." } else { '' })
+            $clearedNote = $(if ($clearedAny) { "`r`nThe auto-unlock keys stored on the Windows drive WERE cleared, so a drive that is still encrypted will now ask for its password or recovery key." } else { '' })
             if ($failed.Count -gt 0) {
                 $startedText = $(if ($startedMounts.Count -gt 0) { "Started: $($startedMounts -join ', ')" } else { 'Nothing was started.' })
                 & $setStatus "$startedText`r`nNot started: $($failed -join '; ')$clearedNote$preventNote" 'error'
@@ -3113,7 +3317,7 @@ function Show-BitLockerDisableDialog {
         if ((Get-PreventDeviceEncryptionValue) -eq 1) {
             $chkPrevent.IsChecked = $false
             $chkPrevent.IsEnabled = $false
-            $chkPrevent.Content = 'Windows is already told not to start automatic device encryption (PreventDeviceEncryption = 1) - nothing to change.'
+            $chkPrevent.Content.Text = 'Windows is already told not to start automatic device encryption (PreventDeviceEncryption = 1) - nothing to change.'
         }
         & $refresh
         # offer a better place for the backup than the Desktop (a ready, unencrypted USB or other drive), unless the person already typed one
