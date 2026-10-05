@@ -89,11 +89,18 @@ $logoPath = Join-Path $scriptDir 'gr3ylabs-logo.png'
 $workDir = Join-Path $env:ProgramData 'DellOfficeDeploy'
 New-Item -ItemType Directory -Path $workDir -Force | Out-Null
 
-# One-time cleanup of old run/fix/scan/winget logs on every GUI launch - this directory
-# otherwise only ever grows, run after run, laptop after laptop.
-Get-ChildItem -Path $workDir -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } |
-    Remove-Item -Force -ErrorAction SilentlyContinue
+function Remove-OldWorkDirFiles {
+    # Cleanup of old run/fix/scan/winget logs and downloaded installers on every GUI launch - this directory otherwise
+    # only ever grows, run after run, laptop after laptop. NEVER touched, whatever their age: the break-glass
+    # administrator's credential file (breakglass-admin_*, on a machine that is not Entra-joined it is the ONLY copy
+    # of that password) and the "Revert Last Run" snapshots (undo_*), which stop working if they disappear.
+    param([string]$Path, [int]$OlderThanDays = 30)
+    $limit = (Get-Date).AddDays(-$OlderThanDays)
+    Get-ChildItem -LiteralPath $Path -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt $limit -and $_.Name -notlike 'breakglass-admin_*' -and $_.Name -notlike 'undo_*' } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+}
+Remove-OldWorkDirFiles -Path $workDir
 
 if (-not (Test-Path $deployScript)) {
     [System.Windows.Forms.MessageBox]::Show("Deploy-DellOfficeSetup.ps1 not found next to this script at:`r`n$deployScript", 'Gr3y Tools', 'OK', 'Error') | Out-Null
@@ -2147,7 +2154,7 @@ $btnCreateBreakGlassAdmin.Add_Click({
         return
     }
     $result = [System.Windows.MessageBox]::Show(
-        "Create local administrator '$accountName' with a random password?`r`n`r`nOn an Entra-joined device, Windows LAPS is configured to manage and rotate this account's password from here. On a non-Entra-joined device the password has no central backup - it is written once to a restricted file in the work directory and nowhere else.",
+        "Create local administrator '$accountName' with a random password?`r`n`r`nOn an Entra-joined device, Windows LAPS is configured to manage and rotate this account's password from here. On a non-Entra-joined device the password has no central backup - it is written once to a restricted file (breakglass-admin_<computer>_<serial>.txt) in the work directory, C:\ProgramData\DellOfficeDeploy, and nowhere else. Copy it somewhere safe: the app never deletes it by itself, so delete it yourself once it is stored.",
         'Confirm Break-Glass Admin', 'YesNo', 'Warning')
     if ($result -ne 'Yes') { return }
     Start-ProvisionJob -ProvisionArgs @('-CreateBreakGlassAdmin', '-BreakGlassAdminName', $accountName) -Label 'Create Break-Glass Admin'
