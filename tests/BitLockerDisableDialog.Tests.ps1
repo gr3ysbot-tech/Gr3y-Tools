@@ -1910,10 +1910,11 @@ $global:BlT = @{ Dialog = $dialog; State = $state; PathBox = $pathBox; Status = 
                 $c.VolumeStatus = 'FullyDecrypted'; $c.EncryptionPercentage = 0; $c.KeyProtector = @()
                 $null = Wait-Until { -not $T.Timer.IsEnabled }
                 $T.Timer.Stop()
-                $global:BlOut = @{ Status = $T.Status.Text; Color = $T.Status.Foreground.Color.ToString(); RowD = (($T.State.Rows | Where-Object { $_.Mount -eq 'D:' }).StateBlock.Text) }
+                $global:BlOut = @{ Status = $T.Status.Text; Color = $T.Status.Foreground.Color.ToString(); RowD = (($T.State.Rows | Where-Object { $_.Mount -eq 'D:' }).StateBlock.Text); Followed = @($T.State.Started).Count }
             }
             $global:BlOut.Status | Should -Match 'Decryption finished for C:\.'
             $global:BlOut.Status | Should -Not -Match 'Decryption finished for D:'
+            $global:BlOut.Followed | Should -Be 0 -Because 'everything that was followed has been reported, the drive that is encrypted again included'
             $global:BlOut.Status | Should -Match 'D: finished decrypting, but the drive on D: is not fully decrypted now - it may be another drive, or this one encrypted again'
             $global:BlOut.Status | Should -Not -Match 'no longer listed' -Because 'the drive is listed and nobody can say another drive took its letter'
             $global:BlOut.Color | Should -Be '#FFD29922'
