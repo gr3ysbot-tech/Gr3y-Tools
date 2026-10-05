@@ -366,15 +366,27 @@ function Confirm-RegistryKey {
     # Makes sure a registry key exists WITHOUT touching it when it already does. New-Item -Force on an
     # EXISTING key EMPTIES it - every value and subkey (verified on Windows PowerShell 5.1 and 7) - so it must
     # never be used to "make sure a key is there": it wiped e.g. Policies\System (UAC settings), Session
-    # Manager\Power and Explorer\Advanced preferences before a single value was written. Never throws;
-    # returns $true when the key exists afterwards.
-    param([string]$Path)
-    try {
-        if (-not (Test-Path -LiteralPath $Path)) { New-Item -Path $Path -Force -ErrorAction Stop | Out-Null }
-        return [bool](Test-Path -LiteralPath $Path)
-    } catch {
+    # Manager\Power and Explorer\Advanced preferences before a single value was written. Missing parents are
+    # created first, and every key is created WITHOUT -Force: if another process makes the key between the
+    # check and the creation, New-Item then fails ("a key in this path already exists") and leaves it alone,
+    # instead of emptying it. Never throws; returns $true when the key exists afterwards, and keeps the first
+    # failure's text in $script:LastRegistryKeyError for callers that report it. Call it as
+    # "$null = Confirm-RegistryKey ..." (it returns a [bool]).
+    param([string]$Path, [switch]$Nested)
+    if (-not $Nested) { $script:LastRegistryKeyError = $null }
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        if (-not $script:LastRegistryKeyError) { $script:LastRegistryKeyError = 'no registry path was given' }
         return $false
     }
+    try {
+        if (Test-Path -LiteralPath $Path) { return $true }
+        $parent = Split-Path -Path $Path -Parent
+        if ($parent -and $parent -ne $Path -and -not (Test-Path -LiteralPath $parent)) { [void](Confirm-RegistryKey -Path $parent -Nested) }
+        New-Item -Path $Path -ErrorAction Stop | Out-Null
+    } catch {
+        if (-not $script:LastRegistryKeyError) { $script:LastRegistryKeyError = $_.Exception.Message }
+    }
+    try { return [bool](Test-Path -LiteralPath $Path) } catch { return $false }
 }
 
 function New-PreDeploySystemRestorePoint {
@@ -990,7 +1002,7 @@ function Invoke-UndoSnapshot {
                 if (-not $keyEntry.hadKey) {
                     Remove-Item -Path $keyEntry.path -Recurse -Force -ErrorAction SilentlyContinue
                 } else {
-                    if (-not (Confirm-RegistryKey -Path $keyEntry.path)) { throw ("Could not create the registry key " + $keyEntry.path) }
+                    if (-not (Confirm-RegistryKey -Path $keyEntry.path)) { throw ("Could not create the registry key " + $keyEntry.path + ": " + $script:LastRegistryKeyError) }
                     Set-Item -Path $keyEntry.path -Value $keyEntry.defaultValue -ErrorAction Stop
                 }
             } catch {
@@ -1327,7 +1339,7 @@ function Set-ClassicContextMenu {
     $keyPath = 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32'
     Add-UndoRegistryKeyEntry -Path $keyPath
     if ($Direction -eq 'on') {
-        if (-not (Confirm-RegistryKey -Path $keyPath)) { throw ("Could not create the registry key " + $keyPath) }
+        if (-not (Confirm-RegistryKey -Path $keyPath)) { throw ("Could not create the registry key " + $keyPath + ": " + $script:LastRegistryKeyError) }
         Set-Item -Path $keyPath -Value '' -ErrorAction Stop
     } else {
         Remove-Item -Path $keyPath -Recurse -Force -ErrorAction SilentlyContinue
@@ -2061,9 +2073,13 @@ function Set-OneDriveKfm {
             Set-ItemProperty -Path $policyPath -Name 'KFMSilentOptInWithNotification' -Value 1 -Type DWord -ErrorAction Stop
             Set-ItemProperty -Path $policyPath -Name 'KFMBlockOptOut' -Value 1 -Type DWord -ErrorAction Stop
             Set-ItemProperty -Path $policyPath -Name 'FilesOnDemandEnabled' -Value 1 -Type DWord -ErrorAction Stop
-            if ($Desktop) { Set-ItemProperty -Path $policyPath -Name 'KFMSilentOptInDesktop' -Value 1 -Type DWord -ErrorAction Stop }
-            if ($Documents) { Set-ItemProperty -Path $policyPath -Name 'KFMSilentOptInDocuments' -Value 1 -Type DWord -ErrorAction Stop }
-            if ($Pictures) { Set-ItemProperty -Path $policyPath -Name 'KFMSilentOptInPictures' -Value 1 -Type DWord -ErrorAction Stop }
+            # Exactly the chosen folders: a folder that is not chosen loses an opt-in left by an earlier run (the key
+            # used to be emptied on every run, which did this by accident; only these three values are touched now).
+            foreach ($folder in @(@('Desktop', $Desktop), @('Documents', $Documents), @('Pictures', $Pictures))) {
+                $optInName = 'KFMSilentOptIn' + $folder[0]
+                if ($folder[1]) { Set-ItemProperty -Path $policyPath -Name $optInName -Value 1 -Type DWord -ErrorAction Stop }
+                else { Remove-ItemProperty -Path $policyPath -Name $optInName -ErrorAction SilentlyContinue }
+            }
             Write-Log "OneDrive KFM configured for tenant $TenantId (Desktop=$Desktop, Documents=$Documents, Pictures=$Pictures). Takes effect the next time OneDrive starts and the user signs in."
         } catch {
             Write-Log "Could not configure OneDrive KFM: $($_.Exception.Message)" 'WARN'
