@@ -1,4 +1,5 @@
 #Requires -Version 5.1
+#Requires -PSEdition Desktop
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
@@ -406,8 +407,9 @@ function New-TestVhdVolume {
         if (-not ($disk.Size -ge ($expected - 2MB) -and $disk.Size -le ($expected + 2MB))) {
             throw ("Refusing: disk {0} has {1} bytes, expected about {2}." -f $n, $disk.Size, $expected)
         }
-        # cross-check through the image path before the first write
-        $null = Assert-BlTestIdentity -VhdPath $vhd
+        # cross-check through the image path before the first write; the disk number used below is the one the guard itself returns
+        $idCheck = Assert-BlTestIdentity -VhdPath $vhd
+        $n = $idCheck.DiskNumber
 
         if ($disk.IsReadOnly) { Set-Disk -Number $n -IsReadOnly $false -ErrorAction Stop }
         if ($disk.IsOffline)  { Set-Disk -Number $n -IsOffline $false -ErrorAction Stop }
@@ -468,7 +470,15 @@ function Enable-TestVolumeBitLocker {
         $mp = $id.DriveLetter + ':'
         Import-Module BitLocker -ErrorAction Stop -WarningAction SilentlyContinue
 
-        $before = Get-BitLockerVolume -MountPoint $mp -ErrorAction Stop
+        # a volume that was formatted a moment ago can take a few seconds to show up in BitLocker's WMI provider
+        # (a closure gets its own $script: scope, so the volume is handed back through a hashtable the closure shares)
+        $holder = @{ Volume = $null }
+        $beforeCheck = {
+            $holder.Volume = Get-BitLockerVolume -MountPoint $mp -ErrorAction Stop
+            $true
+        }.GetNewClosure()
+        Wait-BlTestUntil -What ('BitLocker to report ' + $mp) -TimeoutSeconds 30 -Condition $beforeCheck
+        $before = $holder.Volume
         # KeyProtector can be $null or empty on a fresh volume; @($null).Count would be 1, so drop null elements first
         $existingProtectors = @(@($before.KeyProtector) | Where-Object { $null -ne $_ })
         if (-not ([string]$before.VolumeStatus -eq 'FullyDecrypted' -and $existingProtectors.Count -eq 0)) {
