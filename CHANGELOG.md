@@ -17,23 +17,29 @@ phases 0-3 and part of phase 4 (optional items were deliberately not built):
 - **Disable BitLocker... (Panels tab).** A guarded way to turn BitLocker off on any drive, in
   the order you asked for: it shows every drive's status first, then saves a backup of every
   key Windows can export (recovery passwords, key IDs, a note on each other protector, and
-  Windows' own `manage-bde` output) to a file you choose, reads the file back and checks it
-  (including that each recovery password is well-formed) - and only then does the button that
-  decrypts the ticked drives become available. Nothing is ever ticked for you. The backup is
-  checked again right before each drive is decrypted (a USB stick can be pulled, or a key added,
-  while the confirmation box is open), the file is created with its permissions already
-  restricted, and an existing file is never overwritten. Extras: it offers a USB stick or other
-  unencrypted drive for the backup, warns about a backup on a drive being decrypted, on an
-  encrypted drive or inside OneDrive; offers to add a recovery password to a drive that has
-  none; decrypts data drives before the Windows drive; clears the stored auto-unlock keys that
-  stop Windows decrypting the Windows drive (and says which drives will then ask for a
-  password); can tell Windows not to turn device encryption back on by itself (only once the
-  Windows drive's decryption has started, and never by rewriting the registry key); waits while
-  a Debloat, Fixes, install or Provisioning job is running; warns about battery power and
-  policy/MDM that may re-enable encryption; and shows progress with the time so far and a rough
-  time left. Locked, hardware-encrypted, wiping, paused and already-decrypting drives are
-  listed but not offered, with the reason. Nothing here turns BitLocker on, and no recovery
-  password is ever written to a log or a message box. What was done is recorded in
+  Windows' own `manage-bde` output - not a PIN, a typed password or a `.BEK` file, which Windows
+  cannot hand back) to a file you choose, reads the file back and checks it (including that
+  each recovery password is well-formed) - and only then does the button that decrypts the
+  ticked drives become available. Nothing is ever ticked for you, and a tick stays with the
+  drive you ticked (a stick that takes over its drive letter is refused). The backup is checked
+  again right before each drive is decrypted (a USB stick can be pulled, or a key added, while
+  the confirmation box is open). The file is created and held locked while its permissions are
+  restricted and the keys are written, an existing file is never overwritten, and a file that
+  cannot be restricted on an NTFS drive is deleted instead of being left readable by others. A
+  place that deserves a second thought - a drive about to be decrypted, an encrypted drive,
+  OneDrive - is asked about BEFORE the keys are written there. Extras: it offers a USB stick or
+  other unencrypted drive for the backup; offers (default No) to add a recovery password to a
+  drive that has none; decrypts data drives before the Windows drive; clears the stored
+  auto-unlock keys that stop Windows decrypting the Windows drive (and says which drives will
+  then ask for a password, and that the keys of drives that are not plugged in are cleared too);
+  can tell Windows not to turn device encryption back on by itself (only once the Windows
+  drive's decryption has started, and never by rewriting the registry key); refuses while a
+  Debloat, Fixes, install or Provisioning job is running; warns about battery power and
+  policy/MDM that may re-enable encryption; and shows progress with the time each drive took and
+  a rough time left. Locked, hardware-encrypted, wiping, paused and already-decrypting drives
+  are listed but not offered, with the reason. A volume BitLocker cannot read is said to be
+  missing from the backup, on screen and in the file. Nothing here turns BitLocker on, and no
+  recovery password is ever written to a log or a message box. What was done is recorded in
   `bitlocker-actions.log` (in `C:\ProgramData\Gr3yTools\audit`, writable only by
   administrators, when the app runs elevated).
 - **Guest-code expiry and codes you choose.** In **Manage Access Codes...** a code can expire
@@ -113,6 +119,10 @@ phases 0-3 and part of phase 4 (optional items were deliberately not built):
   copy of the password, and without its snapshot Revert Last Run silently stopped working
   after 30 days. The Create Break-Glass confirmation now says where the file is and that the
   app never deletes it.
+- **Enable BitLocker (Provisioning) no longer lets the new recovery password reach the run
+  log.** `Add-BitLockerKeyProtector` prints the password in the warning stream, which the run
+  transcript - and so the log the app can zip - kept. The warning is now silenced; the
+  password stays readable from Windows (Panels > BitLocker status, or `manage-bde`).
 - **Tweaks and baselines no longer empty registry keys that already exist.** The engine
   made sure a key existed with `New-Item -Path <key> -Force`, which on an existing key
   deletes every value and subkey in it (checked on Windows PowerShell 5.1 and 7) before
