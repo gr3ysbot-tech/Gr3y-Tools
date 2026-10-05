@@ -80,6 +80,17 @@ phases 0-3 and part of phase 4 (optional items were deliberately not built):
 
 ### Fixed
 
+- **Create Break-Glass Admin works on Windows PowerShell 5.1.** It generated the password
+  with `RandomNumberGenerator.Fill`, which .NET Framework does not have, so on the host the
+  app always uses the step failed before it created the account, set the LAPS policy or wrote
+  the credential file. The password now comes from `RandomNumberGenerator.Create().GetBytes`
+  (same 24-character set, drawn again until it has three character classes, so a complexity
+  policy cannot refuse it).
+- **The 30-day clean-up of the work folder no longer deletes the break-glass credential file
+  or the Revert Last Run snapshots.** On a PC that is not Entra-joined that file is the only
+  copy of the password, and without its snapshot Revert Last Run silently stopped working
+  after 30 days. The Create Break-Glass confirmation now says where the file is and that the
+  app never deletes it.
 - **Tweaks and baselines no longer empty registry keys that already exist.** The engine
   made sure a key existed with `New-Item -Path <key> -Force`, which on an existing key
   deletes every value and subkey in it (checked on Windows PowerShell 5.1 and 7) before

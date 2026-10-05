@@ -2176,6 +2176,37 @@ function Remove-LocalAdministratorMembers {
     }
 }
 
+function Test-PasswordClasses {
+    # True when the password has at least $Minimum of the four character classes (upper, lower, digit, other).
+    param([string]$Password, [int]$Minimum = 3)
+    $classes = 0
+    foreach ($pattern in '[A-Z]', '[a-z]', '[0-9]', '[^A-Za-z0-9]') { if ($Password -cmatch $pattern) { $classes++ } }
+    return ($classes -ge $Minimum)
+}
+
+function New-BreakGlassPassword {
+    # 24 random characters from a mixed charset - comfortably over both the plan's 20+ char minimum and Windows LAPS'
+    # own PasswordLength=20 policy. They come from the operating system's cryptographic generator, never Get-Random
+    # (this is a credential): RandomNumberGenerator.Create().GetBytes works on Windows PowerShell 5.1 (.NET Framework,
+    # the host the GUI always uses) AND on PowerShell 7 - the static ::Fill exists only on .NET Core, and this
+    # function used to fail on 5.1 because of it. The charset has 64 characters, so "byte modulo 64" is unbiased
+    # (256 is a multiple of 64). It is drawn again until it holds at least three of the four character classes, which
+    # a local or domain complexity policy would otherwise refuse (about 1 draw in 1000 has only letters).
+    $chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%^&*'
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        for ($attempt = 0; $attempt -lt 20; $attempt++) {
+            $bytes = New-Object byte[] 24
+            $rng.GetBytes($bytes)
+            $password = -join ($bytes | ForEach-Object { $chars[$_ % $chars.Length] })
+            if (Test-PasswordClasses -Password $password) { return $password }
+        }
+        throw 'Could not generate a password that meets the complexity rules.'
+    } finally {
+        $rng.Dispose()
+    }
+}
+
 function New-BreakGlassLocalAdmin {
     param([string]$AccountName = 'Gr3yBreakGlass')
     Invoke-Step "Creating break-glass local administrator account ($AccountName)" {
@@ -2184,13 +2215,7 @@ function New-BreakGlassLocalAdmin {
             if ($existing) {
                 Write-Log "Local account '$AccountName' already exists - leaving its password alone (delete the account first for a fresh one)." 'WARN'
             } else {
-                # 24 random characters from a mixed charset - comfortably over both the
-                # plan's 20+ char minimum and Windows LAPS' own PasswordLength=20 policy
-                # set below. RandomNumberGenerator, not Get-Random - this is a credential.
-                $chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%^&*'
-                $bytes = New-Object byte[] 24
-                [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-                $password = -join ($bytes | ForEach-Object { $chars[$_ % $chars.Length] })
+                $password = New-BreakGlassPassword
                 $secure = ConvertTo-SecureString -String $password -AsPlainText -Force
                 New-LocalUser -Name $AccountName -Password $secure -PasswordNeverExpires -AccountNeverExpires -ErrorAction Stop | Out-Null
                 Add-LocalGroupMember -Group 'Administrators' -Member $AccountName -ErrorAction Stop
