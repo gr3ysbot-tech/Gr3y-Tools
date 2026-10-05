@@ -31,7 +31,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$GuiScript = (Join-Path (Split-Path -Parent $PSScriptRoot) 'debloat\Gr3ysUtilities.ps1'),
+    [string]$GuiScript,
     [string]$LogPath = (Join-Path $env:TEMP ('bitlocker-e2e-{0}.log' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))),
     [ValidateRange(256, 2048)][int]$SizeMB = 1024,
     [switch]$CleanupOnly,
@@ -40,6 +40,9 @@ param(
 # 'Continue' is what Gr3ysUtilities.ps1 itself runs with, so the app functions behave here as they do in the
 # app; every call that must not fail silently carries its own -ErrorAction Stop or sits inside a Check.
 $ErrorActionPreference = 'Continue'
+# $PSScriptRoot is EMPTY inside a parameter default in Windows PowerShell 5.1 when a script is started with -File (as the launcher does it),
+# which ended the first real run before it wrote a single line: the default of -GuiScript is worked out here, in the body, where it is set.
+if (-not $GuiScript) { $GuiScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'debloat\Gr3ysUtilities.ps1' }
 
 . (Join-Path $PSScriptRoot 'TestHelpers.ps1')            # Get-FunctionSource
 . (Join-Path $PSScriptRoot 'BitLockerTestVolume.ps1')    # the guarded throwaway-VHD helpers

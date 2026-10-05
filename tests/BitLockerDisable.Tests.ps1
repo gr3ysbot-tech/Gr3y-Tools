@@ -1408,3 +1408,43 @@ Describe 'Disable BitLocker helpers' {
         }
     }
 }
+
+# The one-time real-BitLocker test is started by a launcher as  powershell.exe -File <script> -LogPath <log>  (nothing else). In Windows PowerShell 5.1
+# $PSScriptRoot is EMPTY inside a parameter default under -File, so the first real run ended before it wrote a line. Everything else in these tests
+# starts the pieces in other ways (a call from a child script, the functions loaded one by one), which is why this has its own tests.
+Describe 'the one-time real-BitLocker test is started the way its launcher starts it' {
+    BeforeAll {
+        $repo = Split-Path -Parent $PSScriptRoot
+        $script:e2ePath = Join-Path $repo 'tests/Test-BitLockerDisableVhd.ps1'
+    }
+
+    It 'has no parameter default that reads $PSScriptRoot, $PSCommandPath or $MyInvocation' {
+        $tokens = $null
+        $errs = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:e2ePath, [ref]$tokens, [ref]$errs)
+        @($errs).Count | Should -Be 0
+        $ast.ParamBlock | Should -Not -BeNullOrEmpty
+        foreach ($p in @($ast.ParamBlock.Parameters)) {
+            if ($p.DefaultValue) { $p.DefaultValue.Extent.Text | Should -Not -Match 'PSScriptRoot|PSCommandPath|MyInvocation' -Because "the default of -$($p.Name.VariablePath.UserPath) is worked out before those are set under -File" }
+        }
+    }
+
+    It 'binds its parameters and finds the app script when it is started with -File and only -LogPath' {
+        # a copy of the script cut off right after its parameters (its first line that loads a helper), laid out like the repo (tests\ and debloat\)
+        $dir = Join-Path $TestDrive 'launcher-style'
+        $null = New-Item -ItemType Directory -Force -Path (Join-Path $dir 'tests'), (Join-Path $dir 'debloat')
+        $cut = New-Object System.Collections.Generic.List[string]
+        foreach ($l in [System.IO.File]::ReadAllText($script:e2ePath).Replace("`r`n", "`n").Split("`n")) {
+            if ($l -match '^#Requires -RunAsAdministrator') { continue }       # this copy only binds parameters; it changes nothing
+            if ($l -like '. (Join-Path $PSScriptRoot ''TestHelpers.ps1'')*') { break }
+            $cut.Add($l)
+        }
+        $cut.Count | Should -BeGreaterThan 10 -Because 'the cut must keep the parameters and what follows them'
+        $cut.Add('''BOUND: '' + $GuiScript')
+        $copy = Join-Path $dir 'tests/Test-BitLockerDisableVhd.ps1'
+        [System.IO.File]::WriteAllText($copy, ($cut -join "`n"))
+        $out = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $copy -LogPath (Join-Path $dir 'e2e.log') 2>&1 | ForEach-Object { [string]$_ })
+        $LASTEXITCODE | Should -Be 0 -Because ($out -join ' / ')
+        ($out -join "`n") | Should -Match 'BOUND: .*debloat\\Gr3ysUtilities\.ps1'
+    }
+}
