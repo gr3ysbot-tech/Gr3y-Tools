@@ -71,6 +71,7 @@ $global:BlT = @{ Dialog = $dialog; State = $state; PathBox = $pathBox; Status = 
             [CmdletBinding()] param([string]$MountPoint)
             $global:BlFake.GetCalls++
             if ($global:BlFake.GetThrows) { throw $global:BlFake.GetThrows }
+            if ($global:BlFake.WriteError) { Write-Error $global:BlFake.WriteError }
             $all = @($global:BlFake.Volumes)
             if ($MountPoint) { return @($all | Where-Object { $_.MountPoint -eq $MountPoint }) }
             return $all
@@ -128,7 +129,7 @@ $global:BlT = @{ Dialog = $dialog; State = $state; PathBox = $pathBox; Status = 
 
         # --- helpers that drive the window ---
         function global:Reset-Fake {
-            $global:BlFake = @{ Volumes = @(); GetThrows = $null; GetCalls = 0; DisableCalls = (New-Object System.Collections.Generic.List[string]); DisableThrows = $null
+            $global:BlFake = @{ Volumes = @(); GetThrows = $null; WriteError = $null; GetCalls = 0; DisableCalls = (New-Object System.Collections.Generic.List[string]); DisableThrows = $null
                 AddCalls = (New-Object System.Collections.Generic.List[string]); ClearCalls = 0; CallLog = (New-Object System.Collections.Generic.List[string])
                 PreventCalls = 0; PreventValue = $null; PreventOk = $true; Warnings = @() }
             [BlTestMsgBox]::Log.Clear(); [BlTestMsgBox]::Handler = $null
@@ -212,6 +213,18 @@ $global:BlT = @{ Dialog = $dialog; State = $state; PathBox = $pathBox; Status = 
             }
             $global:BlOut.Rows | Should -Match 'D:\(can=True,tick=True\)'
             $global:BlOut.Rows | Should -Match 'C:\(can=True,tick=False\)'
+        }
+
+        It 'lists what it can read and says that some volumes could not be read' {
+            $global:BlFake.Volumes = Get-StdVolumes
+            $global:BlFake.WriteError = 'Volume G: could not be read (stand-in)'
+            Invoke-Dialog {
+                $T = $global:BlT; Raise-Loaded $T.Dialog
+                $global:BlOut = @{ Rows = (Get-Rows $T); Status = $T.Status.Text; Color = $T.Status.Foreground.Color.ToString() }
+            }
+            $global:BlOut.Rows | Should -Match 'C:\(can=True'
+            $global:BlOut.Status | Should -Match 'could not read some volumes, so they are not listed: Volume G: could not be read'
+            $global:BlOut.Color | Should -Be '#FFD29922'
         }
 
         It 'says why BitLocker cannot be read, and offers nothing' {
