@@ -16,7 +16,7 @@ Describe 'Disable BitLocker helpers' {
             'Test-BitLockerBackupText', 'Get-BitLockerBackupPlaceNote', 'Get-BitLockerDefaultBackupFolder', 'Test-BitLockerBackupPath', 'Test-BitLockerBackupStillGood',
             'Get-BitLockerKeyIdSet', 'Get-RunningToolJobs', 'Save-BitLockerBackupFile', 'Get-BitLockerRawOutput', 'Get-BitLockerAuditFolder', 'Write-BitLockerActionLog',
             'Get-BitLockerFriendlyError', 'Clear-BitLockerStoredAutoUnlock', 'Start-BitLockerDecrypt', 'Add-BitLockerRecoveryProtector',
-            'Get-PreventDeviceEncryptionValue', 'Set-PreventDeviceEncryption', 'Test-BitLockerPolicyPresent', 'Get-BitLockerDecryptWarnings',
+            'Get-PreventDeviceEncryptionValue', 'Set-PreventDeviceEncryption', 'Test-BitLockerPolicyPresent', 'Test-BitLockerManagedText', 'Get-BitLockerDecryptWarnings',
             'Get-BitLockerDecryptOrder', 'Get-BitLockerAutoUnlockAffected', 'Get-BitLockerElapsedText', 'Get-BitLockerProgressText',
             'Get-BitLockerDriveDescription', 'Get-BitLockerTypeText') {
             . ([scriptblock]::Create((Get-FunctionSource -ScriptPath $gui -FunctionName $fn)))
@@ -33,6 +33,7 @@ Describe 'Disable BitLocker helpers' {
             [CmdletBinding()]
             param([string]$MountPoint)
             if ($script:fake.GetThrows) { throw $script:fake.GetThrows }
+            if ($script:fake.WriteError) { Write-Error $script:fake.WriteError }     # a volume BitLocker cannot read: a non-terminating error
             $all = @($script:fake.Volumes)
             if ($MountPoint) { return @($all | Where-Object { $_.MountPoint -eq $MountPoint }) }
             return $all
@@ -81,7 +82,7 @@ Describe 'Disable BitLocker helpers' {
     }
 
     BeforeEach {
-        $script:fake = @{ Volumes = @(); GetThrows = $null; DisableCalls = @(); DisableThrows = $null; AddCalls = @(); AddThrows = $null; ClearCalls = 0; ClearThrows = $null; ClearIsNoOp = $false }
+        $script:fake = @{ Volumes = @(); GetThrows = $null; WriteError = $null; DisableCalls = @(); DisableThrows = $null; AddCalls = @(); AddThrows = $null; ClearCalls = 0; ClearThrows = $null; ClearIsNoOp = $false }
     }
 
     Context 'ConvertTo-BitLockerVolumeDetail' {
@@ -143,6 +144,23 @@ Describe 'Disable BitLocker helpers' {
         It 'returns an empty array when there are no volumes' {
             $r = Get-BitLockerVolumeDetail
             $null -eq $r.Volumes | Should -BeFalse
+            @($r.Volumes).Count | Should -Be 0
+            @($r.Unreadable).Count | Should -Be 0
+        }
+
+        It 'lists the volumes it can read and reports the one it cannot, instead of showing nothing' {
+            $script:fake.Volumes = @(New-FakeVolume -Mount 'C:'; New-FakeVolume -Mount 'D:' -Type 'Data')
+            $script:fake.WriteError = 'Volume E: could not be read (stand-in)'
+            $r = Get-BitLockerVolumeDetail
+            $r.Error | Should -BeNullOrEmpty
+            @($r.Volumes).Count | Should -Be 2
+            @($r.Unreadable) -join '|' | Should -Be 'Volume E: could not be read (stand-in)'
+        }
+
+        It 'reports an error when nothing at all could be read' {
+            $script:fake.WriteError = 'Access denied'
+            $r = Get-BitLockerVolumeDetail
+            $r.Error | Should -Be 'Access denied'
             @($r.Volumes).Count | Should -Be 0
         }
     }
@@ -777,6 +795,19 @@ Describe 'Disable BitLocker helpers' {
             Test-BitLockerPolicyPresent -Path @('TestRegistry:\NoPolicyHere', 'TestRegistry:\Pol\Empty', 'TestRegistry:\Pol\Set') | Should -BeTrue
         }
 
+        It 'reads the managed-PC fields of dsregcmd on their own lines only' {
+            $joined = "+---+`r`n| Device State`r`n    AzureAdJoined : YES`r`n    EnterpriseJoined : NO`r`n    MdmUrl :`r`n    MdmTouUrl :`r`n"
+            Test-BitLockerManagedText -Text $joined | Should -BeTrue
+            Test-BitLockerManagedText -Text "    AzureAdJoined : NO`r`n    MdmUrl : https://enrollment.manage.microsoft.com/enrollmentserver/discovery.svc`r`n" | Should -BeTrue
+            Test-BitLockerManagedText -Text "AzureAdJoined : yes`r`n" | Should -BeTrue
+            # an EMPTY MdmUrl followed by another field is not "managed" (the old pattern ran across the line break)
+            Test-BitLockerManagedText -Text "    AzureAdJoined : NO`r`n    MdmUrl : `r`n    MdmTouUrl : https://example.test/tou`r`n" | Should -BeFalse
+            Test-BitLockerManagedText -Text "    AzureAdJoined : NO`r`n    MdmUrl :`r`n    MdmTouUrl :`r`n" | Should -BeFalse
+            Test-BitLockerManagedText -Text "    AzureAdJoined : YESTERDAY`r`n" | Should -BeFalse
+            Test-BitLockerManagedText -Text '' | Should -BeFalse
+            Test-BitLockerManagedText -Text $null | Should -BeFalse
+        }
+
         It 'never throws, and always gives back plain text lines' {
             { Get-BitLockerDecryptWarnings } | Should -Not -Throw
             foreach ($w in @(Get-BitLockerDecryptWarnings)) { $w | Should -BeOfType [string] }
@@ -870,6 +901,17 @@ Describe 'Disable BitLocker helpers' {
                 $who = @((Get-Acl -LiteralPath $audit).Access | ForEach-Object { $_.IdentityReference.Value })
                 @($who | Where-Object { $_ -match 'Everyone|Users$|Authenticated' }).Count | Should -Be 0
                 @($who | Where-Object { $_ -match 'Administrators' }).Count | Should -BeGreaterThan 0
+            } finally { $env:ProgramData = $oldPd }
+        }
+
+        It 'gives no audit folder, instead of throwing, when ProgramData is not usable' {
+            $oldPd = $env:ProgramData
+            try {
+                $env:ProgramData = 'Z:\no-such-drive-for-sure'
+                { Get-BitLockerAuditFolder } | Should -Not -Throw
+                Get-BitLockerAuditFolder | Should -BeNullOrEmpty
+                $env:ProgramData = ''
+                Get-BitLockerAuditFolder | Should -BeNullOrEmpty
             } finally { $env:ProgramData = $oldPd }
         }
 
