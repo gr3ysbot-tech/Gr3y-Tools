@@ -89,8 +89,12 @@ phases 0-3 and part of phase 4 (optional items were deliberately not built):
   Automatic Device Encryption* could wipe other settings in keys such as
   `Policies\System` (UAC and logon policy), `Session Manager\Power`, `Control Panel\Desktop`,
   `Explorer\Advanced` or a managed machine's Edge/Office policies. Keys are now created
-  only when missing (`Confirm-RegistryKey`), and a test keeps the pattern from coming back.
-  Keys that an earlier run already emptied are not restored by this change.
+  only when missing (`Confirm-RegistryKey`, parents included), and a test keeps the
+  pattern from coming back. The same bug also made a tweak that sets several values in one
+  key keep only the last one (10 of the 46 tweaks, 52 of their 125 values); all of them now
+  apply. OneDrive Known Folder Move sets exactly the folders you choose (an opt-in an
+  earlier run left for a folder you did not choose is removed). Keys that an earlier run
+  already emptied are not restored by this change.
 - Windows PowerShell 5.1 could mangle non-ASCII program names when sending or
   receiving the export (a charset-less `application/json`); requests and the
   relay's responses now declare `charset=utf-8`.
