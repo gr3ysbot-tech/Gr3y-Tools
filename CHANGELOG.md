@@ -80,6 +80,17 @@ phases 0-3 and part of phase 4 (optional items were deliberately not built):
 
 ### Fixed
 
+- **Tweaks and baselines no longer empty registry keys that already exist.** The engine
+  made sure a key existed with `New-Item -Path <key> -Force`, which on an existing key
+  deletes every value and subkey in it (checked on Windows PowerShell 5.1 and 7) before
+  the one value was written. So the Customize Preferences tweaks, telemetry reduction,
+  the Regional/power/lock baseline, OneDrive Known Folder Move, the LAPS and Lenovo
+  System Update policy, Smart App Control, the Office first-run policy and *Prevent
+  Automatic Device Encryption* could wipe other settings in keys such as
+  `Policies\System` (UAC and logon policy), `Session Manager\Power`, `Control Panel\Desktop`,
+  `Explorer\Advanced` or a managed machine's Edge/Office policies. Keys are now created
+  only when missing (`Confirm-RegistryKey`), and a test keeps the pattern from coming back.
+  Keys that an earlier run already emptied are not restored by this change.
 - Windows PowerShell 5.1 could mangle non-ASCII program names when sending or
   receiving the export (a charset-less `application/json`); requests and the
   relay's responses now declare `charset=utf-8`.

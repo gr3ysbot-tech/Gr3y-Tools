@@ -362,6 +362,21 @@ function Invoke-Step {
     }
 }
 
+function Confirm-RegistryKey {
+    # Makes sure a registry key exists WITHOUT touching it when it already does. New-Item -Force on an
+    # EXISTING key EMPTIES it - every value and subkey (verified on Windows PowerShell 5.1 and 7) - so it must
+    # never be used to "make sure a key is there": it wiped e.g. Policies\System (UAC settings), Session
+    # Manager\Power and Explorer\Advanced preferences before a single value was written. Never throws;
+    # returns $true when the key exists afterwards.
+    param([string]$Path)
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { New-Item -Path $Path -Force -ErrorAction Stop | Out-Null }
+        return [bool](Test-Path -LiteralPath $Path)
+    } catch {
+        return $false
+    }
+}
+
 function New-PreDeploySystemRestorePoint {
     Invoke-Step 'Creating a System Restore point before making any changes' {
         $freqKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
@@ -379,7 +394,7 @@ function New-PreDeploySystemRestorePoint {
             # Windows silently skips creating a new restore point if one was already made
             # in the last 24h (the default throttle) - drop the frequency to 0 for this one
             # call so ours actually gets created, then put the original value back below.
-            New-Item -Path $freqKey -Force -ErrorAction SilentlyContinue | Out-Null
+            $null = Confirm-RegistryKey -Path $freqKey
             Set-ItemProperty -Path $freqKey -Name $freqName -Value 0 -Type DWord -ErrorAction SilentlyContinue
 
             Checkpoint-Computer -Description $restorePointDescription -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop
@@ -958,7 +973,7 @@ function Invoke-UndoSnapshot {
                 if (-not $entry.hadValue) {
                     Remove-ItemProperty -Path $entry.path -Name $entry.name -ErrorAction SilentlyContinue
                 } else {
-                    New-Item -Path $entry.path -Force -ErrorAction SilentlyContinue | Out-Null
+                    $null = Confirm-RegistryKey -Path $entry.path
                     Set-ItemProperty -Path $entry.path -Name $entry.name -Value $entry.value -Type $entry.type -ErrorAction Stop
                 }
             } catch {
@@ -975,7 +990,7 @@ function Invoke-UndoSnapshot {
                 if (-not $keyEntry.hadKey) {
                     Remove-Item -Path $keyEntry.path -Recurse -Force -ErrorAction SilentlyContinue
                 } else {
-                    New-Item -Path $keyEntry.path -Force -ErrorAction Stop | Out-Null
+                    if (-not (Confirm-RegistryKey -Path $keyEntry.path)) { throw ("Could not create the registry key " + $keyEntry.path) }
                     Set-Item -Path $keyEntry.path -Value $keyEntry.defaultValue -ErrorAction Stop
                 }
             } catch {
@@ -1084,10 +1099,10 @@ function Set-TelemetryReduced {
             Add-UndoRegistryEntry -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name 'UploadUserActivities' -Type 'DWord'
             Add-UndoServiceEntry -Name 'DiagTrack'
 
-            New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' -Force -ErrorAction SilentlyContinue | Out-Null
+            $null = Confirm-RegistryKey -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
             Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' -Name 'AllowTelemetry' -Value 0 -Type DWord -ErrorAction SilentlyContinue
 
-            New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Force -ErrorAction SilentlyContinue | Out-Null
+            $null = Confirm-RegistryKey -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
             # EnableActivityFeed is deliberately left alone (owner-identified gap):
             # turning it off breaks clipboard history, which most people expect to keep
             # working. Blocking Publish/UploadUserActivities alone already stops
@@ -1119,11 +1134,11 @@ function Set-TelemetryReduced {
                 @{ Path = 'HKCU:\SOFTWARE\Microsoft\Siuf\Rules'; Name = 'NumberOfSIUFInPeriod'; Value = 0 }
             )
             foreach ($entry in $telemetryHkcuEntries) {
-                New-Item -Path $entry.Path -Force -ErrorAction SilentlyContinue | Out-Null
+                $null = Confirm-RegistryKey -Path $entry.Path
                 Set-ItemProperty -Path $entry.Path -Name $entry.Name -Value $entry.Value -Type DWord -ErrorAction SilentlyContinue
             }
 
-            New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Force -ErrorAction SilentlyContinue | Out-Null
+            $null = Confirm-RegistryKey -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
             Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'DiagnosticData' -Value 0 -Type DWord -ErrorAction SilentlyContinue
             Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'PersonalizationReportingEnabled' -Value 0 -Type DWord -ErrorAction SilentlyContinue
 
@@ -1170,7 +1185,7 @@ function Disable-SmartAppControl {
                 Write-Log 'Smart App Control is already off.'
                 return
             }
-            New-Item -Path $ciPolicyPath -Force -ErrorAction SilentlyContinue | Out-Null
+            $null = Confirm-RegistryKey -Path $ciPolicyPath
             Set-ItemProperty -Path $ciPolicyPath -Name 'VerifiedAndReputablePolicyState' -Value 0 -Type DWord -ErrorAction Stop
             Write-Log 'Smart App Control disabled. Takes full effect after the next reboot. This cannot be turned back on without reinstalling Windows.'
         } catch {
@@ -1312,7 +1327,7 @@ function Set-ClassicContextMenu {
     $keyPath = 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32'
     Add-UndoRegistryKeyEntry -Path $keyPath
     if ($Direction -eq 'on') {
-        New-Item -Path $keyPath -Force -ErrorAction Stop | Out-Null
+        if (-not (Confirm-RegistryKey -Path $keyPath)) { throw ("Could not create the registry key " + $keyPath) }
         Set-Item -Path $keyPath -Value '' -ErrorAction Stop
     } else {
         Remove-Item -Path $keyPath -Recurse -Force -ErrorAction SilentlyContinue
@@ -1411,7 +1426,7 @@ function Invoke-CustomizeTweaks {
                         if ($value -eq '<RemoveEntry>') {
                             Remove-ItemProperty -Path $entry.path -Name $entry.name -ErrorAction SilentlyContinue
                         } else {
-                            New-Item -Path $entry.path -Force -ErrorAction SilentlyContinue | Out-Null
+                            $null = Confirm-RegistryKey -Path $entry.path
                             Set-ItemProperty -Path $entry.path -Name $entry.name -Value $value -Type $entry.type -ErrorAction Stop
                         }
                     }
@@ -1461,7 +1476,7 @@ function Invoke-CustomizeTweaks {
                                 if ($value -eq '<RemoveEntry>') {
                                     Remove-ItemProperty -Path $defaultPath -Name $entry.name -ErrorAction SilentlyContinue
                                 } else {
-                                    New-Item -Path $defaultPath -Force -ErrorAction SilentlyContinue | Out-Null
+                                    $null = Confirm-RegistryKey -Path $defaultPath
                                     Set-ItemProperty -Path $defaultPath -Name $entry.name -Value $value -Type $entry.type -ErrorAction Stop
                                 }
                                 Write-Log "Mirrored to Default profile: $($def.label) -> $direction"
@@ -1920,7 +1935,7 @@ function Install-Microsoft365Business {
     Invoke-Step "Suppressing the Office first-run 'Default File Types' prompt" {
         try {
             $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Office\16.0\Common\General'
-            New-Item -Path $path -Force -ErrorAction SilentlyContinue | Out-Null
+            $null = Confirm-RegistryKey -Path $path
             Set-ItemProperty -Path $path -Name 'ShownFileFmtPrompt' -Value 1 -Type DWord -ErrorAction Stop
             Write-Log 'Default File Types prompt suppressed machine-wide (HKLM Policies ShownFileFmtPrompt=1) - Office keeps its built-in Open XML default without ever asking.'
         } catch {
@@ -2040,7 +2055,7 @@ function Set-OneDriveKfm {
         }
         try {
             $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\OneDrive'
-            New-Item -Path $policyPath -Force -ErrorAction SilentlyContinue | Out-Null
+            $null = Confirm-RegistryKey -Path $policyPath
             Set-ItemProperty -Path $policyPath -Name 'SilentAccountConfig' -Value 1 -Type DWord -ErrorAction Stop
             Set-ItemProperty -Path $policyPath -Name 'KFMSilentOptIn' -Value $TenantId -Type String -ErrorAction Stop
             Set-ItemProperty -Path $policyPath -Name 'KFMSilentOptInWithNotification' -Value 1 -Type DWord -ErrorAction Stop
@@ -2214,7 +2229,7 @@ function New-BreakGlassLocalAdmin {
                     # caution - AdministratorAccountName is always this break-glass
                     # account's own name, never that built-in account.
                     $lapsPath = 'HKLM:\SOFTWARE\Microsoft\Policies\LAPS'
-                    New-Item -Path $lapsPath -Force -ErrorAction SilentlyContinue | Out-Null
+                    $null = Confirm-RegistryKey -Path $lapsPath
                     Set-ItemProperty -Path $lapsPath -Name 'BackupDirectory' -Value 1 -Type DWord -ErrorAction Stop
                     Set-ItemProperty -Path $lapsPath -Name 'AdministratorAccountName' -Value $AccountName -Type String -ErrorAction Stop
                     Set-ItemProperty -Path $lapsPath -Name 'PasswordLength' -Value 20 -Type DWord -ErrorAction Stop
@@ -2314,7 +2329,7 @@ function Invoke-LenovoSystemUpdateApply {
 
     try {
         $policyPath = 'HKLM:\Software\Policies\Lenovo\System Update\UserSettings\General'
-        New-Item -Path $policyPath -Force -ErrorAction SilentlyContinue | Out-Null
+        $null = Confirm-RegistryKey -Path $policyPath
         Set-ItemProperty -Path $policyPath -Name 'AdminCommandLine' -Value '-search A -action INSTALL -includerebootpackages 0,3 -noicon -nolicense -noreboot -exporttowmi' -Type String -ErrorAction Stop
     } catch {
         Write-Log "Could not configure Lenovo System Update's command line policy: $($_.Exception.Message)" 'WARN'
@@ -2844,7 +2859,7 @@ function Set-PreventAutomaticDeviceEncryption {
     Invoke-Step 'Preventing automatic device encryption' {
         try {
             $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker'
-            New-Item -Path $path -Force -ErrorAction SilentlyContinue | Out-Null
+            $null = Confirm-RegistryKey -Path $path
             Add-UndoRegistryEntry -Path $path -Name 'PreventDeviceEncryption' -Type 'DWord'
             Set-ItemProperty -Path $path -Name 'PreventDeviceEncryption' -Value 1 -Type DWord -ErrorAction Stop
             Write-Log 'Automatic device encryption prevented (PreventDeviceEncryption=1) - Windows will not silently turn on BitLocker at first Microsoft-account sign-in (relevant on 24H2, for machines staying on local accounts rather than Entra/Microsoft accounts).'
@@ -3071,13 +3086,13 @@ function Set-RegionalPowerLockBaseline {
             }
             powercfg /change monitor-timeout-ac 15 2>&1 | Out-Null
             $lockPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
-            New-Item -Path $lockPath -Force -ErrorAction SilentlyContinue | Out-Null
+            $null = Confirm-RegistryKey -Path $lockPath
             Set-ItemProperty -Path $lockPath -Name 'InactivityTimeoutSecs' -Value $LockTimeoutSec -Type DWord -ErrorAction Stop
             # Fast Startup hibernates the kernel session instead of a full shutdown, which
             # both interferes with Wake-on-LAN and can leave a Windows Update pass looking
             # "installed" without a genuine cold boot.
             $powerKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power'
-            New-Item -Path $powerKey -Force -ErrorAction SilentlyContinue | Out-Null
+            $null = Confirm-RegistryKey -Path $powerKey
             Set-ItemProperty -Path $powerKey -Name 'HiberbootEnabled' -Value 0 -Type DWord -ErrorAction Stop
             Write-Log "Regional/power/lock baseline applied (monitor timeout 15 min on AC, lock timeout ${LockTimeoutSec}s, Fast Startup off)."
         } catch {
