@@ -1,4 +1,5 @@
 #Requires -Version 5.1
+#Requires -PSEdition Desktop
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
@@ -65,7 +66,7 @@ if ($CleanupOnly) {
     # what an interrupted run leaves in %TEMP% (only these names, which only this script makes)
     foreach ($leftover in @(Get-ChildItem -LiteralPath $env:TEMP -Filter 'bl-e2e-backup-*.txt' -File -ErrorAction SilentlyContinue) + @(Get-ChildItem -LiteralPath $env:TEMP -Filter 'bl-e2e-programdata-*' -Directory -ErrorAction SilentlyContinue)) {
         Remove-Item -LiteralPath $leftover.FullName -Recurse -Force -ErrorAction SilentlyContinue
-        Write-Log "Removed $($leftover.Name)"
+        if (Test-Path -LiteralPath $leftover.FullName) { Write-Log "COULD NOT remove $($leftover.Name) (in use?) - delete it by hand" } else { Write-Log "Removed $($leftover.Name)" }
     }
     return
 }
@@ -78,7 +79,7 @@ $appFunctions = @(
     'Get-BitLockerRawOutput', 'Get-BitLockerBackupSystemInfo', 'Get-BitLockerFriendlyError', 'Start-BitLockerDecrypt',
     'Add-BitLockerRecoveryProtector', 'Get-PreventDeviceEncryptionValue', 'Test-BitLockerPolicyPresent', 'Get-BitLockerDecryptWarnings',
     'Get-BitLockerDecryptOrder', 'Get-BitLockerAutoUnlockAffected', 'Get-BitLockerElapsedText', 'Get-BitLockerProgressText',
-    'Get-BitLockerDriveDescription', 'Get-BitLockerTypeText', 'Test-BitLockerBackupPath', 'Test-BitLockerBackupStillGood', 'Get-BitLockerKeyIdSet',
+    'Get-BitLockerDriveDescription', 'Get-BitLockerTypeText', 'Test-BitLockerBackupPath', 'Test-BitLockerBackupStillGood', 'Get-BitLockerVolumeIdMap', 'Get-BitLockerDriveIdentity', 'Test-BitLockerSameDrive',
     'Get-BitLockerBackupPlaceNote', 'Get-BitLockerDefaultBackupFolder', 'Get-BitLockerAuditFolder', 'Write-BitLockerActionLog',
     'Test-BitLockerManagedText', 'Get-BitLockerPathFileSystem'     # called by Get-BitLockerDecryptWarnings and Save-BitLockerBackupFile
 )
@@ -131,6 +132,21 @@ function Wait-Until {
     }
 }
 
+function Get-TestDetail {
+    # The throwaway volume as the dialog's own read gives it: the BitLocker facts plus the volume's own ID. Read-only.
+    # A read that fails for a moment (BitLocker's WMI provider can be busy while a drive encrypts or decrypts) is tried again.
+    $lastError = $null
+    foreach ($attempt in 1..4) {
+        try {
+            $x = ConvertTo-BitLockerVolumeDetail -Volume (Get-BitLockerVolume -MountPoint $target -ErrorAction Stop)
+            $ids = Get-BitLockerVolumeIdMap
+            if ($ids.ContainsKey($target)) { $x.VolumeId = [string]$ids[$target] }
+            return $x
+        } catch { $lastError = $_; Start-Sleep -Milliseconds 400 }
+    }
+    throw $lastError
+}
+
 $t = $null            # the throwaway volume (set below); Assert-Target reads it
 $backupFiles = New-Object System.Collections.Generic.List[string]
 
@@ -138,9 +154,10 @@ function Assert-Target {
     # Every call that CHANGES a drive goes through here first. Only the throwaway drive passes.
     param([string]$Mount, [switch]$Locked)
     if ($null -eq $t) { throw 'SAFETY: there is no throwaway volume.' }
-    if ($Mount -cne $t.MountPoint) { throw "SAFETY: refusing to touch '$Mount' - only $($t.MountPoint), the throwaway drive, may be changed." }
+    # the letter must be the throwaway's by BOTH names the helper hands out (MountPoint and DriveLetter): if they ever disagree, nothing is touched
+    if ($Mount -cne $t.MountPoint -or $Mount -cne ($t.DriveLetter + ':')) { throw "SAFETY: refusing to touch '$Mount' - only $($t.MountPoint), the throwaway drive, may be changed." }
     if ($Locked) {
-        # a locked volume may not answer Get-Volume, so the full letter check cannot run - but the letter must still be the
+        # the full letter check reads the volume, which may not work while it is locked - but the letter must still be the
         # throwaway's: exactly one partition of the test VHDX's disk holds it (a different drive that took the letter has none)
         $id = Assert-BlTestIdentity -VhdPath $t.VhdPath
         $own = @(Get-Partition -DiskNumber $id.DiskNumber -ErrorAction Stop | Where-Object { ([string]$_.DriveLetter).ToUpperInvariant() -ceq $t.DriveLetter })
@@ -165,8 +182,6 @@ try {
     $all = $script:all
     Write-Log ("  INFO reading every volume (what the dialog does on open, refresh and every 5 s while decrypting) took {0:N0} ms" -f $readTime.TotalMilliseconds)
     Check 'Get-BitLockerVolumeDetail reads every volume without an error' { ($null -eq $all.Error) -and (@($all.Volumes).Count -ge 1) }
-    $mbdeTime = Measure-Command { $null = Get-BitLockerRawOutput -Volumes @($all.Volumes | Select-Object -First 1) }
-    Write-Log ("  INFO manage-bde -status plus -protectors for one drive (part of button 1; the window waits) took {0:N0} ms" -f $mbdeTime.TotalMilliseconds)
     foreach ($v in @($all.Volumes)) {
         $dis = Get-BitLockerDisableState -Volume $v
         $verdict = $(if ($dis.CanDisable) { 'would be offered' } else { "not offered: $($dis.Reason)" })
@@ -248,7 +263,10 @@ try {
 
     # ================= 4. step 1 of the dialog: the key backup =================
     $vols = @($d)
-    $rawOut = Get-BitLockerRawOutput -Volumes $vols
+    # (timed on the throwaway drive only: a real drive's protectors, recovery password included, are not read through manage-bde here)
+    $mbdeTime = Measure-Command { $script:rawOutTmp = Get-BitLockerRawOutput -Volumes $vols }
+    $rawOut = $script:rawOutTmp
+    Write-Log ("  INFO manage-bde -status plus -protectors for the throwaway drive (part of button 1; the window waits) took {0:N0} ms" -f $mbdeTime.TotalMilliseconds)
     Check 'manage-bde output is captured for the drive' { ($rawOut.Status.Length -gt 20) -and $rawOut.Protectors.ContainsKey($target) -and ($rawOut.Protectors[$target].Length -gt 20) }
     $info = Get-BitLockerBackupSystemInfo
     Check 'the system details for the backup header are filled in' { [bool]$info.ComputerName -and [bool]$info.Os -and [bool]$info.Machine }
@@ -260,8 +278,10 @@ try {
         if (-not $save.Ok) { throw $save.Error }
         if ($save.AclWarning) { throw $save.AclWarning }
         $acl = Get-Acl -LiteralPath $backup1
-        $names = @($acl.Access | ForEach-Object { $_.IdentityReference.Value })
-        ($save.Text -ceq $text) -and $acl.AreAccessRulesProtected -and (@($names | Where-Object { $_ -match 'Everyone|Users$|Authenticated' }).Count -eq 0)
+        # exactly the three the app grants (the user, Administrators, SYSTEM), compared as SIDs, and nobody else
+        $sids = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+        $allowedSids = @([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value, 'S-1-5-32-544', 'S-1-5-18')
+        ($save.Text -ceq $text) -and $acl.AreAccessRulesProtected -and (@($sids | Where-Object { $allowedSids -notcontains $_ }).Count -eq 0) -and ($sids.Count -ge 1)
     }
     Check 'the file system of the backup place is read as NTFS (what decides whether an unrestrictable key file is deleted)' { (Get-BitLockerPathFileSystem -Path $backup1) -ceq 'NTFS' }
     $verify = Test-BitLockerBackupText -Text $save.Text -Volumes $vols
@@ -280,23 +300,43 @@ try {
     Check 'the same re-check fails when the file is not the one that was checked' { $x = Test-BitLockerBackupStillGood -Path $backup1 -Hash 'NOT-THE-HASH' -BackedUpIds $coveredIds; (-not $x.Ok) -and $x.Stale }
     Check 'the same re-check fails when a key exists that the backup does not cover' { $x = Test-BitLockerBackupStillGood -Path $backup1 -Hash $save.Hash -BackedUpIds @($coveredIds | Select-Object -First ([math]::Max(0, $coveredIds.Count - 1))); (-not $x.Ok) -and $x.Stale }
     Check 'a backup saved on the drive being decrypted is flagged' { (Get-BitLockerBackupPlaceNote -Path ($target + '\x.txt') -Volumes $vols -Mounts @($target) -CloudRoots @()) -match 'about to be decrypted' }
-    Check 'a drive''s key set is the same between two reads' { (Get-BitLockerKeyIdSet -Volume $d) -ceq (Get-BitLockerKeyIdSet -Volume (ConvertTo-BitLockerVolumeDetail -Volume (Get-BitLockerVolume -MountPoint $target))) }
+    # what the dialog uses to know a drive is still THE drive (key IDs, size, type, volume ID): it must hold between two reads of a real volume
+    $d = Get-TestDetail      # as the dialog's own read gives it: with the volume's own ID
+    # Storage can lag behind BitLocker for a moment: a missing ID is read again for a few seconds before it counts as "Windows gives none"
+    foreach ($attempt in 1..8) { if ($d.VolumeId) { break }; Start-Sleep -Milliseconds 800; $d = Get-TestDetail }
+    $identity = Get-BitLockerDriveIdentity -Volume $d
+    Write-Log ("  INFO a drive's identity as Windows reports it: {0} key ID(s), size '{1}', type '{2}', volume ID {3}" -f @($identity.KeyIds).Count, $identity.Capacity, $identity.VolumeType, $(if ($identity.VolumeId) { "'" + $identity.VolumeId + "'" } else { '(none)' }))
+    Check 'Windows gives the throwaway drive a volume ID (the window uses it to tell look-alike drives apart)' { [bool]$identity.VolumeId -and ($identity.VolumeId -match '^\\\\\?\\Volume\{[0-9a-fA-F-]+\}\\$') }
+    Check 'a drive is recognised as the same drive between two reads (key IDs, size, type, volume ID)' { Test-BitLockerSameDrive -Identity $identity -Volume (Get-TestDetail) }
+    Check 'a drive of another size, another type or another volume is not recognised' {
+        $fake = Get-TestDetail
+        $fake.CapacityGB = 14.5
+        $other = Get-TestDetail
+        $other.VolumeType = 'OperatingSystem'
+        $clone = Get-TestDetail
+        $clone.VolumeId = '\\?\Volume{00000000-0000-0000-0000-00000000dead}\'
+        (-not (Test-BitLockerSameDrive -Identity $identity -Volume $fake)) -and (-not (Test-BitLockerSameDrive -Identity $identity -Volume $other)) -and (-not (Test-BitLockerSameDrive -Identity $identity -Volume $clone))
+    }
 
     # ================= 5. a drive with no recovery password: add one =================
     $recProtector = @($raw.KeyProtector | Where-Object { [string]$_.KeyProtectorType -eq 'RecoveryPassword' })[0]
     Assert-Target $target
     Remove-BitLockerKeyProtector -MountPoint $target -KeyProtectorId $recProtector.KeyProtectorId -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
-    $d2 = ConvertTo-BitLockerVolumeDetail -Volume (Get-BitLockerVolume -MountPoint $target)
+    $d2 = Get-TestDetail
     Check 'a drive left with only a password is reported as having no recovery password' { @(Get-BitLockerMountsWithoutRecoveryPassword -Volumes @($d2) -Mounts @($target)) -contains $target }
+    $identityBeforeAdd = Get-BitLockerDriveIdentity -Volume $d2
     Assert-Target $target
     $addOut = @(Add-BitLockerRecoveryProtector -MountPoint $target 3>&1)
     $addRes = @($addOut | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] -and $null -ne $_.PSObject.Properties['Ok'] })
     $addWarn = @($addOut | Where-Object { $_ -is [System.Management.Automation.WarningRecord] })
     Check 'adding a recovery password works, and Windows'' warning (which carries the new password) is not passed on' { ($addRes.Count -eq 1) -and ($addRes[0].Ok -eq $true) -and ($addWarn.Count -eq 0) }
-    $d3 = ConvertTo-BitLockerVolumeDetail -Volume (Get-BitLockerVolume -MountPoint $target)
+    $d3 = Get-TestDetail
     $newRec = @($d3.Protectors | Where-Object { $_.Type -eq 'RecoveryPassword' })
     Check 'the new recovery password exists, is well-formed and is a different one' { ($newRec.Count -eq 1) -and (Test-BitLockerRecoveryPasswordFormat -Candidate $newRec[0].RecoveryPassword) -and ($newRec[0].RecoveryPassword -cne $recPw) }
     Check 'a new key makes the earlier backup stale (the dialog would ask for a new one)' { -not (Test-BitLockerKeysCovered -Volumes @($d3) -BackedUpIds @(Get-BitLockerKeyIds -Volumes $vols)) }
+    Check 'the drive that got the recovery password is the same drive only when the added key is allowed for (the dialog allows it for that one step)' {
+        (Test-BitLockerSameDrive -Identity $identityBeforeAdd -Volume $d3 -AllowAddedKeys) -and (-not (Test-BitLockerSameDrive -Identity $identityBeforeAdd -Volume $d3))
+    }
 
     # the new backup the dialog would now insist on
     $vols = @($d3)
@@ -320,6 +360,8 @@ try {
     $rawL = Get-BitLockerVolume -MountPoint $target
     $dL = ConvertTo-BitLockerVolumeDetail -Volume $rawL
     Write-Log ("  INFO a locked drive as Windows reports it: VolumeStatus='{0}' ProtectionStatus='{1}' EncryptionPercentage='{2}' (empty = no value)" -f $rawL.VolumeStatus, $rawL.ProtectionStatus, $rawL.EncryptionPercentage)
+    $lockedIds = Get-BitLockerVolumeIdMap
+    Write-Log ("  INFO volume ID of the locked drive: {0}" -f $(if ($lockedIds.ContainsKey($target)) { "'" + $lockedIds[$target] + "'" } else { '(none - Get-Volume did not list the locked drive just now; with no ID the window compares size, type and keys only)' }))
     Check 'a locked drive is shown as Locked and is not offered' { ((Get-BitLockerStateText -Volume $dL) -like 'Locked*') -and (-not (Get-BitLockerDisableState -Volume $dL).CanDisable) }
     Assert-Target $target -Locked
     $refusal = Start-BitLockerDecrypt -MountPoint $target
@@ -335,22 +377,55 @@ try {
     Unlock-BitLocker -MountPoint $target -Password $pw -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
     Wait-Until -What "$target to report Unlocked" -Condition { [string](Get-BitLockerVolume -MountPoint $target).LockStatus -eq 'Unlocked' }
     Check 'unlocked again: the keys are unchanged, so the backup still covers them' {
-        $dU = ConvertTo-BitLockerVolumeDetail -Volume (Get-BitLockerVolume -MountPoint $target)
+        $dU = Get-TestDetail
         ($dU.VolumeStatus -eq 'FullyEncrypted') -and (Test-BitLockerKeysCovered -Volumes @($dU) -BackedUpIds $backedUpIds)
     }
+    # Is the volume ID the same after a lock and an unlock? Nothing documents it and the window does not rely on it (a locked drive
+    # is never offered, and after an unlock the list is refreshed, which takes the drive's identity anew) - so it is reported, not
+    # judged. Storage can take a moment to list the volume again.
+    $idAfterUnlock = ''
+    foreach ($attempt in 1..30) { $idAfterUnlock = [string](Get-BitLockerVolumeIdMap)[$target]; if ($idAfterUnlock) { break }; Start-Sleep -Seconds 1 }
+    Write-Log ("  INFO volume ID after the unlock: {0} ({1})" -f $(if ($idAfterUnlock) { "'" + $idAfterUnlock + "'" } else { '(none)' }), $(if ($idAfterUnlock -and ($idAfterUnlock -ceq [string]$identity.VolumeId)) { 'the same as before the lock' } else { 'NOT the same as before the lock, or not listed' }))
 
     # ================= 7. step 2 of the dialog: decrypt =================
     Assert-Target $target
+    # the window follows a decrypting drive by its size, type and volume ID (its key IDs disappear when it finishes): Windows must keep reporting all three
+    $beforeDecrypt = Get-TestDetail
+    $startCapacity = [string]$beforeDecrypt.CapacityGB
+    $startType = [string]$beforeDecrypt.VolumeType
+    $startVolumeId = [string]$beforeDecrypt.VolumeId
+    $identityDrift = ''
+    $idPolls = 0
+    $idSeen = 0
+    $rightIdentity = Get-BitLockerDriveIdentity -Volume $beforeDecrypt
+    # the last guard in Start-BitLockerDecrypt: an identity that is not this drive's is refused BEFORE Windows is asked to do anything
+    $wrongIdentity = Get-BitLockerDriveIdentity -Volume $beforeDecrypt
+    $wrongIdentity.KeyIds = @('{00000000-0000-0000-0000-00000000dead}')
+    Assert-Target $target
+    $wrongTry = Start-BitLockerDecrypt -MountPoint $target -ExpectedIdentity $wrongIdentity
+    Check 'Start-BitLockerDecrypt refuses a drive that is not the one that was confirmed, and nothing is decrypted' { (-not $wrongTry.Ok) -and ($wrongTry.Error -match 'not the drive that was confirmed') -and ([string](Get-BitLockerVolume -MountPoint $target).VolumeStatus -eq 'FullyEncrypted') }
     $startedAt = Get-Date
-    $r = Start-BitLockerDecrypt -MountPoint $target
-    Check 'Start-BitLockerDecrypt starts decrypting the throwaway drive' { if (-not $r.Ok) { throw $r.Error }; $r.ClearedAutoUnlock -eq $false }
+    Assert-Target $target
+    $r = Start-BitLockerDecrypt -MountPoint $target -ExpectedIdentity $rightIdentity
+    Check 'Start-BitLockerDecrypt starts decrypting the throwaway drive (given the identity of the drive that was confirmed)' { if (-not $r.Ok) { throw $r.Error }; $r.ClearedAutoUnlock -eq $false }
     $seen = New-Object System.Collections.Generic.List[string]
     $pauseTried = $false
     $startState = [pscustomobject]@{ At = $startedAt; StartPercent = 100 }
     $deadline = (Get-Date).AddSeconds(420)
     $final = $null
     while ($r.Ok) {
-        $cur = ConvertTo-BitLockerVolumeDetail -Volume (Get-BitLockerVolume -MountPoint $target)
+        try { $cur = Get-TestDetail } catch {
+            # a read that keeps failing is not a reason to abandon a decryption that is under way: wait for it, until the deadline
+            Write-Log "  INFO could not read the drive just now: $($_.Exception.Message)"
+            if ((Get-Date) -gt $deadline) { break }
+            continue
+        }
+        $idPolls++
+        if ([string]$cur.VolumeId) { $idSeen++ }
+        # an ID that cannot be read in one poll proves nothing (the window treats it the same way); an ID that is read and differs is a change
+        if (-not $identityDrift -and ([string]$cur.CapacityGB -cne $startCapacity -or [string]$cur.VolumeType -cne $startType -or ($startVolumeId -and [string]$cur.VolumeId -and [string]$cur.VolumeId -cne $startVolumeId))) {
+            $identityDrift = ("size '{0}' (was '{1}'), type '{2}' (was '{3}') and volume ID '{4}' (was '{5}') while the status was {6}" -f $cur.CapacityGB, $startCapacity, $cur.VolumeType, $startType, $cur.VolumeId, $startVolumeId, $cur.VolumeStatus)
+        }
         $line = Get-BitLockerProgressText -Volume $cur -Started $startState -Now (Get-Date)
         if (-not $seen.Contains($line)) { $seen.Add($line); Write-Log "  INFO progress text: $line (status $($cur.VolumeStatus), protection $($cur.ProtectionStatus))" }
         if ($cur.VolumeStatus -eq 'DecryptionInProgress' -and $cur.ProtectionStatus -ne 'Off') { Write-Log '  INFO note: protection was not Off while decrypting, so the confirmation text "protection is already off" is wrong' }
@@ -384,6 +459,8 @@ try {
         Start-Sleep -Seconds 1
     }
     Check 'the drive reaches FullyDecrypted' { $null -ne $final }
+    Write-Log ("  INFO the volume ID could be read in {0} of {1} polls while the drive decrypted" -f $idSeen, $idPolls)
+    Check 'the size and type Windows reports do not change while the drive decrypts or when it is done, and a volume ID that is read stays the same (the window relies on that to follow the same drive)' { if ($identityDrift) { throw $identityDrift }; $true }
     if ($final) {
         Write-Log ("  INFO decrypting took {0}" -f (Get-BitLockerElapsedText -Span ((Get-Date) - $startedAt)))
         Check 'when decryption finished Windows had removed every key protector (the dialog says so)' { @($final.Protectors).Count -eq 0 }
@@ -399,11 +476,13 @@ try {
         Write-Log ("  INFO Windows' own error when asked to decrypt a drive that is not encrypted: threw={0} 0x{1:X8} - {2}" -f ($null -ne $notOnErr), $notOnHr, $notOnMsg)
     }
 
-    # ================= 8. a drive letter that does not exist =================
+    # ================= 8. a drive letter that does not exist (READ-ONLY: nothing is asked to decrypt anything here) =================
     $free = Get-BlTestFreeDriveLetter
-    $null = Assert-BlTestLetterFree -Letter $free      # throws (and so stops the step) when anything uses that letter any more: this call must hit nothing
-    $ghost = Start-BitLockerDecrypt -MountPoint ($free + ':')
-    Check 'a drive letter that does not exist is reported, not decrypted' { (-not $ghost.Ok) -and [bool]$ghost.Error }
+    $null = Assert-BlTestLetterFree -Letter $free      # throws (and so stops the step) when anything uses that letter any more
+    $ghostErr = $null
+    try { $null = Get-BitLockerVolume -MountPoint ($free + ':') -ErrorAction Stop } catch { $ghostErr = $_ }
+    Write-Log ("  INFO Windows' own error for a drive letter that has no volume: {0}" -f $(if ($ghostErr) { [string]$ghostErr.Exception.Message } else { '(no error)' }))
+    Check 'Windows reports a drive letter with no volume as an error (read-only probe)' { $null -ne $ghostErr }
 
 } catch {
     $script:Failed++
@@ -439,6 +518,12 @@ finally {
     }
     $leftover = @(Get-ChildItem -LiteralPath (Get-BlTestFolder) -Filter 'BLTEST-*.vhdx' -File -ErrorAction SilentlyContinue)
     Write-Log ('Test VHDX files left behind: {0}' -f $leftover.Count)
+    # a throwaway disk that could not be removed is a FAILURE (a green result must not hide an attached disk and a 1 GB file)
+    if ($leftover.Count -gt 0) {
+        $script:Failed++
+        $script:FailedNames.Add('the throwaway VHDX was removed')
+        Write-Log "FAIL  $($leftover.Count) throwaway VHDX file(s) are still there. Clean up with:  powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -CleanupOnly   (elevated)"
+    }
     Write-Log ('RESULT: {0} passed, {1} failed' -f $script:Passed, $script:Failed)
     if ($script:Failed -gt 0) { Write-Log ('Failed: ' + ($script:FailedNames -join ' | ')) }
     if ($Pause) { Read-Host 'Press Enter to close' | Out-Null }

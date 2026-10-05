@@ -21,7 +21,16 @@ phases 0-3 and part of phase 4 (optional items were deliberately not built):
   cannot hand back) to a file you choose, reads the file back and checks it (including that
   each recovery password is well-formed) - and only then does the button that decrypts the
   ticked drives become available. Nothing is ever ticked for you, and a tick stays with the
-  drive you ticked (a stick that takes over its drive letter is refused). The backup is checked
+  drive you ticked, not with its letter: each row remembers its drive's key IDs, size, type and
+  (when Windows tells it) volume ID, and a different drive that takes over the letter (a stick
+  swapped while a message box is open, or between two refreshes) is unticked and refused - on
+  Refresh, at both buttons, before a recovery password is added, and again for each drive just
+  before it is decrypted. The progress follower goes by size, type and volume ID too: a drive
+  that was pulled and replaced by a different one is reported as gone, not as "finished" (a
+  drive is reported as finished once, and only while no other drive has its letter), and an
+  unplugged drive that comes back is only taken up again when its volume ID proves it is the
+  same one; what the person was told when a decrypt started (auto-unlock keys cleared, a setting
+  that could not be written) is kept in the status shown when the drives finish. The backup is checked
   again right before each drive is decrypted (a USB stick can be pulled, or a key added, while
   the confirmation box is open). The file is created and held locked while its permissions are
   restricted and the keys are written, an existing file is never overwritten, and a file that
@@ -40,7 +49,7 @@ phases 0-3 and part of phase 4 (optional items were deliberately not built):
   are listed but not offered, with the reason. A volume BitLocker cannot read is said to be
   missing from the backup, on screen and in the file. Nothing here turns BitLocker on, and no
   recovery password is ever written to a log or a message box. What was done is recorded in
-  `bitlocker-actions.log` (in `C:\ProgramData\Gr3yTools\audit`, writable only by
+  `bitlocker-actions.log` (in `C:\ProgramData\Gr3yTools-audit`, writable only by
   administrators, when the app runs elevated).
 - **Guest-code expiry and codes you choose.** In **Manage Access Codes...** a code can expire
   on its own (1 hour, 8 hours, 1 day, 7 days, 30 days, never, or a custom number of hours), the

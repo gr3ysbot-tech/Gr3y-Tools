@@ -14,7 +14,7 @@ Describe 'Disable BitLocker helpers' {
             'Get-BitLockerDisableState', 'Get-BitLockerProtectorSummary', 'Get-BitLockerKeyIds', 'Test-BitLockerKeysCovered',
             'Get-BitLockerMountsWithoutRecoveryPassword', 'New-BitLockerBackupText', 'Test-BitLockerRecoveryPasswordFormat',
             'Test-BitLockerBackupText', 'Get-BitLockerBackupPlaceNote', 'Get-BitLockerDefaultBackupFolder', 'Test-BitLockerBackupPath', 'Test-BitLockerBackupStillGood',
-            'Get-BitLockerKeyIdSet', 'Get-RunningToolJobs', 'Get-BitLockerPathFileSystem', 'Save-BitLockerBackupFile', 'Get-BitLockerRawOutput', 'Get-BitLockerAuditFolder', 'Write-BitLockerActionLog',
+            'Get-BitLockerVolumeIdMap', 'Get-BitLockerDriveIdentity', 'Test-BitLockerSameDrive', 'Get-RunningToolJobs', 'Get-BitLockerPathFileSystem', 'Save-BitLockerBackupFile', 'Get-BitLockerRawOutput', 'Get-BitLockerAuditFolder', 'Write-BitLockerActionLog',
             'Get-BitLockerFriendlyError', 'Clear-BitLockerStoredAutoUnlock', 'Start-BitLockerDecrypt', 'Add-BitLockerRecoveryProtector',
             'Get-PreventDeviceEncryptionValue', 'Set-PreventDeviceEncryption', 'Test-BitLockerPolicyPresent', 'Test-BitLockerManagedText', 'Get-BitLockerDecryptWarnings',
             'Get-BitLockerDecryptOrder', 'Get-BitLockerAutoUnlockAffected', 'Get-BitLockerElapsedText', 'Get-BitLockerProgressText',
@@ -69,6 +69,16 @@ Describe 'Disable BitLocker helpers' {
             if ($args -contains '-status') { return 'FAKE STATUS OUTPUT' }
             return "FAKE PROTECTORS FOR $($args[-1])"
         }
+        # the Storage module's Get-Volume: only what a test puts in $script:fake.VolumeIds (letter -> volume ID) - never this PC's volumes
+        function Get-Volume {
+            [CmdletBinding()]
+            param()
+            $script:fake.VolumeCalls++
+            if ($script:fake.VolumeThrows) { throw $script:fake.VolumeThrows }
+            foreach ($k in @($script:fake.VolumeIds.Keys)) { [pscustomobject]@{ DriveLetter = [char]([string]$k)[0]; UniqueId = [string]$script:fake.VolumeIds[$k] } }
+            # a volume that has no drive letter (a recovery partition) is in the list too
+            [pscustomobject]@{ DriveLetter = [char]0; UniqueId = '\\?\Volume{00000000-0000-0000-0000-00000000dead}\' }
+        }
 
         function New-FakeProtector([string]$Type, [string]$Id, [string]$Password, [string]$KeyFile, [bool]$AutoUnlock = $false) {
             $o = [pscustomobject]@{ KeyProtectorType = $Type; KeyProtectorId = $Id; AutoUnlockProtector = $AutoUnlock }
@@ -88,7 +98,7 @@ Describe 'Disable BitLocker helpers' {
     }
 
     BeforeEach {
-        $script:fake = @{ Volumes = @(); GetThrows = $null; WriteError = $null; DisableCalls = @(); DisableThrows = $null; AddCalls = @(); AddThrows = $null; ClearCalls = 0; ClearThrows = $null; ClearIsNoOp = $false }
+        $script:fake = @{ Volumes = @(); GetThrows = $null; WriteError = $null; DisableCalls = @(); DisableThrows = $null; AddCalls = @(); AddThrows = $null; ClearCalls = 0; ClearThrows = $null; ClearIsNoOp = $false; VolumeIds = @{}; VolumeThrows = $null; VolumeCalls = 0 }
     }
 
     Context 'ConvertTo-BitLockerVolumeDetail' {
@@ -491,6 +501,23 @@ Describe 'Disable BitLocker helpers' {
             # a folder that merely starts with the same letters is not inside OneDrive
             Get-BitLockerBackupPlaceNote -Path 'E:\OneDrive - Acme2\k.txt' -Volumes $script:placeVols -Mounts @('C:') -CloudRoots @('E:\OneDrive - Acme') | Should -BeNullOrEmpty
         }
+
+        It 'judges the path the way Windows resolves it: forward slashes, dot segments, and this PC''s DNS name on its administrative share' {
+            # forward slashes are accepted by Windows and mean the same place
+            Get-BitLockerBackupPlaceNote -Path 'C:/Users/x/k.txt' -Volumes $script:placeVols -Mounts @('C:') -CloudRoots @() | Should -Match 'about to be decrypted'
+            # ".." and "." segments lead out of (or into) OneDrive
+            Get-BitLockerBackupPlaceNote -Path 'C:\Users\x\..\..\OneDrive\k.txt' -Volumes $script:placeVols -Mounts @('E:') -CloudRoots @('C:\OneDrive') | Should -Match 'inside OneDrive'
+            Get-BitLockerBackupPlaceNote -Path 'E:\Backups\.\k.txt' -Volumes $script:placeVols -Mounts @('C:') -CloudRoots @() | Should -BeNullOrEmpty
+            # a path that climbs above its root stays on its own drive
+            Get-BitLockerBackupPlaceNote -Path 'E:\a\..\..\..\k.txt' -Volumes $script:placeVols -Mounts @('C:') -CloudRoots @() | Should -BeNullOrEmpty
+            # \\<this PC>.<its DNS domain>\C$ is this PC's C: too
+            $oldDns = $env:USERDNSDOMAIN
+            try {
+                $env:USERDNSDOMAIN = 'corp.example.com'
+                Get-BitLockerBackupPlaceNote -Path ("\\$env:COMPUTERNAME.corp.example.com\C`$\x.txt") -Volumes $script:placeVols -Mounts @('C:') -CloudRoots @() | Should -Match 'about to be decrypted'
+                Get-BitLockerBackupPlaceNote -Path ("\\other.corp.example.com\C`$\x.txt") -Volumes $script:placeVols -Mounts @('C:') -CloudRoots @() | Should -BeNullOrEmpty
+            } finally { $env:USERDNSDOMAIN = $oldDns }
+        }
     }
 
     Context 'which folder is offered for the backup' {
@@ -578,10 +605,60 @@ Describe 'Disable BitLocker helpers' {
             Get-BitLockerPathFileSystem -Path "${free}:\no\such\folder" | Should -Be ''
         }
 
-        It 'sorts a drive''s key IDs into one comparable text' {
-            $v = ConvertTo-BitLockerVolumeDetail -Volume (New-FakeVolume -Mount 'C:' -Protectors @((New-FakeProtector 'Tpm' '{B}'), (New-FakeProtector 'RecoveryPassword' '{A}' $script:pwdC)))
-            Get-BitLockerKeyIdSet -Volume $v | Should -BeExactly '{A},{B}'
-            Get-BitLockerKeyIdSet -Volume (ConvertTo-BitLockerVolumeDetail -Volume (New-FakeVolume -Mount 'D:' -Protectors $null)) | Should -BeExactly ''
+        It 'never deletes a file that was already there, even when the check for an existing file wrongly said there was none' {
+            $script:racedPath = Join-Path $TestDrive 'raced.txt'
+            Set-Content -LiteralPath $script:racedPath -Value 'EARLIER BACKUP' -Encoding ASCII
+            # a stale answer (a share's cached directory listing, a file that appears a moment later): Test-Path says "no such file"
+            function Test-Path {
+                param([string]$LiteralPath, [string]$PathType)
+                if ($LiteralPath -eq $script:racedPath) { return $false }
+                if ($PathType) { return (Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath -PathType $PathType) }
+                return (Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath)
+            }
+            $r = Test-BitLockerBackupPath -Path $script:racedPath
+            $r.Ok | Should -BeFalse
+            $r.Error | Should -Match 'You cannot save a file with that name there'
+            $r.Error | Should -Not -Match 'Exception calling' -Because 'the reason is given in plain words, not as a .NET call'
+            [System.IO.File]::Exists($script:racedPath) | Should -BeTrue -Because 'the probe must only ever delete the file it made itself'
+            [System.IO.File]::ReadAllText($script:racedPath).Trim() | Should -Be 'EARLIER BACKUP'
+        }
+
+        It 'tries again when the empty test file cannot be removed at once, and says exactly which file is left when it never can' {
+            $script:removeTries = 0
+            $busyOnce = Join-Path $TestDrive 'busy-once.txt'
+            $r = Test-BitLockerBackupPath -Path $busyOnce -RemoveFile { param($p) $script:removeTries++; if ($script:removeTries -lt 3) { throw 'busy for a moment (stand-in)' }; [System.IO.File]::Delete($p) }
+            $r.Ok | Should -BeTrue
+            $script:removeTries | Should -Be 3
+            [System.IO.File]::Exists($busyOnce) | Should -BeFalse
+            $script:removeTries = 0
+            $held = Join-Path $TestDrive 'held.txt'
+            $r = Test-BitLockerBackupPath -Path $held -RemoveFile { param($p) $script:removeTries++; throw 'held by a virus scanner (stand-in)' }
+            $r.Ok | Should -BeFalse
+            $r.Error | Should -Match 'A test file could not be removed again'
+            $r.Error | Should -Match ([regex]::Escape($held))
+            $script:removeTries | Should -Be 5
+            # the empty file is really there now (this check made it), and its name is refused until it is gone
+            [System.IO.File]::Exists($held) | Should -BeTrue
+            (Test-BitLockerBackupPath -Path $held).Error | Should -Match 'already exists'
+        }
+
+        It 'says why in plain words (not as a .NET call), and names a file with a colon the way it was typed' {
+            $r = Test-BitLockerBackupPath -Path "$TestDrive\a:b.txt"
+            $r.Ok | Should -BeFalse
+            $r.Error | Should -Match 'not a usable file name: a:b\.txt$'
+            $tooLong = "$TestDrive\" + ('a' * 300) + '.txt'
+            (Test-BitLockerBackupPath -Path $tooLong).Error | Should -Not -Match 'Exception calling'
+            (Test-BitLockerBackupPath -Path (Join-Path $script:blockedRoot 'x.txt')).Error | Should -Not -Match 'Exception calling'
+        }
+
+        It 'gives nothing for a drive letter that is mapped to a share, whatever file system the server reports, and the real one for a local drive' {
+            function New-Object { param($TypeName, $ArgumentList) return [pscustomobject]@{ DriveType = 'Network'; DriveFormat = 'NTFS' } }
+            Get-BitLockerPathFileSystem -Path 'Z:\x\y.txt' | Should -Be ''
+            function New-Object { param($TypeName, $ArgumentList) return [pscustomobject]@{ DriveType = 'Fixed'; DriveFormat = 'ReFS' } }
+            Get-BitLockerPathFileSystem -Path 'D:\x\y.txt' | Should -Be 'ReFS'
+            function New-Object { param($TypeName, $ArgumentList) throw 'no such drive' }
+            { Get-BitLockerPathFileSystem -Path 'D:\x\y.txt' } | Should -Not -Throw
+            Get-BitLockerPathFileSystem -Path 'D:\x\y.txt' | Should -Be ''
         }
 
         It 'says the backup is still good only while the file, its hash and the keys all match' {
@@ -608,6 +685,96 @@ Describe 'Disable BitLocker helpers' {
             $script:fake.GetThrows = 'WMI hiccup'
             $hiccup = Test-BitLockerBackupStillGood -Path $path -Hash $save.Hash -BackedUpIds $ids
             $hiccup.Ok | Should -BeFalse; $hiccup.Stale | Should -BeFalse; $hiccup.Reason | Should -Match 'Could not read BitLocker status'
+        }
+    }
+
+    Context 'telling one drive from another (a drive letter can be given to a different drive at any time)' {
+        BeforeAll {
+            function New-IdVolume([string]$Mount = 'D:', [string]$Type = 'Data', [double]$Size = 931.5, $Protectors = @((New-FakeProtector 'Tpm' '{B}'), (New-FakeProtector 'RecoveryPassword' '{A}' $script:pwdC)), [string]$Status = 'FullyEncrypted', [string]$VolumeId = '') {
+                $raw = New-FakeVolume -Mount $Mount -Type $Type -Status $Status -Protectors $Protectors
+                $raw.CapacityGB = $Size
+                $detail = ConvertTo-BitLockerVolumeDetail -Volume $raw
+                $detail.VolumeId = $VolumeId
+                return $detail
+            }
+        }
+
+        It 'asks Windows for every volume''s own ID once, keyed by drive letter, and never throws' {
+            $script:fake.VolumeIds = @{ 'c' = '\\?\Volume{C-ID}\'; 'D' = '\\?\Volume{D-ID}\' }
+            $map = Get-BitLockerVolumeIdMap
+            $map['C:'] | Should -Be '\\?\Volume{C-ID}\'
+            $map['D:'] | Should -Be '\\?\Volume{D-ID}\'
+            $map.Count | Should -Be 2 -Because 'a volume with no drive letter has no key'
+            $script:fake.VolumeThrows = 'the Storage module is not available (stand-in)'
+            { Get-BitLockerVolumeIdMap } | Should -Not -Throw
+            (Get-BitLockerVolumeIdMap).Count | Should -Be 0
+        }
+
+        It 'gives every volume it lists its own ID, and an empty one when Windows has none for it' {
+            $script:fake.Volumes = @((New-FakeVolume -Mount 'C:' -Protectors @((New-FakeProtector 'Tpm' $script:idTpm))), (New-FakeVolume -Mount 'D:' -Type 'Data' -Protectors @((New-FakeProtector 'RecoveryPassword' $script:idRec $script:pwdC))))
+            $script:fake.VolumeIds = @{ 'C' = '\\?\Volume{C-ID}\' }
+            $vols = @((Get-BitLockerVolumeDetail).Volumes)
+            $script:fake.VolumeCalls | Should -Be 1 -Because 'one query for all the volumes, not one per volume (each costs real time on every refresh and every tick)'
+            ($vols | Where-Object { $_.MountPoint -eq 'C:' }).VolumeId | Should -Be '\\?\Volume{C-ID}\'
+            ($vols | Where-Object { $_.MountPoint -eq 'D:' }).VolumeId | Should -Be ''
+            # no ID source at all: the volumes are still listed
+            $script:fake.VolumeThrows = 'stand-in'
+            $again = Get-BitLockerVolumeDetail
+            $again.Error | Should -BeNullOrEmpty
+            @($again.Volumes).Count | Should -Be 2
+            @($again.Volumes | Where-Object { $_.VolumeId }).Count | Should -Be 0
+        }
+
+        It 'tells two drives of the same size apart by their volume ID, but only when both sides know it' {
+            $id = Get-BitLockerDriveIdentity -Volume (New-IdVolume -VolumeId '\\?\Volume{ONE}\')
+            $id.VolumeId | Should -Be '\\?\Volume{ONE}\'
+            Test-BitLockerSameDrive -Identity $id -Volume (New-IdVolume -VolumeId '\\?\Volume{ONE}\') | Should -BeTrue
+            Test-BitLockerSameDrive -Identity $id -Volume (New-IdVolume -VolumeId '\\?\Volume{TWO}\') | Should -BeFalse -Because 'same keys, size and type, but another volume'
+            Test-BitLockerSameDrive -Identity $id -Volume (New-IdVolume -VolumeId '\\?\Volume{ONE}\' -Protectors @()) | Should -BeFalse -Because 'the keys must still match'
+            # an ID Windows could not give this time (or the first time) proves nothing either way
+            Test-BitLockerSameDrive -Identity $id -Volume (New-IdVolume) | Should -BeTrue
+            Test-BitLockerSameDrive -Identity (Get-BitLockerDriveIdentity -Volume (New-IdVolume)) -Volume (New-IdVolume -VolumeId '\\?\Volume{TWO}\') | Should -BeTrue
+            # allowing for a recovery password that was added on purpose does not excuse another volume
+            $extended = New-IdVolume -VolumeId '\\?\Volume{TWO}\' -Protectors @((New-FakeProtector 'Tpm' '{B}'), (New-FakeProtector 'RecoveryPassword' '{A}' $script:pwdC), (New-FakeProtector 'RecoveryPassword' '{ADDED}' $script:pwdC))
+            Test-BitLockerSameDrive -Identity $id -Volume $extended -AllowAddedKeys | Should -BeFalse
+        }
+
+        It 'takes a drive''s sorted key IDs, its size and its type as what the drive is' {
+            $id = Get-BitLockerDriveIdentity -Volume (New-IdVolume)
+            ($id.KeyIds -join ',') | Should -BeExactly '{A},{B}'
+            $id.Capacity | Should -Be '931.5'
+            $id.VolumeType | Should -Be 'Data'
+            # a drive with no key protectors still has a size and a type
+            $bare = Get-BitLockerDriveIdentity -Volume (New-IdVolume -Protectors @() -Status 'FullyDecrypted')
+            @($bare.KeyIds).Count | Should -Be 0
+            $bare.Capacity | Should -Be '931.5'
+        }
+
+        It 'recognises the same drive again, whatever its progress, state or the order its keys come in' {
+            $id = Get-BitLockerDriveIdentity -Volume (New-IdVolume)
+            Test-BitLockerSameDrive -Identity $id -Volume (New-IdVolume) | Should -BeTrue
+            Test-BitLockerSameDrive -Identity $id -Volume (New-IdVolume -Status 'DecryptionInProgress') | Should -BeTrue
+            Test-BitLockerSameDrive -Identity $id -Volume (New-IdVolume -Protectors @((New-FakeProtector 'RecoveryPassword' '{A}' $script:pwdC), (New-FakeProtector 'Tpm' '{B}'))) | Should -BeTrue
+        }
+
+        It 'does not recognise a drive with other keys, another size or another type - or no drive at all' {
+            $id = Get-BitLockerDriveIdentity -Volume (New-IdVolume)
+            Test-BitLockerSameDrive -Identity $id -Volume (New-IdVolume -Protectors @((New-FakeProtector 'Tpm' '{B}'), (New-FakeProtector 'RecoveryPassword' '{OTHER}' $script:pwdC))) | Should -BeFalse
+            Test-BitLockerSameDrive -Identity $id -Volume (New-IdVolume -Protectors @((New-FakeProtector 'Tpm' '{B}'))) | Should -BeFalse -Because 'a key that is gone'
+            Test-BitLockerSameDrive -Identity $id -Volume (New-IdVolume -Protectors @((New-FakeProtector 'Tpm' '{B}'), (New-FakeProtector 'RecoveryPassword' '{A}' $script:pwdC), (New-FakeProtector 'RecoveryPassword' '{C}' $script:pwdC))) | Should -BeFalse -Because 'a key that appeared'
+            Test-BitLockerSameDrive -Identity $id -Volume (New-IdVolume -Size 14.5) | Should -BeFalse
+            Test-BitLockerSameDrive -Identity $id -Volume (New-IdVolume -Type 'OperatingSystem') | Should -BeFalse
+            Test-BitLockerSameDrive -Identity $id -Volume $null | Should -BeFalse
+            Test-BitLockerSameDrive -Identity $null -Volume (New-IdVolume) | Should -BeFalse
+        }
+
+        It 'lets a recovery password that was added on purpose extend the keys, but never lets a key go' {
+            $id = Get-BitLockerDriveIdentity -Volume (New-IdVolume)
+            $extended = New-IdVolume -Protectors @((New-FakeProtector 'Tpm' '{B}'), (New-FakeProtector 'RecoveryPassword' '{A}' $script:pwdC), (New-FakeProtector 'RecoveryPassword' '{ADDED}' $script:pwdC))
+            Test-BitLockerSameDrive -Identity $id -Volume $extended -AllowAddedKeys | Should -BeTrue
+            Test-BitLockerSameDrive -Identity $id -Volume $extended | Should -BeFalse
+            Test-BitLockerSameDrive -Identity $id -Volume (New-IdVolume -Protectors @((New-FakeProtector 'RecoveryPassword' '{ADDED}' $script:pwdC), (New-FakeProtector 'Tpm' '{B}'))) -AllowAddedKeys | Should -BeFalse -Because '{A} is gone'
+            Test-BitLockerSameDrive -Identity $id -Volume (New-IdVolume -Size 14.5 -Protectors @((New-FakeProtector 'Tpm' '{B}'), (New-FakeProtector 'RecoveryPassword' '{A}' $script:pwdC), (New-FakeProtector 'RecoveryPassword' '{ADDED}' $script:pwdC))) -AllowAddedKeys | Should -BeFalse -Because 'the size is different'
         }
     }
 
@@ -694,6 +861,26 @@ Describe 'Disable BitLocker helpers' {
             $r.Text | Should -BeExactly $script:text2
         }
 
+        It 'treats a ReFS drive like an NTFS one (it holds permissions, so a file that cannot be restricted is deleted)' {
+            function icacls.exe { $global:LASTEXITCODE = 5; 'Access is denied.' }
+            function Get-BitLockerPathFileSystem { 'ReFS' }
+            $path = Join-Path $TestDrive 'acl-fails-refs.txt'
+            $r = Save-BitLockerBackupFile -Path $path -Text $script:text2
+            $r.Ok | Should -BeFalse
+            $r.Error | Should -Match 'deleted'
+            Test-Path -LiteralPath $path | Should -BeFalse
+        }
+
+        It 'only warns when the kind of drive cannot be told (a drive letter mapped to a share): the file is kept and the person is told' {
+            function icacls.exe { $global:LASTEXITCODE = 5; 'Access is denied.' }
+            function Get-BitLockerPathFileSystem { '' }
+            $path = Join-Path $TestDrive 'acl-fails-unknown.txt'
+            $r = Save-BitLockerBackupFile -Path $path -Text $script:text2
+            $r.Ok | Should -BeTrue
+            $r.AclWarning | Should -Match 'Could not restrict who can read the file'
+            Test-Path -LiteralPath $path | Should -BeTrue
+        }
+
         It 'holds the file locked while it is made, so it cannot be deleted or swapped for another between the steps' {
             $script:swap = ''
             function icacls.exe {
@@ -767,6 +954,46 @@ Describe 'Disable BitLocker helpers' {
                 $r.Ok | Should -BeFalse
                 $r.Error | Should -Match 'cannot be decrypted now'
             }
+            $script:fake.DisableCalls.Count | Should -Be 0
+        }
+
+        It 'given the identity of the drive that was confirmed, decrypts that drive and refuses any other one on the letter - before anything is decrypted' {
+            $script:fake.Volumes = @(New-FakeVolume -Mount 'D:' -Type 'Data' -Protectors @((New-FakeProtector 'RecoveryPassword' $script:idRec $script:pwdC)))
+            $script:fake.VolumeIds = @{ 'D' = '\\?\Volume{ONE}\' }
+            $identity = Get-BitLockerDriveIdentity -Volume (@((Get-BitLockerVolumeDetail).Volumes)[0])
+            $identity.VolumeId | Should -Be '\\?\Volume{ONE}\'
+            $same = Start-BitLockerDecrypt -MountPoint 'D:' -ExpectedIdentity $identity
+            $same.Ok | Should -BeTrue
+            @($script:fake.DisableCalls) -join ',' | Should -Be 'D:'
+            # another volume with the same keys, size and type (a clone): refused
+            $script:fake.DisableCalls = @()
+            $script:fake.VolumeIds = @{ 'D' = '\\?\Volume{TWO}\' }
+            $clone = Start-BitLockerDecrypt -MountPoint 'D:' -ExpectedIdentity $identity
+            $clone.Ok | Should -BeFalse
+            $clone.Error | Should -Match 'not the drive that was confirmed'
+            # a drive with other keys: refused, whatever Windows says about its volume
+            $script:fake.VolumeIds = @{ 'D' = '\\?\Volume{ONE}\' }
+            $script:fake.Volumes = @(New-FakeVolume -Mount 'D:' -Type 'Data' -Protectors @((New-FakeProtector 'RecoveryPassword' '{OTHER}' $script:pwdC)))
+            (Start-BitLockerDecrypt -MountPoint 'D:' -ExpectedIdentity $identity).Ok | Should -BeFalse
+            $script:fake.DisableCalls.Count | Should -Be 0
+            # no ID from Windows: size, type and keys still decide
+            $script:fake.VolumeThrows = 'stand-in'
+            $script:fake.Volumes = @(New-FakeVolume -Mount 'D:' -Type 'Data' -Protectors @((New-FakeProtector 'RecoveryPassword' $script:idRec $script:pwdC)))
+            (Start-BitLockerDecrypt -MountPoint 'D:' -ExpectedIdentity $identity).Ok | Should -BeTrue
+            # without an identity nothing is compared (the old behaviour)
+            $script:fake.DisableCalls = @()
+            $script:fake.VolumeIds = @{ 'D' = '\\?\Volume{THREE}\' }; $script:fake.VolumeThrows = $null
+            (Start-BitLockerDecrypt -MountPoint 'D:').Ok | Should -BeTrue
+        }
+
+        It 'does not clear the auto-unlock keys for a drive that is not the one that was confirmed' {
+            $script:fake.Volumes = @(New-FakeVolume -Mount 'C:' -AutoUnlockKeyStored $true -Protectors @((New-FakeProtector 'Tpm' $script:idTpm)))
+            $identity = Get-BitLockerDriveIdentity -Volume (@((Get-BitLockerVolumeDetail).Volumes)[0])
+            $script:fake.Volumes = @(New-FakeVolume -Mount 'C:' -AutoUnlockKeyStored $true -Protectors @((New-FakeProtector 'Tpm' '{ANOTHER-PC}')))
+            $r = Start-BitLockerDecrypt -MountPoint 'C:' -ClearAutoUnlock -ExpectedIdentity $identity
+            $r.Ok | Should -BeFalse
+            $r.ClearedAutoUnlock | Should -BeFalse
+            $script:fake.ClearCalls | Should -Be 0
             $script:fake.DisableCalls.Count | Should -Be 0
         }
 
@@ -1039,7 +1266,7 @@ Describe 'Disable BitLocker helpers' {
             try {
                 New-Item -ItemType Directory -Path $env:ProgramData | Out-Null
                 Get-BitLockerAuditFolder | Should -BeNullOrEmpty
-                Test-Path -LiteralPath (Join-Path $env:ProgramData 'Gr3yTools') | Should -BeFalse
+                Test-Path -LiteralPath (Join-Path $env:ProgramData 'Gr3yTools-audit') | Should -BeFalse
             } finally { $env:ProgramData = $oldPd }
         }
 
@@ -1052,7 +1279,7 @@ Describe 'Disable BitLocker helpers' {
                 New-Item -ItemType Directory -Path $env:ProgramData | Out-Null
                 Write-BitLockerActionLog "Key backup saved: $TestDrive\Sicherung-$([char]0xE4).txt"
                 Write-BitLockerActionLog 'Decryption started: C:'
-                $audit = Join-Path $env:ProgramData 'Gr3yTools\audit'
+                $audit = Join-Path $env:ProgramData 'Gr3yTools-audit'      # a folder of its own: not inside ProgramData\Gr3yTools, where the Dell credentials file is put by hand
                 $logFile = Join-Path $audit 'bitlocker-actions.log'
                 Test-Path -LiteralPath $logFile | Should -BeTrue
                 $log = [System.IO.File]::ReadAllText($logFile, (New-Object System.Text.UTF8Encoding($false)))
@@ -1115,12 +1342,12 @@ Describe 'Disable BitLocker helpers' {
                 $audit | Should -Not -BeNullOrEmpty
                 & icacls.exe $audit '/grant' '*S-1-5-32-545:(OI)(CI)R' | Out-Null
                 Get-BitLockerAuditFolder | Should -BeNullOrEmpty
-                # a Gr3yTools folder that is really a junction to somewhere else is not trusted either
+                # an audit folder that is really a junction to somewhere else is not trusted either
                 $env:ProgramData = Join-Path $TestDrive 'ProgramDataTrust2'
                 New-Item -ItemType Directory -Path $env:ProgramData | Out-Null
                 $elsewhere = Join-Path $TestDrive 'elsewhere'
                 New-Item -ItemType Directory -Path $elsewhere | Out-Null
-                & cmd.exe /c mklink /J "$env:ProgramData\Gr3yTools" $elsewhere | Out-Null
+                & cmd.exe /c mklink /J "$env:ProgramData\Gr3yTools-audit" $elsewhere | Out-Null
                 Get-BitLockerAuditFolder | Should -BeNullOrEmpty
                 # a folder whose permissions are inherited again (no longer protected) is not trusted
                 $env:ProgramData = Join-Path $TestDrive 'ProgramDataTrust3'
@@ -1129,6 +1356,15 @@ Describe 'Disable BitLocker helpers' {
                 $audit3 | Should -Not -BeNullOrEmpty
                 & icacls.exe $audit3 '/inheritance:e' | Out-Null
                 Get-BitLockerAuditFolder | Should -BeNullOrEmpty
+                # Everyone and Authenticated Users are refused too (compared as SIDs, so this holds on a Windows in any language)
+                foreach ($sid in 'S-1-1-0', 'S-1-5-11') {
+                    $env:ProgramData = Join-Path $TestDrive ('ProgramDataTrust-' + $sid)
+                    New-Item -ItemType Directory -Path $env:ProgramData | Out-Null
+                    $audit4 = Get-BitLockerAuditFolder
+                    $audit4 | Should -Not -BeNullOrEmpty -Because $sid
+                    & icacls.exe $audit4 '/grant' "*${sid}:(OI)(CI)R" | Out-Null
+                    Get-BitLockerAuditFolder | Should -BeNullOrEmpty -Because $sid
+                }
             } finally { $env:ProgramData = $oldPd }
         }
     }
