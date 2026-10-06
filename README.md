@@ -31,10 +31,14 @@ dense two-column layout instead of a typical "settings app" look. Five tabs:
   clear (with a confirmation when selecting across every category at once),
   and install/uninstall/upgrade-all actions. Entries known to be unsigned/
   low-reputation are flagged and trigger a warning before install if Smart App
-  Control is On. The catalog lives in
+  Control is On. Utilities, the longest list, is split into headed groups
+  (Security & Privacy; File Management & Archiving; Networking, Remote Access &
+  IT Tools; and so on) that hide themselves when the filter leaves nothing in
+  them. The catalog lives in
   [`debloat/apps-catalog.json`](debloat/apps-catalog.json) - edit that file to
-  add, remove, or rename entries; every future run picks up the change
-  automatically, no code edits needed.
+  add, remove, or rename entries (a Utilities entry also names its `group`;
+  `tests/Invoke-Lint.ps1` flags one that is misspelt); every future run picks
+  up the change automatically, no code edits needed.
 - **Config** - one-click Fixes (System File Repair, Network Reset, Windows Update
   Reset, Time Resync, .NET Framework 3.5 Enable, winget re-registration), each run
   standalone with its own log; Customize Preferences, a live-reflecting toggle

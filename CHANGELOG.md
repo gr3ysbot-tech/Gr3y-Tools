@@ -14,6 +14,19 @@ phases 0-3 and part of phase 4 (optional items were deliberately not built):
 
 ### Added
 
+- **Install Apps: the Utilities list is split into groups.** The long, flat Utilities list is now
+  nine headed groups - Security & Privacy; File Management & Archiving; System Info, Diagnostics
+  & Benchmarking; System Optimization, Maintenance & Tweaks; Networking, Remote Access & IT
+  Tools; Cloud Storage & Sync; Disk Partitioning, Imaging & Virtualization; Automation &
+  Productivity; Media & Entertainment - with the apps of each group in alphabetical order. The
+  filters work as before: Business Baseline shows the same apps as before, just grouped, and a
+  group (or the Utilities heading) with nothing to show under the current filter hides its own
+  heading too. The grouping is data, not code: `debloat/apps-catalog.json` lists a category's
+  groups in display order under `categoryGroups`, and each app of that category names its
+  `group`. An app whose group is missing or not in the list is shown last under **Other**, so an
+  app can never disappear from the tab; every other category is unchanged. `tests/Invoke-Lint.ps1`
+  fails on a misspelt, unused or misplaced group, and `tests/AppCatalogLayout.Tests.ps1` runs the
+  real list-building code and the real filter against real WPF controls (never shown on screen).
 - **Disable BitLocker... (Panels tab).** A guarded way to turn BitLocker off on any drive, in
   the order you asked for: it shows every drive's status first, then saves a backup of every
   key Windows can export (recovery passwords, key IDs, a note on each other protector, and
