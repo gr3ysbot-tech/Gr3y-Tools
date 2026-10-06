@@ -4213,58 +4213,108 @@ $window.Add_Closing({
 $script:appEntries = New-Object System.Collections.Generic.List[object]
 $script:categoryBlocks = New-Object System.Collections.Generic.List[object]
 
-$categories = $catalog.apps | Group-Object category | Sort-Object Name
-foreach ($cat in $categories) {
+function Get-AppCatalogLayout {
+    # How the Install Apps list is laid out: one block per category (alphabetical, as always). A category the catalog gives
+    # named groups ("categoryGroups": { "Utilities": [ ... ] }) is split into those groups, in that order; an app of such a
+    # category that names no group, or a group that is not in the list, goes last under "Other" so that it is never lost.
+    # A category without groups stays one list with no group name. Apps are sorted by name inside every group.
+    # A group listed twice is built once, and a listed group named "Other" is that catch-all itself (never a second one).
+    param($Catalog)
+    $order = @{}
+    if ($Catalog.PSObject.Properties['categoryGroups'] -and $Catalog.categoryGroups) {
+        foreach ($p in $Catalog.categoryGroups.PSObject.Properties) { $order[[string]$p.Name] = @($p.Value | ForEach-Object { [string]$_ }) }
+    }
+    $blocks = New-Object System.Collections.Generic.List[object]
+    foreach ($cat in @($Catalog.apps | Group-Object category | Sort-Object Name)) {
+        $named = @()
+        if ($order.ContainsKey([string]$cat.Name)) { $named = @($order[[string]$cat.Name] | Where-Object { $_ -cne 'Other' } | Select-Object -Unique) }
+        $groups = New-Object System.Collections.Generic.List[object]
+        if ($named.Count -eq 0) {
+            $groups.Add([PSCustomObject]@{ Name = ''; Apps = @($cat.Group | Sort-Object name) })
+        } else {
+            foreach ($g in $named) {
+                $apps = @($cat.Group | Where-Object { [string]$_.group -ceq $g } | Sort-Object name)
+                if ($apps.Count -gt 0) { $groups.Add([PSCustomObject]@{ Name = $g; Apps = $apps }) }
+            }
+            $other = @($cat.Group | Where-Object { $named -cnotcontains [string]$_.group } | Sort-Object name)
+            if ($other.Count -gt 0) { $groups.Add([PSCustomObject]@{ Name = 'Other'; Apps = $other }) }
+        }
+        $blocks.Add([PSCustomObject]@{ Category = [string]$cat.Name; Groups = $groups.ToArray() })
+    }
+    return $blocks.ToArray()
+}
+
+foreach ($block in @(Get-AppCatalogLayout -Catalog $catalog)) {
     $header = New-Object System.Windows.Controls.TextBlock
-    $header.Text = $cat.Name
+    $header.Text = $block.Category
     $header.FontFamily = 'Consolas'
     $header.FontSize = 16
     $header.Foreground = $headerBrush
     $header.Margin = '0,8,0,4'
     $installAppsPanel.Children.Add($header) | Out-Null
 
-    $wrap = New-Object System.Windows.Controls.WrapPanel
-    foreach ($app in ($cat.Group | Sort-Object name)) {
-        $row = New-Object System.Windows.Controls.StackPanel
-        $row.Orientation = 'Horizontal'
-        $row.Width = 230
-        $row.Margin = '2,1'
+    # A category that is split into named groups (Utilities) gets one block for its heading and one per group, so a group with nothing
+    # visible in the current filter hides its own sub-heading; a category without groups is one block.
+    $hasGroups = (@($block.Groups | Where-Object { $_.Name }).Count -gt 0)
+    if ($hasGroups) { $script:categoryBlocks.Add([PSCustomObject]@{ Header = $header; SubHeader = $null; Wrap = $null; Category = $block.Category; Group = $null }) }
 
-        $cb = New-Object System.Windows.Controls.CheckBox
-        $cb.Content = $app.name
-        $cb.Tag = $app.wingetId
-        $cb.MaxWidth = 208
-        $row.Children.Add($cb) | Out-Null
-
-        if ($app.url) {
-            $help = New-Object System.Windows.Controls.TextBlock
-            $help.Text = '(?)'
-            $help.Foreground = $headerBrush
-            $help.FontSize = 11
-            $help.Margin = '3,0,0,0'
-            $help.VerticalAlignment = 'Center'
-            $help.Cursor = 'Hand'
-            $help.TextDecorations = [System.Windows.TextDecorations]::Underline
-            $help.ToolTip = "Open $($app.url)"
-            $helpUrl = $app.url
-            $help.Add_MouseLeftButtonUp({ Start-Process $helpUrl }.GetNewClosure())
-            $row.Children.Add($help) | Out-Null
+    foreach ($grp in $block.Groups) {
+        $subHeader = $null
+        if ($grp.Name) {
+            $subHeader = New-Object System.Windows.Controls.TextBlock
+            $subHeader.Text = $grp.Name
+            $subHeader.FontFamily = 'Segoe UI'
+            $subHeader.FontSize = 13
+            $subHeader.FontWeight = 'SemiBold'
+            $subHeader.Foreground = $window.Resources['HintBrush']
+            $subHeader.Margin = '3,10,0,2'
+            $installAppsPanel.Children.Add($subHeader) | Out-Null
         }
 
-        $wrap.Children.Add($row) | Out-Null
-        # Msp defaults to true (business-appropriate) when the catalog entry omits the
-        # field - only the handful of entries explicitly flagged "msp": false (Tor
-        # Browser, qBittorrent, OpenRGB and similar) are excluded from Business Baseline.
-        $entry = [PSCustomObject]@{ CheckBox = $cb; Row = $row; Name = $app.name; Category = $cat.Name; WingetId = $app.wingetId; DownloadUrl = $app.downloadUrl; DynamicDownloadPage = $app.dynamicDownloadPage; Url = $app.url; SacRisk = [bool]$app.sacRisk; Msp = ($app.msp -ne $false); CompareMatch = $false }
-        $script:appEntries.Add($entry)
-        # Checked/Unchecked (not Click) since they fire off IsChecked itself changing,
-        # regardless of interaction method - Click alone was observed to not reliably
-        # fire for every path that can toggle a CheckBox.
-        $cb.Add_Checked({ Update-SelectedCount })
-        $cb.Add_Unchecked({ Update-SelectedCount })
+        $wrap = New-Object System.Windows.Controls.WrapPanel
+        foreach ($app in $grp.Apps) {
+            $row = New-Object System.Windows.Controls.StackPanel
+            $row.Orientation = 'Horizontal'
+            $row.Width = 230
+            $row.Margin = '2,1'
+
+            $cb = New-Object System.Windows.Controls.CheckBox
+            $cb.Content = $app.name
+            $cb.Tag = $app.wingetId
+            $cb.MaxWidth = 208
+            $row.Children.Add($cb) | Out-Null
+
+            if ($app.url) {
+                $help = New-Object System.Windows.Controls.TextBlock
+                $help.Text = '(?)'
+                $help.Foreground = $headerBrush
+                $help.FontSize = 11
+                $help.Margin = '3,0,0,0'
+                $help.VerticalAlignment = 'Center'
+                $help.Cursor = 'Hand'
+                $help.TextDecorations = [System.Windows.TextDecorations]::Underline
+                $help.ToolTip = "Open $($app.url)"
+                $helpUrl = $app.url
+                $help.Add_MouseLeftButtonUp({ Start-Process $helpUrl }.GetNewClosure())
+                $row.Children.Add($help) | Out-Null
+            }
+
+            $wrap.Children.Add($row) | Out-Null
+            # Msp defaults to true (business-appropriate) when the catalog entry omits the
+            # field - only the handful of entries explicitly flagged "msp": false (Tor
+            # Browser, qBittorrent, OpenRGB and similar) are excluded from Business Baseline.
+            $entry = [PSCustomObject]@{ CheckBox = $cb; Row = $row; Name = $app.name; Category = $block.Category; Group = [string]$grp.Name; WingetId = $app.wingetId; DownloadUrl = $app.downloadUrl; DynamicDownloadPage = $app.dynamicDownloadPage; Url = $app.url; SacRisk = [bool]$app.sacRisk; Msp = ($app.msp -ne $false); CompareMatch = $false }
+            $script:appEntries.Add($entry)
+            # Checked/Unchecked (not Click) since they fire off IsChecked itself changing,
+            # regardless of interaction method - Click alone was observed to not reliably
+            # fire for every path that can toggle a CheckBox.
+            $cb.Add_Checked({ Update-SelectedCount })
+            $cb.Add_Unchecked({ Update-SelectedCount })
+        }
+        $installAppsPanel.Children.Add($wrap) | Out-Null
+        if ($hasGroups) { $script:categoryBlocks.Add([PSCustomObject]@{ Header = $null; SubHeader = $subHeader; Wrap = $wrap; Category = $block.Category; Group = [string]$grp.Name }) }
+        else { $script:categoryBlocks.Add([PSCustomObject]@{ Header = $header; SubHeader = $null; Wrap = $wrap; Category = $block.Category; Group = $null }) }
     }
-    $installAppsPanel.Children.Add($wrap) | Out-Null
-    $script:categoryBlocks.Add([PSCustomObject]@{ Header = $header; Wrap = $wrap; Category = $cat.Name })
 }
 
 function Update-SelectedCount {
@@ -4280,9 +4330,11 @@ function Update-SelectedCount {
 $script:activeCategory = 'Business Baseline'
 
 function Update-AppVisibility {
+    # A block is a category's heading (Group $null, no Wrap, when the category is split into groups), one group of a split category,
+    # or a whole category without groups. Each is visible only while one of its apps is.
     foreach ($block in $script:categoryBlocks) {
         $anyVisible = $false
-        foreach ($entry in ($script:appEntries | Where-Object { $_.Category -eq $block.Category })) {
+        foreach ($entry in ($script:appEntries | Where-Object { $_.Category -eq $block.Category -and ($null -eq $block.Group -or $_.Group -ceq $block.Group) })) {
             $visible =
                 if ($script:activeCategory -eq 'All') { $true }
                 elseif ($script:activeCategory -eq 'Business Baseline') { $entry.Msp }
@@ -4292,8 +4344,9 @@ function Update-AppVisibility {
             if ($visible) { $anyVisible = $true }
         }
         $blockVisibility = if ($anyVisible) { 'Visible' } else { 'Collapsed' }
-        $block.Header.Visibility = $blockVisibility
-        $block.Wrap.Visibility = $blockVisibility
+        if ($block.Header) { $block.Header.Visibility = $blockVisibility }
+        if ($block.SubHeader) { $block.SubHeader.Visibility = $blockVisibility }
+        if ($block.Wrap) { $block.Wrap.Visibility = $blockVisibility }
     }
 }
 

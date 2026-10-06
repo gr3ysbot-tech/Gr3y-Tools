@@ -102,6 +102,45 @@ if (Test-Path $appsCatalogPath) {
     } else {
         Write-LintOk 'every Manual Install Only entry has a url'
     }
+
+    # Install Apps sub-groups: "categoryGroups" lists, in display order, the groups a category is split into on the Install
+    # Apps tab (today only Utilities) and each app of such a category names its "group". The GUI puts an app whose group is
+    # not listed under "Other" and ignores a "group" on any other category, so a typo here would quietly misplace an app.
+    $groupProblems = New-Object System.Collections.Generic.List[string]
+    $groupedCategories = [ordered]@{}
+    $hasCategoryGroups = [bool]$catalog.PSObject.Properties['categoryGroups']
+    if ($hasCategoryGroups) {
+        if ($catalog.categoryGroups -isnot [System.Management.Automation.PSCustomObject]) {
+            $groupProblems.Add('categoryGroups must be an object that maps a category name to its list of group names')
+        } else {
+            foreach ($p in $catalog.categoryGroups.PSObject.Properties) { $groupedCategories[[string]$p.Name] = @($p.Value | ForEach-Object { [string]$_ }) }
+        }
+    }
+    foreach ($catName in $groupedCategories.Keys) {
+        $listed = @($groupedCategories[$catName])
+        $catApps = @($catalog.apps | Where-Object { [string]$_.category -eq $catName })
+        if ($catApps.Count -eq 0) { $groupProblems.Add("categoryGroups names the category '$catName' but no app has that category"); continue }
+        if ($listed.Count -eq 0) { $groupProblems.Add("categoryGroups lists no group for '$catName'"); continue }
+        if (@($listed | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) { $groupProblems.Add("categoryGroups '$catName' has a blank group name") }
+        $dupeGroups = @($listed | Group-Object | Where-Object { $_.Count -gt 1 })
+        if ($dupeGroups.Count -gt 0) { $groupProblems.Add("categoryGroups '$catName' lists a group twice: $($dupeGroups.Name -join ', ')") }
+        if ($listed -contains 'Other') { $groupProblems.Add("categoryGroups '$catName' uses the name 'Other', which the GUI keeps for apps that name no listed group") }
+        foreach ($app in $catApps) {
+            if ($listed -cnotcontains [string]$app.group) { $groupProblems.Add("'$($app.name)' ($catName) has group '$($app.group)', which is not in categoryGroups '$catName' (the GUI would show it under Other)") }
+        }
+        foreach ($g in $listed) {
+            if (@($catApps | Where-Object { [string]$_.group -ceq $g }).Count -eq 0) { $groupProblems.Add("categoryGroups '$catName' lists '$g' but no app uses it") }
+        }
+    }
+    foreach ($app in @($catalog.apps | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.group) })) {
+        if (-not $groupedCategories.Contains([string]$app.category)) { $groupProblems.Add("'$($app.name)' has group '$($app.group)' but its category '$($app.category)' is not in categoryGroups, so the GUI would ignore the group") }
+    }
+    if ($groupProblems.Count -gt 0) {
+        foreach ($problem in $groupProblems) { Write-LintError "apps-catalog.json: $problem" }
+    } else {
+        $groupCount = 0; foreach ($k in $groupedCategories.Keys) { $groupCount += @($groupedCategories[$k]).Count }
+        Write-LintOk "apps-catalog.json categoryGroups are consistent ($($groupedCategories.Count) grouped categor$(if ($groupedCategories.Count -eq 1) { 'y' } else { 'ies' }), $groupCount group(s); every app of a grouped category names a listed group)"
+    }
 }
 
 $tweaksPath = Join-Path $debloatDir 'tweaks.json'
