@@ -2,13 +2,63 @@
 
 Generated from `debloat/bloat-patterns.json`, `debloat/apps-catalog.json` and
 `debloat/tweaks.json` by `debloat/Generate-ChangesReference.ps1`. Regenerated
-automatically by release.yml against each tagged release and committed back to
-main - no manual step needed for a day-to-day edit to those files.
+automatically by CI (`.github/workflows/ci.yml`) on every push to main and committed
+back - no manual step needed for a day-to-day edit to those files.
 
 ## OEM Bloatware Removal
 
-One-way - not covered by Revert Last Run. Applied only when the matching OEM is
-detected (or explicitly selected) and the tool looks like commercial hardware.
+One-way - not covered by Revert Last Run. Applied for each OEM that is ticked in the GUI (Dell
+and Lenovo both start ticked) or passed as `-Dell` / `-Lenovo`. If neither is passed - which is
+also what unticking BOTH GUI boxes does - the worker takes it as both; tick Skip debloat to run no
+OEM removal at all. The generic list below (McAfee, Dropbox and WildTangent promos, the consumer
+Teams/Chat package, the Web Experience pack) applies on every Phase 1 run. The machine's
+manufacturer and model are NOT checked. (The "commercial hardware" check applies only to
+installing Dell Command | Update / Lenovo System Update.)
+
+**Judgement calls.** These are removed by default, whatever the organisation uses; delete the
+pattern from `debloat/bloat-patterns.json` to keep one. `Dell SupportAssist*` and the service
+pattern `*SupportAssist*` also match Dell SupportAssist for Business PCs and its service.
+`Waves MaxxAudio*` and `MaxxAudioPro*` are audio software: users report that removing it can cost
+headphone-jack and microphone detection. `Dell Core Services` is a shared Dell component (Dell's
+own knowledge base says other Dell agents can go into an Unknown State when it is removed): it is
+removed without `IGNOREDEPENDENCIES`, so that a dependency check in its installer, where it has
+one, can keep it while other software depends on it (not verified for this package, and it then
+ends as a NOT REMOVED warning). `McAfee*` matches every McAfee program, trial, paid or centrally
+managed. Dell Command | Update is kept.
+
+**How a program is removed.** Its own uninstaller is run and the result is checked against the
+Apps list; a program counts as removed only when it has really left that list.
+
+- A Windows Installer product is removed with `msiexec /x <product code> IGNOREDEPENDENCIES=ALL
+  /qn /norestart`, a WiX Burn bundle with its own `/uninstall /quiet /norestart`. (A Burn bundle
+  passes `IGNOREDEPENDENCIES=ALL` to its MSIs itself, but only after checking what depends on
+  them; this tool makes no such check, so a product marked as shared keeps the check on.)
+- Before the uninstaller runs, the services and processes listed under "Per-program hints" below are
+  stopped - the services are also set to Disabled, and the log says what each was before - and
+  anything running from the program's own folder (when its Apps entry registers one) is ended;
+  never Dell Command Update, the Windows folder, a PowerShell host or the installer itself.
+- An installer that has not finished after its time limit - 10 minutes for a Windows Installer
+  product or a bundle, 4 for an InstallShield wrapper, 5 for any other uninstaller, or the limit
+  named below - is stopped together with its child processes, and the program is reported as NOT
+  REMOVED. What Windows Installer does with an interrupted transaction is not known.
+- An Apps entry is deleted only when it is a proven leftover: its uninstaller file is gone, or an MSI
+  or InstallShield-wrapper layer answers "not installed" (a bundle that does is reported, not cleared),
+  AND the entry declares something that can be looked at - an install folder, the folder its uninstaller
+  sat in, an icon file that is not a Windows file, a service named in the hints - AND none of it is
+  found (a folder counts only if it holds something; a network share or a drive this session cannot see
+  cannot be checked and counts as "still there"). An entry that declares nothing to look at is kept and
+  reported, with its registry key, so that it can be removed by hand. A cleared entry is counted as
+  "leftover Apps entry cleared", not as a removed program - unless an uninstaller of the program ran
+  successfully. A .reg backup of the deleted entry is saved first in
+  `C:\ProgramData\DellOfficeDeploy` and is never deleted by the tool.
+- A program that stays is listed as NOT REMOVED with the exit code and, where there is one, the
+  installer's own message or log. Its services that were set to Disabled stay Disabled; the line
+  says which, and how to undo it. A dry run lists the programs, the command of each uninstaller and
+  the services and processes it would stop, and changes nothing.
+- The finish banner counts warning lines, not programs: a run in which every program was removed
+  can still end "with N warnings" (a failed first attempt counts). The "Phase 1 result" line says
+  how many programs are really gone, and a "Nothing that was targeted is left" line says so when
+  that is all the warnings were.
 
 ### dell
 
@@ -44,13 +94,24 @@ detected (or explicitly selected) and the tool looks like commercial hardware.
 - `Waves MaxxAudio*`
 - `MaxxAudioPro*`
 
-**Services disabled (if orphaned after removal):**
+**Per-program hints: the services and processes are stopped before the matching program is uninstalled (the services are also set to Disabled, so that they should not restart in the middle of it); a silent switch and a time limit apply to the uninstaller itself:**
+
+- `Dell SupportAssist*`: services `*SupportAssist*`; processes `SupportAssist*`, `DellSupportAssistRemedationService`
+- `Dell Optimizer*`: services `Dell Optimizer*`; processes `DellOptimizer`; its uninstaller is run with `-remove -runfromtemp /Silent`; its own uninstallers (not the Windows Installer product) get a time limit of 7 minutes
+- `Dell Digital Delivery*`: services `Dell Digital Delivery*`; processes `Dell.D3.WinSvc`
+- `Dell Peripheral Manager*`: processes `DPM`, `DPMService`
+
+**Kept while other software depends on them (uninstalled without `IGNOREDEPENDENCIES`; reported as NOT REMOVED when that stops the uninstall):**
+
+- `Dell Core Services`
+
+**Services stopped and disabled (every match, whether or not its program was removed - a program that could not be uninstalled stays installed with its service Disabled; undo with `Set-Service -Name <name> -StartupType <the type it had before - the log says which>`):**
 
 - `*SupportAssist*`
 - `*Dell Digital Delivery*`
 - `*Dell Optimizer*`
 
-**Scheduled task folders disabled (if orphaned after removal):**
+**Scheduled task folders disabled (every task in them except the ones kept below, whether or not its program was removed; they are disabled, not deleted - undo in Task Scheduler):**
 
 - `\Dell\`
 
@@ -80,7 +141,7 @@ detected (or explicitly selected) and the tool looks like commercial hardware.
 - `Lenovo Service Bridge`
 - `Glance by Mirametrix*`
 
-**Services disabled (if orphaned after removal):**
+**Services stopped and disabled (every match, whether or not its program was removed - a program that could not be uninstalled stays installed with its service Disabled; undo with `Set-Service -Name <name> -StartupType <the type it had before - the log says which>`):**
 
 - `*Lenovo Now*`
 - `*Lenovo Welcome*`
@@ -89,7 +150,7 @@ detected (or explicitly selected) and the tool looks like commercial hardware.
 - `*Lenovo Utility*`
 - `*Lenovo Service Bridge*`
 
-**Scheduled task folders disabled (if orphaned after removal):**
+**Scheduled task folders disabled (every task in them except the ones kept below, whether or not its program was removed; they are disabled, not deleted - undo in Task Scheduler):**
 
 - `\Lenovo\`
 

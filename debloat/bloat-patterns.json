@@ -36,6 +36,33 @@
       "*SupportAssist*",
       "*Dell Digital Delivery*",
       "*Dell Optimizer*"
+    ],
+    "productHints": [
+      {
+        "match": "Dell SupportAssist*",
+        "services": ["*SupportAssist*"],
+        "processes": ["SupportAssist*", "DellSupportAssistRemedationService"]
+      },
+      {
+        "match": "Dell Optimizer*",
+        "services": ["Dell Optimizer*"],
+        "processes": ["DellOptimizer"],
+        "silentArgs": "-remove -runfromtemp /Silent",
+        "timeoutSec": 420
+      },
+      {
+        "match": "Dell Digital Delivery*",
+        "services": ["Dell Digital Delivery*"],
+        "processes": ["Dell.D3.WinSvc"]
+      },
+      {
+        "match": "Dell Peripheral Manager*",
+        "processes": ["DPM", "DPMService"]
+      },
+      {
+        "match": "Dell Core Services",
+        "respectDependencies": true
+      }
     ]
   },
   "lenovo": {

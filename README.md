@@ -10,11 +10,17 @@ A native Windows GUI (WPF, no browser involved): a custom dark window chrome
 with the tabs and window controls built into the title bar itself, and a
 dense two-column layout instead of a typical "settings app" look. Five tabs:
 
-- **Debloat + Office** - removes Dell/Lenovo OEM bloatware, McAfee trialware, and
+- **Debloat + Office** - removes Dell/Lenovo OEM bloatware, McAfee software (every
+  McAfee program, trial or not), the Dropbox and WildTangent promos, the Widgets
+  (Web Experience) package, and
   the Windows 11 built-in consumer Teams/Chat AppX package (not the real work/
   business Teams client, which installs separately and is untouched); optionally
   disables leftover OEM scheduled tasks/services so uninstalled apps don't silently
-  reappear; optionally creates a System Restore point first; fully removes any
+  reappear (every program it removes is checked against the Apps list afterwards, and
+  anything still there is listed as NOT REMOVED with the uninstaller's exit code and,
+  where there is one, the installer's own message - the run's warning count rises, and
+  the finish banner counts warning lines, not programs); optionally creates a System
+  Restore point first; fully removes any
   existing Office install; installs Microsoft 365 Apps for business, with optional
   `ExcludeApp` checkboxes (Teams, OneDrive, Access, Publisher, Skype for Business,
   OneNote) and a Shared Computer Activation option. Live log streaming, a

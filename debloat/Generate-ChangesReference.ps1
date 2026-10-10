@@ -5,11 +5,10 @@
 
 .DESCRIPTION
     A single reference table of every registry path/value, service, scheduled task and
-    AppX/Win32 pattern this tool can touch, and whether each is reversible. release.yml
-    runs this automatically against each tagged release's source JSON files and commits
-    the result back to main, so day-to-day edits to the three source JSON files don't need
-    a manual regeneration - only run this by hand if you want to preview the output before
-    tagging a release.
+    AppX/Win32 pattern this tool can touch, and whether each is reversible. CI
+    (.github/workflows/ci.yml) runs this on every push to main and commits the result
+    back, so day-to-day edits to the three source JSON files don't need a manual
+    regeneration - only run this by hand if you want to preview the output first.
 
 .PARAMETER RepoRoot
     Path to the repository root. Defaults to the parent of this script's own directory
@@ -48,14 +47,64 @@ $lines.Add('# What This Changes')
 $lines.Add('')
 $lines.Add('Generated from `debloat/bloat-patterns.json`, `debloat/apps-catalog.json` and')
 $lines.Add('`debloat/tweaks.json` by `debloat/Generate-ChangesReference.ps1`. Regenerated')
-$lines.Add('automatically by release.yml against each tagged release and committed back to')
-$lines.Add('main - no manual step needed for a day-to-day edit to those files.')
+$lines.Add('automatically by CI (`.github/workflows/ci.yml`) on every push to main and committed')
+$lines.Add('back - no manual step needed for a day-to-day edit to those files.')
 $lines.Add('')
 
 $lines.Add('## OEM Bloatware Removal')
 $lines.Add('')
-$lines.Add('One-way - not covered by Revert Last Run. Applied only when the matching OEM is')
-$lines.Add('detected (or explicitly selected) and the tool looks like commercial hardware.')
+$lines.Add('One-way - not covered by Revert Last Run. Applied for each OEM that is ticked in the GUI (Dell')
+$lines.Add('and Lenovo both start ticked) or passed as `-Dell` / `-Lenovo`. If neither is passed - which is')
+$lines.Add('also what unticking BOTH GUI boxes does - the worker takes it as both; tick Skip debloat to run no')
+$lines.Add('OEM removal at all. The generic list below (McAfee, Dropbox and WildTangent promos, the consumer')
+$lines.Add('Teams/Chat package, the Web Experience pack) applies on every Phase 1 run. The machine''s')
+$lines.Add('manufacturer and model are NOT checked. (The "commercial hardware" check applies only to')
+$lines.Add('installing Dell Command | Update / Lenovo System Update.)')
+$lines.Add('')
+$lines.Add('**Judgement calls.** These are removed by default, whatever the organisation uses; delete the')
+$lines.Add('pattern from `debloat/bloat-patterns.json` to keep one. `Dell SupportAssist*` and the service')
+$lines.Add('pattern `*SupportAssist*` also match Dell SupportAssist for Business PCs and its service.')
+$lines.Add('`Waves MaxxAudio*` and `MaxxAudioPro*` are audio software: users report that removing it can cost')
+$lines.Add('headphone-jack and microphone detection. `Dell Core Services` is a shared Dell component (Dell''s')
+$lines.Add('own knowledge base says other Dell agents can go into an Unknown State when it is removed): it is')
+$lines.Add('removed without `IGNOREDEPENDENCIES`, so that a dependency check in its installer, where it has')
+$lines.Add('one, can keep it while other software depends on it (not verified for this package, and it then')
+$lines.Add('ends as a NOT REMOVED warning). `McAfee*` matches every McAfee program, trial, paid or centrally')
+$lines.Add('managed. Dell Command | Update is kept.')
+$lines.Add('')
+$lines.Add('**How a program is removed.** Its own uninstaller is run and the result is checked against the')
+$lines.Add('Apps list; a program counts as removed only when it has really left that list.')
+$lines.Add('')
+$lines.Add('- A Windows Installer product is removed with `msiexec /x <product code> IGNOREDEPENDENCIES=ALL')
+$lines.Add('  /qn /norestart`, a WiX Burn bundle with its own `/uninstall /quiet /norestart`. (A Burn bundle')
+$lines.Add('  passes `IGNOREDEPENDENCIES=ALL` to its MSIs itself, but only after checking what depends on')
+$lines.Add('  them; this tool makes no such check, so a product marked as shared keeps the check on.)')
+$lines.Add('- Before the uninstaller runs, the services and processes listed under "Per-program hints" below are')
+$lines.Add('  stopped - the services are also set to Disabled, and the log says what each was before - and')
+$lines.Add('  anything running from the program''s own folder (when its Apps entry registers one) is ended;')
+$lines.Add('  never Dell Command Update, the Windows folder, a PowerShell host or the installer itself.')
+$lines.Add('- An installer that has not finished after its time limit - 10 minutes for a Windows Installer')
+$lines.Add('  product or a bundle, 4 for an InstallShield wrapper, 5 for any other uninstaller, or the limit')
+$lines.Add('  named below - is stopped together with its child processes, and the program is reported as NOT')
+$lines.Add('  REMOVED. What Windows Installer does with an interrupted transaction is not known.')
+$lines.Add('- An Apps entry is deleted only when it is a proven leftover: its uninstaller file is gone, or an MSI')
+$lines.Add('  or InstallShield-wrapper layer answers "not installed" (a bundle that does is reported, not cleared),')
+$lines.Add('  AND the entry declares something that can be looked at - an install folder, the folder its uninstaller')
+$lines.Add('  sat in, an icon file that is not a Windows file, a service named in the hints - AND none of it is')
+$lines.Add('  found (a folder counts only if it holds something; a network share or a drive this session cannot see')
+$lines.Add('  cannot be checked and counts as "still there"). An entry that declares nothing to look at is kept and')
+$lines.Add('  reported, with its registry key, so that it can be removed by hand. A cleared entry is counted as')
+$lines.Add('  "leftover Apps entry cleared", not as a removed program - unless an uninstaller of the program ran')
+$lines.Add('  successfully. A .reg backup of the deleted entry is saved first in')
+$lines.Add('  `C:\ProgramData\DellOfficeDeploy` and is never deleted by the tool.')
+$lines.Add('- A program that stays is listed as NOT REMOVED with the exit code and, where there is one, the')
+$lines.Add('  installer''s own message or log. Its services that were set to Disabled stay Disabled; the line')
+$lines.Add('  says which, and how to undo it. A dry run lists the programs, the command of each uninstaller and')
+$lines.Add('  the services and processes it would stop, and changes nothing.')
+$lines.Add('- The finish banner counts warning lines, not programs: a run in which every program was removed')
+$lines.Add('  can still end "with N warnings" (a failed first attempt counts). The "Phase 1 result" line says')
+$lines.Add('  how many programs are really gone, and a "Nothing that was targeted is left" line says so when')
+$lines.Add('  that is all the warnings were.')
 $lines.Add('')
 foreach ($oemName in $bloatPatterns.PSObject.Properties.Name) {
     $oem = $bloatPatterns.$oemName
@@ -73,14 +122,35 @@ foreach ($oemName in $bloatPatterns.PSObject.Properties.Name) {
         foreach ($pattern in $oem.win32Patterns) { $lines.Add("- ``$pattern``") }
         $lines.Add('')
     }
+    $stopHints = @($oem.productHints | Where-Object { $_ -and ($_.services -or $_.processes -or $_.silentArgs -or $_.timeoutSec) })
+    if ($stopHints.Count -gt 0) {
+        $lines.Add('**Per-program hints: the services and processes are stopped before the matching program is uninstalled (the services are also set to Disabled, so that they should not restart in the middle of it); a silent switch and a time limit apply to the uninstaller itself:**')
+        $lines.Add('')
+        foreach ($hint in $stopHints) {
+            $parts = New-Object System.Collections.Generic.List[string]
+            if ($hint.services) { $parts.Add('services ' + ((@($hint.services) | ForEach-Object { "``$_``" }) -join ', ')) }
+            if ($hint.processes) { $parts.Add('processes ' + ((@($hint.processes) | ForEach-Object { "``$_``" }) -join ', ')) }
+            if ($hint.silentArgs) { $parts.Add("its uninstaller is run with ``$($hint.silentArgs)``") }
+            if ($hint.timeoutSec) { $parts.Add("its own uninstallers (not the Windows Installer product) get a time limit of $([int]([int]$hint.timeoutSec / 60)) minutes") }
+            $lines.Add("- ``$($hint.match)``: " + ($parts -join '; '))
+        }
+        $lines.Add('')
+    }
+    $keptHints = @($oem.productHints | Where-Object { $_ -and $_.respectDependencies -eq $true })
+    if ($keptHints.Count -gt 0) {
+        $lines.Add('**Kept while other software depends on them (uninstalled without `IGNOREDEPENDENCIES`; reported as NOT REMOVED when that stops the uninstall):**')
+        $lines.Add('')
+        foreach ($hint in $keptHints) { $lines.Add("- ``$($hint.match)``") }
+        $lines.Add('')
+    }
     if ($oem.servicePatterns -and $oem.servicePatterns.Count -gt 0) {
-        $lines.Add('**Services disabled (if orphaned after removal):**')
+        $lines.Add('**Services stopped and disabled (every match, whether or not its program was removed - a program that could not be uninstalled stays installed with its service Disabled; undo with `Set-Service -Name <name> -StartupType <the type it had before - the log says which>`):**')
         $lines.Add('')
         foreach ($pattern in $oem.servicePatterns) { $lines.Add("- ``$pattern``") }
         $lines.Add('')
     }
     if ($oem.scheduledTaskFolders -and $oem.scheduledTaskFolders.Count -gt 0) {
-        $lines.Add('**Scheduled task folders disabled (if orphaned after removal):**')
+        $lines.Add('**Scheduled task folders disabled (every task in them except the ones kept below, whether or not its program was removed; they are disabled, not deleted - undo in Task Scheduler):**')
         $lines.Add('')
         foreach ($pattern in $oem.scheduledTaskFolders) { $lines.Add("- ``$pattern``") }
         $lines.Add('')

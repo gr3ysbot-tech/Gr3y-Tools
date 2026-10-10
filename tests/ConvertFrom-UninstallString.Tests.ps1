@@ -74,8 +74,75 @@ Describe 'ConvertFrom-UninstallString' {
         }
     }
 
+    Context 'unquoted paths that contain spaces (NSIS uninstallers such as Dell Pair and Dell Peripheral Manager register themselves this way)' {
+        It 'parses the unquoted Dell Pair uninstaller, which used to be reported as "could not resolve an uninstaller"' {
+            $result = ConvertFrom-UninstallString -UninstallString 'C:\Program Files\Dell\Dell Pair\Uninstall.exe'
+            $result.Type | Should -Be 'Exe'
+            $result.FilePath | Should -Be 'C:\Program Files\Dell\Dell Pair\Uninstall.exe'
+            $result.ArgumentList | Should -Be '/S'
+        }
+
+        It 'splits the path from the arguments that follow it' {
+            $result = ConvertFrom-UninstallString -UninstallString 'C:\Program Files\Dell\Dell Peripheral Manager\Uninstall.exe /S'
+            $result.Type | Should -Be 'Exe'
+            $result.FilePath | Should -Be 'C:\Program Files\Dell\Dell Peripheral Manager\Uninstall.exe'
+            $result.ArgumentList | Should -Be '/S'
+        }
+
+        It 'keeps arguments that themselves mention another exe' {
+            $result = ConvertFrom-UninstallString -UninstallString 'C:\Program Files\Some Vendor\uninst.exe /remove C:\Temp\helper.exe'
+            $result.FilePath | Should -Be 'C:\Program Files\Some Vendor\uninst.exe'
+            $result.ArgumentList | Should -Be '/remove C:\Temp\helper.exe'
+        }
+
+        It 'reads an upper-case extension too' {
+            $result = ConvertFrom-UninstallString -UninstallString 'C:\Program Files\Old Vendor\UNINST.EXE -x'
+            $result.Type | Should -Be 'Exe'
+            $result.FilePath | Should -Be 'C:\Program Files\Old Vendor\UNINST.EXE'
+            $result.ArgumentList | Should -Be '-x'
+        }
+
+        It 'reads a batch file as the uninstaller' {
+            $result = ConvertFrom-UninstallString -UninstallString 'C:\Program Files\Some Vendor\remove.cmd /quiet'
+            $result.Type | Should -Be 'Exe'
+            $result.FilePath | Should -Be 'C:\Program Files\Some Vendor\remove.cmd'
+        }
+
+        It 'still uses the Inno Setup switches for an unquoted unins000.exe in a path with spaces' {
+            $result = ConvertFrom-UninstallString -UninstallString 'C:\Program Files\Some Vendor\unins000.exe'
+            $result.ArgumentList | Should -Be '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+        }
+
+        It 'leaves a path without spaces to the original rule (arguments may follow without a space)' {
+            $result = ConvertFrom-UninstallString -UninstallString 'C:\Vendor\uninst.exe/S'
+            $result.FilePath | Should -Be 'C:\Vendor\uninst.exe'
+            $result.ArgumentList | Should -Be '/S'
+        }
+    }
+
+    Context 'registry strings with characters a path cannot hold' {
+        It 'is parsed without an error or an exception (the parser asks no file system about them)' {
+            foreach ($odd in 'C:\a<b>\unins000.exe /x', 'C:\x|y\uninst.exe /S', '"C:\Program Files\I"rundll32.exe" /S', 'C:\p"q\setup.exe') {
+                $Error.Clear()
+                $result = ConvertFrom-UninstallString -UninstallString $odd
+                $result | Should -Not -BeNullOrEmpty -Because $odd
+                $Error.Count | Should -Be 0 -Because $odd
+            }
+        }
+
+        It 'still recognises Inno Setup''s unins000.exe by its name alone' {
+            (ConvertFrom-UninstallString -UninstallString 'C:\a<b>\unins000.exe /x').ArgumentList | Should -Be '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+            (ConvertFrom-UninstallString -UninstallString '"C:\Program Files\App\unins001.exe"').ArgumentList | Should -Be '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+            (ConvertFrom-UninstallString -UninstallString 'C:\Program Files\App\not-unins000.exe').ArgumentList | Should -Be '/S'
+        }
+    }
+
     It 'returns Type Unparseable for a string that is neither an MSI invocation nor an exe path' {
         $result = ConvertFrom-UninstallString -UninstallString 'this is not a valid uninstall command'
         $result.Type | Should -Be 'Unparseable'
+    }
+
+    It 'returns Type Unparseable for words that merely contain the letters exe' {
+        (ConvertFrom-UninstallString -UninstallString 'run the exe please').Type | Should -Be 'Unparseable'
     }
 }
