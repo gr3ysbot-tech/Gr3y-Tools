@@ -87,7 +87,7 @@ phases 0-3 and part of phase 4 (optional items were deliberately not built):
 - One-line pinned/verified bootstrap (`debloat.ps1`, `irm get.gr3y.io/debloat
   | iex`) - downloads every tool file from a single immutable commit and
   verifies SHA256 hashes against `latest.json` before running anything.
-- OEM bloatware removal for Dell and Lenovo, McAfee trialware removal,
+- OEM bloatware removal for Dell and Lenovo, McAfee software removal (every McAfee* program),
   consumer Teams/Chat AppX removal (not the real work/school client).
 - Microsoft 365 Apps for business deployment via the Office Deployment Tool,
   with `ExcludeApp` checkboxes and Shared Computer Activation.
@@ -117,6 +117,100 @@ phases 0-3 and part of phase 4 (optional items were deliberately not built):
 
 ### Fixed
 
+- **Debloat: the Dell/OEM removal (Phase 1) now checks what it did and says what stayed.** On a Dell
+  Vostro 16 the owner reported "nothing was removed"; the run ended "Run complete with 5
+  warning(s)/error(s)" - four from the Store-app step and one about Dell Pair - and said nothing about
+  SupportAssist, Optimizer or Digital Delivery. The old engine threw every uninstaller's exit code
+  away and never looked at the Apps list afterwards, so a failed uninstall looked exactly like a
+  successful one. **Why SupportAssist stayed is not known** (the laptop was then cleaned by hand and
+  cannot be examined), and **this change has not yet run on real Dell hardware**; the next run logs
+  every command and exit code, so a failure names itself. What the log did show, and what is fixed:
+  - Store apps: de-provisioning ran AFTER `Remove-AppxPackage -AllUsers`, which most likely had
+    deleted the staged files DISM needs (four "cannot find the file/path" warnings). Now it runs
+    first, the removal follows, and both lists are read again; a list that cannot be read is not
+    taken for an empty one, and an app is one app although the installed and the provisioned list
+    spell its package name differently; one that stays is named by the package that is left (the
+    staged bundle may stay when the installed package went).
+  - Dell Pair was skipped as "could not resolve an uninstaller" - its registry command is an unquoted
+    path with spaces (Dell Peripheral Manager is expected to look the same). The parser handles it now
+    (also `.bat`/`.cmd`/`.com`, upper-case extensions, quoted whole commands, `%VARIABLES%`). A command
+    that starts with a bare program name (`rundll32.exe`, `cmd.exe`, `powershell.exe`) is resolved to
+    the file in the Windows folder; a program found only in another PATH folder is not run on the
+    strength of a registry string.
+  - Dell Optimizer's InstallShield wrapper ran for 190 s with no silent switch and exited by itself;
+    whether it removed Optimizer is not known. It now gets `-remove -runfromtemp /Silent` (from a Dell
+    sample script that is marked as a test) and 7 minutes.
+  - Every program was tried up to four times, once per matching pattern and installer layer. Now there
+    is one record per program with all its layers, run in the order WiX bundle, InstallShield wrapper,
+    MSI, plain EXE.
+  - What the engine does now: every command line and exit code is logged and classified (success,
+    restart needed, nothing to remove, Windows Installer busy, a restart from an earlier installation
+    pending, cached installer missing, blocked by policy, hung, failed). A success is believed only when
+    the program has left the Apps list, and a last look at the list corrects the report both ways (a
+    program that went away late is not NOT REMOVED; one that is listed again is not removed).
+    Windows Installer is waited for before an MSI or a bundle (about 10 minutes in all for an
+    installer that is busy for good; one wait of up to 2 minutes is not cut short).
+  - Direct MSI removals pass `IGNOREDEPENDENCIES=ALL`. A Burn bundle passes it to its MSIs as well, but
+    only after its own check of what depends on them; this tool makes no such check, so Dell Core
+    Services keeps its dependency check on. A WiX dependency check can make a quiet MSI uninstall end
+    in exit 0 with nothing removed; that has not been observed on Dell's own MSIs.
+  - Before an uninstaller runs, the product's services are stopped (with a 30-second deadline: Windows
+    PowerShell's `Stop-Service` waits for ever on a service stuck stopping) and set to Disabled, its
+    processes are ended (`productHints` in `bloat-patterns.json`), and so is whatever runs from the
+    program's own folder when its Apps entry registers one - never this worker, a PowerShell host,
+    msiexec, the Windows folder, Dell Command | Update or the product's own uninstaller. The log says
+    what each service was set to. If the program then stays, its services stay Disabled, and its NOT
+    REMOVED line says so and how to undo it (and says when a service could not be stopped and is still
+    running); a service that one program disabled is named in the line of every later program of the
+    run that shares it and stays. Phase 1b (leftover services and scheduled tasks) uses
+    the same bounded stop, logs what each service is set to, leaves one that is stopped and disabled
+    already alone, and now warns when a service cannot be stopped.
+  - An installer that has not finished after its limit (10 minutes for an MSI or a bundle, 4 for a
+    wrapper, 5 for any other uninstaller, 7 for Optimizer's own) is stopped together with its child
+    processes and the program is reported as NOT REMOVED; what Windows Installer does with an
+    interrupted transaction is not known.
+  - Retries: a failed pass is followed by one more, with the services and processes stopped again. A
+    layer that hung, could not be started, lost its cached installer, is blocked by a policy or said
+    "not installed" is not asked again. A layer that said "restart first" is not asked again and no
+    second look at the other programs is taken, but the product's other layers still get their normal
+    second try. A plain failure is run up to three times (two passes plus the second look), and the
+    NOT REMOVED line counts the tries of both looks. A second look at a program whose runnable layers
+    all hit a wall starts nothing and is not announced.
+  - An Apps entry is cleared only as a PROVEN leftover: its uninstaller FILE is gone, or an MSI or an
+    InstallShield wrapper says "not installed" (1605/1614; a bundle that says it is reported, not
+    cleared), AND the entry registers something that can be looked at - its install folder, the
+    folder its uninstaller sat in (unless that is an installer cache), an icon file that is not a
+    Windows file, a service named in the product hint - AND none of it is found. A folder counts only
+    if it holds something (an empty one is what an uninstaller leaves behind); a location on a
+    network share or on a drive this session cannot see, and a command that starts with a bare
+    program name that cannot be found, cannot be judged and count as "still there". An entry that
+    registers nothing to look at is kept and reported with its registry key, so that it can be
+    removed by hand (7 of the 9 Windows Installer products on the development PC register no folder
+    or icon file at all, so for them "nothing found" would mean nothing). An entry that was merely
+    not listed for a moment is never cleared, and the uninstaller file is looked at once more right
+    before the delete. Each key gets its own `.reg` backup in the work folder, which the 30-day
+    clean-up keeps. It is counted as "leftover Apps entry cleared" unless an uninstaller of the same
+    program ran successfully. A command that cannot be read, or a program that still seems to be
+    installed, is reported and never deleted.
+  - Everything that stays is a `NOT REMOVED` warning with the exit code (none for a hang, an
+    unreadable command or a Store app); for an MSI also the failing action or error read from its
+    verbose log (or the newest Application-log error), for a bundle the path of its own log (these
+    logs are kept for a program that stays and deleted for one that is gone, after the last look at
+    the Apps list), and a closing hint. A restart that is already pending is reported up front (a
+    Burn bundle whose own earlier run asked for a restart does nothing and exits 350). The finish
+    banner counts warning lines, not programs: a run in which every program was removed can still end
+    "with N warnings", and a "Nothing that was targeted is left" line says so when that is all they
+    were. A dry run prints the command of each uninstaller and the services and processes it would
+    stop. A note says when Dell Command | Update is installed and can bring removed programs back.
+  - Kept as before - for the owner to decide: the default patterns. `Dell SupportAssist*` also matches
+    Dell SupportAssist for Business PCs, `McAfee*` every McAfee program, and `Dell Core Services`,
+    `Waves MaxxAudio*` and `MaxxAudioPro*` stay; the research recommended making Dell Core Services and
+    MaxxAudio opt-in instead. Before this change those removals could not be told from failures, now
+    they really happen (see "Judgement calls" in `docs/what-this-changes.md`; the confirmation box
+    before a run now says that SupportAssist for Business PCs and managed McAfee are included). No
+    forced clean-up after the vendor attempts fail, and no automatic Dell Command | Update configuration.
+  - New lint rules reject a function defined twice in one script and a malformed or over-broad
+    `productHints` entry.
 - **Create Break-Glass Admin works on Windows PowerShell 5.1.** It generated the password
   with `RandomNumberGenerator.Fill`, which .NET Framework does not have, so on the host the
   app always uses the step failed before it created the account, set the LAPS policy or wrote

@@ -4,13 +4,15 @@
 
 .DESCRIPTION
     Three phases, each independently toggle-able:
-      1. Remove known Dell/Lenovo OEM bloatware (AppX/MSIX apps + Win32 programs) and preloaded McAfee trialware.
+      1. Remove known Dell/Lenovo OEM bloatware (AppX/MSIX apps + Win32 programs) and McAfee software
+         (every program named McAfee*: trial, paid or centrally managed alike).
       2. Fully remove any existing Office installation (Click-to-Run and/or MSI-based), which also clears
          out every preinstalled Office display/proofing language in one step.
       3. Install Microsoft 365 Apps for business via the Office Deployment Tool (ODT), en-us only.
 
-    Run in -DryRun first on a representative model to review exactly what would be removed before
-    rolling out silently across a fleet.
+    Run in -DryRun first on a representative model to preview what would be removed (programs and
+    Store apps, and the services and scheduled tasks that would be disabled) before rolling out
+    silently across a fleet.
 
 .PARAMETER DryRun
     List what would be removed/installed without making any changes.
@@ -30,8 +32,9 @@
 .PARAMETER Lenovo
     Limit phase 1 to the selected OEM's patterns (generic bloat like McAfee/Dropbox/
     Widgets/Teams always runs regardless, since it isn't OEM-specific). If NEITHER is
-    passed, both run - this is the safe default for standalone/command-line use; the
-    GUI always passes at least one explicitly based on its checkboxes.
+    passed, both run - this is the safe default for standalone/command-line use. The
+    GUI passes a flag for each ticked box, so unticking BOTH passes neither and the
+    worker then takes it as both (tick Skip debloat to run no OEM removal at all).
 
 .PARAMETER TweakReduceTelemetry
     Set AllowTelemetry=0, disable the DiagTrack service, and disable the Activity
@@ -441,12 +444,15 @@ function New-PreDeploySystemRestorePoint {
 # Bloat detection patterns (AppX/Win32/scheduled-task/service) live in
 # bloat-patterns.json, which must sit next to this script - shared with
 # Gr3ysUtilities.ps1's Scan feature so both read from one source of truth
-# instead of two copies that could drift apart. Deliberately NOT included in any
-# of these: DellInc.DellCommandUpdate (driver update tool - keep for IT), Dell
-# display/audio drivers (not AppX packages), Dell.SupportAssistAgent core service
-# if your org actively uses SupportAssist for Business, and the Lenovo Vantage /
-# Commercial Vantage + System Interface Foundation packages (keep for driver/BIOS
-# updates and fan/thermal control - same reasoning as Dell Command Update).
+# instead of two copies that could drift apart.
+# Deliberately NOT included: DellInc.DellCommandUpdate and the Dell Command | Update program (driver/BIOS update tool - keep for IT),
+# Dell display/audio drivers (not AppX packages), and the Lenovo Vantage / Commercial Vantage + System Interface Foundation
+# packages (driver/BIOS updates and fan/thermal control - same reasoning as Dell Command Update).
+# Included on purpose, whatever the organisation uses (delete the pattern from the JSON to keep one): the win32 pattern
+# 'Dell SupportAssist*' and the service pattern '*SupportAssist*' ALSO match Dell SupportAssist for Business PCs and its
+# SupportAssistAgent service - they are uninstalled, stopped and disabled like the consumer SupportAssist; Waves MaxxAudio* and
+# MaxxAudioPro* (audio software; users report that removing it can cost headphone-jack / microphone detection), Dell Core Services
+# (kept while other software depends on it) and every program named McAfee* (trial, paid or centrally managed).
 $patternsPath = Join-Path $scriptDir 'bloat-patterns.json'
 if (-not (Test-Path $patternsPath)) {
     Write-Log "ERROR: bloat-patterns.json not found next to this script at $patternsPath" 'ERROR'
@@ -482,6 +488,16 @@ $Win32BloatPatterns = @($bloatPatterns.generic.win32Patterns)
 $OemTaskFolders = @()
 $OemTaskKeepPatterns = @()
 $OemServicePatterns = @()
+# How long the whole run may spend waiting for a busy Windows Installer - about 10 minutes: it is checked before each wait, and a
+# wait that has begun (up to 2 minutes) is not cut short. Counted by Invoke-OemUninstallLayer.
+$OemBudget = @{ BusySeconds = 0; BusyLimitSec = 600 }
+# The services this run has set to Disabled (service name -> { Name; DisplayName; Was; Stopped }): several products share a hint (the three
+# SupportAssist programs), and the report of the one that stays must name the services an EARLIER product's turn disabled as well.
+$OemRunDisabled = @{}
+# Per-product knowledge for the removal: which services and processes keep a product busy (they are stopped before its
+# uninstaller runs), the silent switches to use, a time limit, or "leave it while other software depends on it". Optional - a
+# product without a hint is simply uninstalled.
+$OemProductHints = @($bloatPatterns.generic.productHints | Where-Object { $_ })
 foreach ($oemName in $script:selectedOems) {
     $section = $bloatPatterns.$oemName
     if (-not $section) { continue }
@@ -490,6 +506,7 @@ foreach ($oemName in $script:selectedOems) {
     $OemTaskFolders += $section.scheduledTaskFolders
     $OemTaskKeepPatterns += $section.scheduledTaskKeepPatterns
     $OemServicePatterns += $section.servicePatterns
+    $OemProductHints += @($section.productHints | Where-Object { $_ })
 }
 
 function Get-UninstallEntries {
@@ -503,10 +520,10 @@ function Get-UninstallEntries {
 }
 
 function ConvertFrom-UninstallString {
-    # Pure decision logic extracted out of Remove-OemBloatware's uninstall loop - no
-    # filesystem or process side effects, so it's safe to unit test directly (Pester,
-    # tests/Deploy-DellOfficeSetup.Tests.ps1). The caller still does Test-Path and
-    # Start-ProcessLowPriority itself; this only decides WHAT would run.
+    # Pure decision logic (what an Uninstall entry's command line would run) - no filesystem
+    # or process side effects, so it's safe to unit test directly (Pester,
+    # tests/ConvertFrom-UninstallString.Tests.ps1). Get-OemUninstallLayer builds on it; the
+    # caller still does Test-Path and Start-ProcessLowPriority itself.
     param(
         [string]$UninstallString,
         [string]$QuietUninstallString
@@ -534,15 +551,26 @@ function ConvertFrom-UninstallString {
     # Program Files ever actually runs.
     $exe = $null
     $existingArgs = ''
+    $ignoreCase = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
     $quotedMatch = [regex]::Match($effectiveString, '^"([^"]+)"\s*(.*)$')
     if ($quotedMatch.Success) {
         $exe = $quotedMatch.Groups[1].Value
         $existingArgs = $quotedMatch.Groups[2].Value
     } else {
-        $bareMatch = [regex]::Match($effectiveString, '^(\S+?\.exe)\s*(.*)$')
+        $bareMatch = [regex]::Match($effectiveString, '^(\S+?\.exe)\s*(.*)$', $ignoreCase)
         if ($bareMatch.Success) {
             $exe = $bareMatch.Groups[1].Value
             $existingArgs = $bareMatch.Groups[2].Value
+        } else {
+            # An UNQUOTED path that itself contains spaces - the way NSIS-based uninstallers such as Dell Pair and Dell Peripheral
+            # Manager register themselves ("C:\Program Files\Dell\Dell Pair\Uninstall.exe /S"). The path ends at the first
+            # .exe/.bat/.cmd/.com that is followed by white space or the end of the string; these used to be reported as "could not
+            # resolve an uninstaller" and skipped.
+            $spacedMatch = [regex]::Match($effectiveString, '^(?<path>.+?\.(?:exe|bat|cmd|com))(?:\s+(?<args>.*))?$', $ignoreCase)
+            if ($spacedMatch.Success) {
+                $exe = $spacedMatch.Groups['path'].Value
+                $existingArgs = $spacedMatch.Groups['args'].Value
+            }
         }
     }
 
@@ -551,7 +579,7 @@ function ConvertFrom-UninstallString {
     }
 
     $silentArgs =
-        if ((Split-Path -Leaf $exe) -match '^unins\d*\.exe$') {
+        if ($exe -match '(^|[\\/])unins\d*\.exe$') {   # (the file name is matched by pattern: no file system is asked about a registry string here)
             # Inno Setup's own uninstaller - this is its documented silent switch set.
             '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
         } elseif ($existingArgs) {
@@ -622,26 +650,175 @@ function Invoke-ThrottledSteps {
     $pool.Dispose()
 }
 
+function Get-UninstallExitClass {
+    # Pure decision logic (Pester: tests/OemRemoval.Tests.ps1): what an uninstaller's exit code means for the run. msiexec and WiX
+    # Burn bundles report Win32 error codes; Burn often wraps them as an HRESULT (0x8007xxxx), which .NET shows as a negative Int32 -
+    # the value is unwrapped to the plain Win32 code first. NSIS, Inno Setup and InstallShield have codes of their own, so a small
+    # code from such an installer is only a hint: what decides whether a program is gone is the Apps list, never the code.
+    # Class: Success, RebootRequired (it worked, a restart finishes it), NotInstalled (Windows Installer says there is nothing to remove),
+    # Busy (another install is running - retry later), RebootFirst (a restart from an earlier installation is pending and the
+    # installer took no action - a Burn bundle then exits 350 on every try until the PC restarts), NoSource (the cached installer
+    # is missing - retrying cannot help), Blocked (a policy forbids it), Failed, TimedOut, NotStarted or Unknown (no exit code).
+    param($ExitCode, [bool]$TimedOut = $false, [bool]$Started = $true)
+    if (-not $Started) { return [PSCustomObject]@{ Class = 'NotStarted'; Code = $null; Text = 'the uninstaller could not be started' } }
+    if ($TimedOut) { return [PSCustomObject]@{ Class = 'TimedOut'; Code = $null; Text = 'the uninstaller did not finish in time and was stopped' } }
+    if ($null -eq $ExitCode) { return [PSCustomObject]@{ Class = 'Unknown'; Code = $null; Text = 'no exit code was reported' } }
+    $unsigned = [int64]$ExitCode -band 4294967295
+    # 0x8007xxxx is a Win32 error wrapped as an HRESULT (2147942400 = 0x80070000; 4294901760 = 0xFFFF0000).
+    $win32 = if (($unsigned -band 4294901760) -eq 2147942400) { $unsigned -band 65535 } else { $unsigned }
+    $texts = @{
+        5    = 'access denied'
+        350  = 'no action was taken: a restart from an earlier installation is pending'
+        740  = 'elevation is required'
+        1223 = 'the uninstall was cancelled'
+        1260 = 'blocked by a group policy'
+        1601 = 'the Windows Installer service could not be reached'
+        1602 = 'the uninstall was cancelled'
+        1603 = 'fatal error during the uninstall'
+        1604 = 'suspended: a restart from an earlier installation is pending'
+        1605 = 'this product is not installed'
+        1608 = 'unknown property'
+        1612 = 'the original install source is missing'
+        1614 = 'the product is already uninstalled'
+        1618 = 'another installation is already in progress'
+        1619 = 'the installer package could not be opened'
+        1620 = 'the installer package is invalid'
+        1625 = 'blocked by a system policy'
+        1631 = 'the Windows Installer service failed to start'
+        1638 = 'another version of this product is installed'
+        1639 = 'invalid command line'
+        1641 = 'the installer started a restart'
+        1643 = 'blocked by a system policy'
+        1644 = 'blocked by a policy'
+        1706 = 'the installation source is missing'
+        3010 = 'a restart is required to finish'
+        3011 = 'a restart is required to finish'
+        3017 = 'a restart from an earlier installation is pending'
+        3018 = 'a restart from an earlier installation is pending'
+    }
+    $code = [int64]$win32
+    $class = switch ($code) {
+        0 { 'Success' }
+        1707 { 'Success' }
+        3010 { 'RebootRequired' }
+        3011 { 'RebootRequired' }
+        1641 { 'RebootRequired' }
+        1605 { 'NotInstalled' }
+        1614 { 'NotInstalled' }
+        1618 { 'Busy' }
+        350 { 'RebootFirst' }
+        1604 { 'RebootFirst' }
+        3017 { 'RebootFirst' }
+        3018 { 'RebootFirst' }
+        1612 { 'NoSource' }
+        1706 { 'NoSource' }
+        1619 { 'NoSource' }
+        1620 { 'NoSource' }
+        1625 { 'Blocked' }
+        1643 { 'Blocked' }
+        1644 { 'Blocked' }
+        1260 { 'Blocked' }
+        default { 'Failed' }
+    }
+    $text = if ($code -eq 0) { 'success' } elseif ($code -eq 1707) { 'success' } elseif ($code -le 65535 -and $texts.ContainsKey([int]$code)) { $texts[[int]$code] } else { 'the uninstaller reported an error' }
+    # How the code is written in logs: a Win32 code as a plain number (with the HRESULT it came wrapped in, which is the form Burn's own
+    # log shows), anything bigger - COM, .NET and NT status codes - in hex, the form vendors and search engines use, not as a huge decimal.
+    $display = if ($code -gt 65535) { '0x{0:X8}' -f $unsigned } elseif ($win32 -ne $unsigned) { '{0} (0x{1:X8})' -f $code, $unsigned } else { [string]$code }
+    return [PSCustomObject]@{ Class = $class; Code = $code; Display = $display; Text = $text }
+}
+
+function Test-WindowsInstallerBusy {
+    # True while another Windows Installer operation holds the machine-wide _MSIExecute mutex (msiexec then fails with 1618).
+    # Only the SYNCHRONIZE right is asked for (what the other side of the mutex's ACL grants everybody); the default of
+    # Mutex.TryOpenExisting would also ask for MODIFY and be refused.
+    $mutex = $null
+    try {
+        try {
+            $mutex = [System.Threading.Mutex]::OpenExisting('Global\_MSIExecute', [System.Security.AccessControl.MutexRights]::Synchronize)
+        } catch [System.Threading.WaitHandleCannotBeOpenedException] {
+            return $false
+        }
+        $acquired = $false
+        try { $acquired = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+        if ($acquired) { try { $mutex.ReleaseMutex() } catch {} ; return $false }
+        return $true
+    } catch {
+        # No rights to look: do not block on a guess; an actual collision comes back as 1618 and is retried.
+        return $false
+    } finally {
+        if ($mutex) { $mutex.Dispose() }
+    }
+}
+
+function Wait-WindowsInstallerIdle {
+    # Counts its own waiting (instead of watching the clock) so that it is deterministic and testable.
+    param([int]$TimeoutSec = 120)
+    $announced = $false
+    for ($waited = 0; ; $waited += 5) {
+        if (-not (Test-WindowsInstallerBusy)) { return $true }
+        if (-not $announced) { Write-Log 'Another Windows Installer operation is running - waiting for it to finish...'; $announced = $true }
+        if ($waited -ge $TimeoutSec) { return $false }
+        Start-Sleep -Seconds 5
+    }
+}
+
+function Get-OemHangGuess {
+    # Pure: the likely reason an uninstaller has not finished, for the warning that says it is being stopped. A Windows Installer
+    # product (msiexec) has no window under /qn, so a dialog is not the likely reason for it; any other installer may be waiting on one.
+    param([string]$FilePath)
+    if ($FilePath -match '(^|[\\/])msiexec\.exe$') { return 'a Windows Installer product has no window under /qn: a stuck custom action, or a file in use?' }
+    return 'probably a dialog nobody can answer: is the silent switch right?'
+}
+
+function Get-RunWarningCount {
+    # The number of WARN/ERROR lines this run has written so far (the counter Write-Log keeps, which the finish banner reports).
+    return [int]$script:errorCount
+}
+
 function Start-ProcessLowPriority {
-    # Launches an uninstaller at BelowNormal process priority so it yields to
-    # whatever else is using the machine (remote session, foreground apps)
-    # instead of competing for CPU/disk at full priority. Bounded wait - a wrong
-    # silent flag can pop an interactive dialog on a -WindowStyle Hidden process,
-    # which would otherwise block this step (and the whole run) forever.
+    # Launches an uninstaller hidden at BelowNormal process priority so it yields to whatever else is using the machine (remote
+    # session, foreground apps), and waits for it with a bound - a wrong silent flag can pop an interactive dialog on a hidden
+    # process, which would otherwise block this step (and the whole run) forever. Returns what happened (Started, ExitCode,
+    # TimedOut, Seconds, Error): the exit code used to be thrown away, which made a failed uninstall look exactly like a
+    # successful one.
     param(
         [string]$FilePath,
         [string]$ArgumentList,
         [int]$TimeoutMs = 600000
     )
-    $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru -WindowStyle Hidden -ErrorAction SilentlyContinue
-    if ($proc) {
-        try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch {}
-        $exited = $proc.WaitForExit($TimeoutMs)
-        if (-not $exited) {
-            Write-Log "Uninstaller '$FilePath' did not exit within $($TimeoutMs / 1000)s (likely showing a dialog with the wrong silent flag) - killing it." 'WARN'
-            try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
-        }
+    $result = [PSCustomObject]@{ Started = $false; ExitCode = $null; TimedOut = $false; Seconds = 0; Error = $null }
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $proc = $null
+    try {
+        # Start-Process refuses an empty -ArgumentList, so it is only passed when there is one.
+        $startArgs = @{ FilePath = $FilePath; PassThru = $true; WindowStyle = 'Hidden'; ErrorAction = 'Stop' }
+        if ($ArgumentList) { $startArgs['ArgumentList'] = $ArgumentList }
+        $proc = Start-Process @startArgs
+    } catch {
+        # (the message Start-Process gives for a missing file does not name the file)
+        $result.Error = "$($_.Exception.Message) [$FilePath]"
+        return $result
     }
+    $result.Started = $true
+    # Some builds of Windows PowerShell 5.1 are reported to lose the exit code of a Start-Process -PassThru object unless its handle
+    # was read while the process was still running (not reproduced on 5.1.26100; reading it is harmless).
+    try { $null = $proc.Handle } catch {}
+    try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch {}
+    if ($proc.WaitForExit($TimeoutMs)) {
+        $result.ExitCode = $proc.ExitCode
+    } else {
+        $result.TimedOut = $true
+        Write-Log "Uninstaller '$FilePath' did not exit within $($TimeoutMs / 1000)s ($(Get-OemHangGuess -FilePath $FilePath)) - killing it." 'WARN'
+        # /T: the whole tree - an installer's child (msiexec, a temp copy of itself) would otherwise keep running. When the process IS
+        # msiexec (a Windows Installer product that has not finished after the limit - 10 minutes, with no window to wait on under
+        # /qn), its client is stopped too; the work itself runs in the Windows Installer service, and what that service does with an
+        # interrupted transaction is NOT known. Leaving it running would be worse - every other MSI of the run would sit behind it
+        # until its 1618 retries ran out - so the product stays "NOT REMOVED" and its verbose log is kept.
+        try { & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null } catch {}
+        try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    $result.Seconds = [int][Math]::Round($sw.Elapsed.TotalSeconds)
+    return $result
 }
 
 function Test-IsWorkSchoolTeams {
@@ -655,130 +832,1291 @@ function Test-IsWorkSchoolTeams {
     return $false
 }
 
-function Remove-OemBloatware {
-    Write-Log '--- Phase 1: Removing OEM (Dell/Lenovo) bloatware and McAfee trialware ---'
+function ConvertTo-BurnUninstallArguments {
+    # Pure: the command line for a WiX Burn setup bundle (the "...\Package Cache\{GUID}\setup.exe /uninstall" kind that vendors
+    # such as Dell register next to their MSI): always /uninstall /quiet /norestart, whatever else the vendor string carried
+    # (a /passive would pop a window; /modify, /repair and /layout would override the /uninstall, because Burn obeys the LAST
+    # action switch - a bundle whose Modify button is disabled registers '/modify' as its plain uninstall string), plus an
+    # optional /log so that a failure can be diagnosed afterwards.
+    param([string]$ExistingArguments, [string]$LogPath)
+    $kept = New-Object System.Collections.Generic.List[string]
+    foreach ($token in @($ExistingArguments -split '\s+' | Where-Object { $_ })) {
+        if ($token -match '^[/-](uninstall|quiet|q|qn|passive|norestart|forcerestart|promptrestart|modify|repair|layout)$') { continue }
+        $kept.Add($token)
+    }
+    $parts = @('/uninstall', '/quiet', '/norestart') + $kept.ToArray()
+    if ($LogPath) { $parts += "/log `"$LogPath`"" }
+    return ($parts -join ' ')
+}
 
-    # --- AppX packages (installed for all existing users, and de-provision so new
-    #     user profiles don't get them reinstalled) ---
-    # Query once and filter in memory - Get-AppxProvisionedPackage -Online is a slow
-    # DISM-backed call, and running it once per pattern (instead of once total) was
-    # the main source of the CPU/disk spike during this phase.
-    $allInstalledAppx = Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue
-    $allProvisionedAppx = Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
+function Test-PathQuiet {
+    # Test-Path for a string that came out of the registry. A character a path cannot hold (a quote, < > |) makes Test-Path write an
+    # "Illegal characters in path" ERROR instead of answering "no", which fills the log with red text; such a string is answered with
+    # $false here without asking the file system. Some questions THROW even with -ErrorAction SilentlyContinue (a folder on a network
+    # server that is down), and they too are answered with $false. (Our own work-folder paths are tested with plain Test-Path.)
+    param([string]$Path, [string]$PathType = 'Any')
+    if (-not $Path) { return $false }
+    if ($Path.IndexOfAny([System.IO.Path]::GetInvalidPathChars()) -ge 0) { return $false }
+    try { return [bool](Test-Path -LiteralPath $Path -PathType $PathType -ErrorAction SilentlyContinue) } catch { return $false }
+}
 
-    # AppX removals are cheap and independent of each other, so a few run at once
-    # in a bounded pool instead of one at a time - real time drops without the
-    # machine-choking effect an unbounded parallel pass would cause.
-    # No -ErrorAction SilentlyContinue here - inside a separate [powershell] runspace
-    # instance, SilentlyContinue/Ignore stop the error from ever reaching that
-    # instance's own Streams.Error collection, which is what Invoke-ThrottledSteps reads
-    # to log a WARN afterward. Leaving ErrorAction at its default lets a failed
-    # removal/de-provision show up there without throwing (non-terminating by default)
-    # and without printing to a console no one's attached to.
-    $appxRemoveAction = { param($FullName) Remove-AppxPackage -Package $FullName -AllUsers }
-    $appxDeprovisionAction = { param($PackageName) Remove-AppxProvisionedPackage -Online -PackageName $PackageName | Out-Null }
+function ConvertTo-OemFolderPath {
+    # Pure: registry text -> a path worth asking the file system about. Registry values are not reliable: quoted, still carrying
+    # %VARIABLES%, blank, "." or "C:" (which Test-Path reads as "the current directory", not as a program folder). Quotes and white
+    # space are removed, %VARIABLES% expanded, "/" turned into "\", and only a ROOTED path (a drive letter and a separator, or a UNC
+    # share) is returned; anything else gives ''.
+    param([string]$Text)
+    if (-not $Text) { return '' }
+    $path = ([Environment]::ExpandEnvironmentVariables($Text.Trim().Trim('"').Trim())) -replace '/', '\'
+    if ($path -notmatch '^(?:[A-Za-z]:\\|\\\\)') { return '' }
+    return $path
+}
 
-    $appxRemoveSteps = New-Object System.Collections.Generic.List[hashtable]
-    $appxDeprovisionSteps = New-Object System.Collections.Generic.List[hashtable]
+function Get-OemUninstallerFolder {
+    # Pure: the folder an uninstaller file sits in, cut off by hand from the normalised registry text; '' when it has no rooted folder
+    # of its own (a bare program name, a file in a drive root).
+    param([string]$UninstallerPath)
+    $full = ConvertTo-OemFolderPath -Text $UninstallerPath
+    if (-not $full) { return '' }
+    $cut = $full.LastIndexOf('\')
+    if ($cut -le 2) { return '' }
+    return $full.Substring(0, $cut)
+}
+
+function Resolve-UninstallExecutable {
+    # Finds, on disk, the file an Uninstall entry's command line really starts with. Registry strings are not reliable: an unquoted
+    # path may contain spaces (even a folder called "x.exe y"), and a REG_SZ value may still carry %ProgramFiles%. Returns
+    # { FilePath; Arguments } for the first reading that exists as a file (shortest path first), or $null when there is none.
+    param([string]$CommandLine)
+    if (-not $CommandLine) { return $null }
+    $expanded = [Environment]::ExpandEnvironmentVariables($CommandLine.Trim())
+    $quoted = [regex]::Match($expanded, '^"([^"]+)"\s*(.*)$')
+    if ($quoted.Success) {
+        if (Test-PathQuiet -Path $quoted.Groups[1].Value -PathType Leaf) {
+            return [PSCustomObject]@{ FilePath = $quoted.Groups[1].Value; Arguments = $quoted.Groups[2].Value }
+        }
+        # Some vendors quote the WHOLE command - "C:\Program Files\Vendor\uninstall.exe /S" - so look inside the quotes as well.
+        $expanded = ($quoted.Groups[1].Value + ' ' + $quoted.Groups[2].Value).Trim()
+    }
+    $ignoreCase = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    foreach ($end in [regex]::Matches($expanded, '\.(?:exe|bat|cmd|com)(?=\s|$)', $ignoreCase)) {
+        $candidate = $expanded.Substring(0, $end.Index + $end.Length)
+        if (Test-PathQuiet -Path $candidate -PathType Leaf) {
+            return [PSCustomObject]@{ FilePath = $candidate; Arguments = $expanded.Substring($candidate.Length).Trim() }
+        }
+    }
+    return $null
+}
+
+function ConvertTo-MsiUninstallArguments {
+    # Pure: the msiexec command line that removes one MSI product quietly. A WiX Burn bundle passes IGNOREDEPENDENCIES=ALL itself when
+    # it removes a chained MSI - but only AFTER its own check of what depends on the package; this tool makes no such check. The
+    # flag is here for a known WiX mechanism: an MSI built with the WiX dependency extension whose bundle is registered as a
+    # dependent asks "really remove it?", which a silent run answers with "skip" - exit 0 and NOTHING removed (not yet observed on
+    # Dell's own MSIs). For an MSI without that check the property is simply unused. A product that other software shares (Dell Core
+    # Services, which Dell Update installs and other Dell agents rely on) is removed WITHOUT it, so that the check keeps protecting
+    # what depends on it.
+    param([string]$ProductCode, [string]$LogPath, [bool]$IgnoreDependencies = $true)
+    $dependencies = if ($IgnoreDependencies) { ' IGNOREDEPENDENCIES=ALL' } else { '' }
+    return "/x $ProductCode$dependencies /qn /norestart" + $(if ($LogPath) { " /L*v `"$LogPath`"" } else { '' })
+}
+
+function Get-OemProductHint {
+    # What bloat-patterns.json "productHints" knows about a product - every hint whose "match" wildcard fits its name, merged:
+    # services and processes to stop before its uninstaller runs, the silent switches to use instead of the vendor's own (some
+    # vendor strings open a wizard), a time limit, and whether the product is shared software whose dependents must be respected.
+    # Always returns the object; its lists are empty when nothing matches.
+    param([string]$ProductName)
+    $services = New-Object System.Collections.Generic.List[string]
+    $processes = New-Object System.Collections.Generic.List[string]
+    $silentArgs = ''
+    $timeoutSec = 0
+    $respectDependencies = $false
+    foreach ($hint in @($OemProductHints)) {
+        if (-not $hint -or -not $hint.match -or $ProductName -notlike $hint.match) { continue }
+        foreach ($s in @($hint.services)) { if ($s -and -not $services.Contains([string]$s)) { $services.Add([string]$s) } }
+        foreach ($p in @($hint.processes)) { if ($p -and -not $processes.Contains([string]$p)) { $processes.Add([string]$p) } }
+        if (-not $silentArgs -and $hint.silentArgs) { $silentArgs = [string]$hint.silentArgs }
+        if (-not $timeoutSec -and $hint.timeoutSec) { $timeoutSec = [int]$hint.timeoutSec }
+        if ($hint.respectDependencies -eq $true) { $respectDependencies = $true }
+    }
+    return [PSCustomObject]@{ Services = $services.ToArray(); Processes = $processes.ToArray(); SilentArgs = $silentArgs; TimeoutSec = $timeoutSec; RespectDependencies = $respectDependencies }
+}
+
+function Get-OemUninstallLayer {
+    # Turns one registry Uninstall entry into the command that removes that layer of a product, or a layer of Kind
+    # 'Unparseable'/'None' when the entry carries nothing runnable. Kind: Msi (a Windows Installer product), Bundle (WiX Burn
+    # bundle, which also removes its own MSIs), Wrapper (an InstallShield-style setup that wraps an MSI and tends to ignore silent
+    # flags) or Exe (any other uninstaller). -SilentArgs (from a product hint) replaces the arguments of an Exe/Wrapper layer. The
+    # only side effect is a file-exists check on the command's executable.
+    param($Entry, [string]$LogPath, [string]$SilentArgs, [bool]$IgnoreDependencies = $true)
+    $decision = ConvertFrom-UninstallString -UninstallString $Entry.UninstallString -QuietUninstallString $Entry.QuietUninstallString
+    $originalString = $decision.EffectiveString
+    # When the file the parser named is not there, look for the one the command line really starts with and parse that instead.
+    if ($originalString -and $decision.Type -in 'Exe', 'Unparseable') {
+        $parsedFileExists = ($decision.Type -eq 'Exe') -and $decision.FilePath -and (Test-PathQuiet -Path $decision.FilePath)
+        if (-not $parsedFileExists) {
+            $found = Resolve-UninstallExecutable -CommandLine $originalString
+            if ($found) { $decision = ConvertFrom-UninstallString -UninstallString ('"{0}" {1}' -f $found.FilePath, $found.Arguments) }
+        }
+    }
+    $keyName = [string]$Entry.PSChildName
+    $keyIsGuid = $keyName -match '^\{[0-9A-Fa-f-]{36}\}$'
+    $layer = [PSCustomObject]@{ Kind = 'None'; FilePath = $null; ArgumentList = $null; ProductCode = $null; KeyName = $keyName; EffectiveString = $originalString }
+    if ($decision.Type -eq 'Msi') {
+        # PSChildName is the registry key name, which for some Dell entries is a product name, not the GUID - only a fallback
+        # for an uninstall string that did not contain one.
+        $code = if ($decision.ProductCode) { $decision.ProductCode } elseif ($keyIsGuid) { $keyName } else { $null }
+        if (-not $code) { $layer.Kind = 'Unparseable'; return $layer }
+        $layer.Kind = 'Msi'
+        $layer.FilePath = 'msiexec.exe'
+        $layer.ProductCode = $code
+        $layer.ArgumentList = ConvertTo-MsiUninstallArguments -ProductCode $code -LogPath $LogPath -IgnoreDependencies $IgnoreDependencies
+        return $layer
+    }
+    if ($decision.Type -eq 'None') {
+        # An MSI-registered entry can lack an uninstall string; its key name is then the product code.
+        if ($keyIsGuid -and $Entry.WindowsInstaller -eq 1) {
+            $layer.Kind = 'Msi'
+            $layer.FilePath = 'msiexec.exe'
+            $layer.ProductCode = $keyName
+            $layer.ArgumentList = ConvertTo-MsiUninstallArguments -ProductCode $keyName -LogPath $LogPath -IgnoreDependencies $IgnoreDependencies
+        }
+        return $layer
+    }
+    if ($decision.Type -eq 'Unparseable') { $layer.Kind = 'Unparseable'; return $layer }
+    $layer.FilePath = $decision.FilePath
+    # A command that starts with a bare program name (powershell.exe, rundll32.exe, cmd.exe) is found through PATH, which a file check
+    # does not search: it is resolved to the real file here, so that it is neither run from (or judged against) the current directory
+    # nor taken for a missing uninstaller. Only a program that lives in the Windows folder is accepted: a file in some other PATH
+    # folder (which a user may be able to write to) is not run on the strength of a registry string - it stays unresolved, is
+    # reported, and counts as "cannot be checked from here".
+    if ($layer.FilePath -match '^[A-Za-z0-9_.-]+\.(?:exe|bat|cmd|com)$' -and $env:SystemRoot) {
+        $application = @(Get-Command -Name $layer.FilePath -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1)
+        # (compared as canonical paths: a PATH entry written "C:/WINDOWS/../Users/x/tools" is not in the Windows folder, and one written
+        # with "/" is)
+        $resolved = ''
+        $windowsRoot = ''
+        try {
+            if ($application.Count -gt 0 -and $application[0].Source) { $resolved = [System.IO.Path]::GetFullPath([string]$application[0].Source) }
+            $windowsRoot = [System.IO.Path]::GetFullPath($env:SystemRoot).TrimEnd('\') + '\'
+        } catch { $resolved = '' }
+        if ($resolved -and $windowsRoot -and $resolved.StartsWith($windowsRoot, [System.StringComparison]::OrdinalIgnoreCase)) { $layer.FilePath = $resolved }
+    }
+    $layer.ArgumentList = $decision.ArgumentList
+    if ($decision.FilePath -match '[\\/]Package Cache[\\/]' -or $Entry.BundleCachePath -or $Entry.BundleProviderKey) {
+        $layer.Kind = 'Bundle'
+        $vendorArgs = if ($Entry.QuietUninstallString -or $Entry.UninstallString) { $decision.ArgumentList } else { '' }
+        $layer.ArgumentList = ConvertTo-BurnUninstallArguments -ExistingArguments $vendorArgs -LogPath $LogPath
+    } elseif ($decision.FilePath -match 'InstallShield Installation Information') {
+        $layer.Kind = 'Wrapper'
+    } else {
+        $layer.Kind = 'Exe'
+    }
+    if ($SilentArgs -and $layer.Kind -in 'Exe', 'Wrapper') { $layer.ArgumentList = $SilentArgs }
+    return $layer
+}
+
+function Group-OemProductEntries {
+    # Pure: collapses the Uninstall entries matched by the bloat patterns into ONE record per product (its DisplayName), so that
+    # a product the patterns match more than once - or that registers several installer layers (an MSI plus the bundle around
+    # it) - is handled once, with all its layers together, instead of being attempted again and again. Product order = order
+    # of first match (the order of the layers inside a product is Remove-OemWin32Product's business).
+    param([object[]]$Entries, [string[]]$Patterns)
+    $seen = @{}
+    $byName = @{}
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($pattern in $Patterns) {
+        foreach ($entry in @($Entries | Where-Object { $_.DisplayName -like $pattern })) {
+            $id = if ($entry.PSPath) { [string]$entry.PSPath } else { ([string]$entry.DisplayName) + '|' + ([string]$entry.PSChildName) }
+            if ($seen.ContainsKey($id)) { continue }
+            $seen[$id] = $true
+            $key = ([string]$entry.DisplayName).Trim().ToLowerInvariant()
+            if (-not $byName.ContainsKey($key)) {
+                $product = [PSCustomObject]@{ Name = [string]$entry.DisplayName; Version = [string]$entry.DisplayVersion; Entries = (New-Object System.Collections.Generic.List[object]) }
+                $byName[$key] = $product
+                $out.Add($product)
+            }
+            $byName[$key].Entries.Add($entry)
+        }
+    }
+    # Plain arrays out: in Windows PowerShell 5.1, @(<a generic List held in a property>) can throw "Argument types do not match".
+    foreach ($product in $out) { $product.Entries = $product.Entries.ToArray() }
+    return $out.ToArray()
+}
+
+function Get-MsiLogFailureSummary {
+    # Reads a verbose Windows Installer log (msiexec /L*v) of a FAILED run and pulls out what names the cause: the custom action
+    # that returned a failure, the "Error NNNN." message the installer printed, and the final status. Returns '' when the log is
+    # missing or says nothing useful. Never throws.
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return '' }
+    $parts = New-Object System.Collections.Generic.List[string]
+    try {
+        $lines = @(Get-Content -LiteralPath $Path -ErrorAction Stop)
+        $action = $null
+        $actualCode = $null
+        $errorLine = $null
+        $status = $null
+        foreach ($line in $lines) {
+            $m = [regex]::Match($line, 'Action ended \d+:\d+:\d+: (?<name>[^.]+)\. Return value 3\.')
+            if ($m.Success -and -not $action) { $action = $m.Groups['name'].Value }
+            $m = [regex]::Match($line, 'CustomAction (?<name>\S+) returned actual error code (?<code>\d+)')
+            if ($m.Success -and -not $actualCode) { $actualCode = "custom action $($m.Groups['name'].Value) returned $($m.Groups['code'].Value)" }
+            $m = [regex]::Match($line, '(?:^|\s)(?<msg>Error \d{4}\..{0,160})')
+            if ($m.Success -and -not $errorLine) { $errorLine = $m.Groups['msg'].Value.Trim() }
+            $m = [regex]::Match($line, 'Removal success or error status: (?<s>\d+)')
+            if ($m.Success) { $status = $m.Groups['s'].Value }
+        }
+        if ($action) { $parts.Add("failed in action '$action'") }
+        if ($actualCode) { $parts.Add($actualCode) }
+        if ($errorLine) { $parts.Add($errorLine) }
+        if ($status -and $status -ne '0') { $parts.Add("final status $status") }
+    } catch {
+        return ''
+    }
+    $text = $parts -join '; '
+    if ($text.Length -gt 320) { $text = $text.Substring(0, 320) + '...' }
+    return $text
+}
+
+function Get-OemMsiEventSummary {
+    # The Windows Installer's own account of a failed run, from the Application event log (source MsiInstaller): the last few
+    # error/warning events since $Since, each cut to one line. Needs no verbose log. Returns an array of strings (possibly
+    # empty); never throws.
+    param([datetime]$Since)
+    $out = New-Object System.Collections.Generic.List[string]
+    try {
+        $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'MsiInstaller'; StartTime = $Since; Level = 2, 3 } -MaxEvents 6 -ErrorAction Stop)
+        foreach ($e in $events) {
+            $msg = ([string]$e.Message -replace '\s+', ' ').Trim()
+            if ($msg.Length -gt 240) { $msg = $msg.Substring(0, 240) + '...' }
+            if ($msg) { $out.Add("event $($e.Id): $msg") }
+        }
+    } catch {
+        # "No events were found" is an exception for Get-WinEvent, and an unreadable log is no reason to stop.
+    }
+    return $out.ToArray()
+}
+
+function Test-OemProductPresent {
+    # True while any Uninstall entry (HKLM 64/32-bit, HKCU) still carries this product's name - the one check that does not
+    # depend on what an uninstaller claims about itself.
+    param([string]$Name)
+    $wanted = ([string]$Name).Trim()
+    $now = @(Get-UninstallEntries | Where-Object { ([string]$_.DisplayName).Trim() -eq $wanted })
+    return ($now.Count -gt 0)
+}
+
+function Wait-OemProductGone {
+    # Some installers hand the real work to a child process and exit at once, so the exit code alone proves nothing: poll the
+    # Uninstall keys for a while before declaring the product still installed.
+    param([string]$Name, [int]$TimeoutSec = 30)
+    for ($waited = 0; ; $waited += 3) {
+        if (-not (Test-OemProductPresent -Name $Name)) { return $true }
+        if ($waited -ge $TimeoutSec) { return $false }
+        Start-Sleep -Seconds 3
+    }
+}
+
+function Stop-ServiceBounded {
+    # Stop-Service has no deadline of its own in Windows PowerShell 5.1: a service stuck in StopPending makes it wait for ever (one
+    # warning every two seconds), which would hold a hidden run for good. So the service is asked to stop WITHOUT waiting and the
+    # wait is bounded here. Returns $true when the service has stopped (or is gone), $false when it has not - the caller carries on.
+    param([string]$Name, [int]$TimeoutSec = 30)
+    try {
+        Stop-Service -Name $Name -Force -NoWait -ErrorAction Stop
+    } catch {
+        Write-Log "Could not stop service '$Name': $($_.Exception.Message)" 'WARN'
+        return $false
+    }
+    for ($waited = 0; $waited -lt $TimeoutSec; $waited += 2) {
+        $current = @(Get-Service -Name $Name -ErrorAction SilentlyContinue)
+        if ($current.Count -eq 0 -or "$($current[0].Status)" -eq 'Stopped') { return $true }
+        Start-Sleep -Seconds 2
+    }
+    Write-Log "Service '$Name' is still not stopped after $TimeoutSec s." 'WARN'
+    return $false
+}
+
+function Test-OemProcessMayBeStopped {
+    # The guard in front of every process kill. Never: this worker, a PowerShell host, msiexec, anything in the Windows folder, Dell
+    # Command | Update (kept on purpose), a product's own uninstaller (-ProtectPaths) or the installer cache an uninstaller runs from -
+    # killing those in the middle of a removal would only make it fail.
+    param($Process, [string[]]$ProtectPaths = @())
+    if ($Process.Id -eq $PID) { return $false }
+    if ($Process.ProcessName -in 'powershell', 'pwsh', 'msiexec') { return $false }
+    $path = [string]$Process.Path
+    if ($path) {
+        if ($env:windir -and $path.StartsWith($env:windir + '\', [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+        if ($path -match '[\\/](CommandUpdate|Package Cache|InstallShield Installation Information)[\\/]') { return $false }
+        foreach ($protected in $ProtectPaths) {
+            if ($protected -and $path.Equals($protected, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+        }
+    }
+    return $true
+}
+
+function Stop-OemProductActivity {
+    # Stops what keeps a product's files and services busy BEFORE its uninstaller runs: the vendor's own agent services and
+    # processes (named in bloat-patterns.json "productHints") and anything running from the product's install folder. A running
+    # agent is the usual reason a silent uninstall fails or is undone a moment later. -ProtectPaths: the product's own uninstallers,
+    # which must never be stopped by this. In a dry run NOTHING is changed: the function only says what it would do. Returns the
+    # services it set to Disabled ({ Name; DisplayName; Was; Stopped }): when the product cannot be removed after all they stay that
+    # way (and a service that could not be stopped keeps running), and the report says so.
+    param([string]$ProductName, [string]$InstallLocation, [string[]]$ProtectPaths = @())
+    $hint = Get-OemProductHint -ProductName $ProductName
+    $disabled = New-Object System.Collections.Generic.List[object]
+    foreach ($svcName in $hint.Services) {
+        # A hint names a service by its name or its display name; wildcards are allowed.
+        $found = @(Get-Service -Name $svcName -ErrorAction SilentlyContinue)
+        if ($found.Count -eq 0) { $found = @(Get-Service -DisplayName $svcName -ErrorAction SilentlyContinue) }
+        foreach ($svc in $found) {
+            # Disabled first: some vendor services restart themselves (service recovery actions) a moment after being stopped, which
+            # puts their files back in use in the middle of the uninstall. Phase 1b would disable these services anyway. What it was
+            # before goes into the log, because nothing else records it.
+            $record = $null
+            if ("$($svc.StartType)" -ne 'Disabled') {
+                if ($DryRun) {
+                    Write-Log "DRYRUN: Would disable service '$($svc.DisplayName)' ($($svc.Name); it is set to $($svc.StartType) and is $($svc.Status)) so that it cannot restart during the uninstall of '$ProductName'." 'DRYRUN'
+                } else {
+                    Write-Log "Disabling service '$($svc.DisplayName)' ($($svc.Name); it was set to $($svc.StartType) and was $($svc.Status)) so that it cannot restart during the uninstall of '$ProductName'."
+                    try {
+                        Set-Service -Name $svc.Name -StartupType Disabled -ErrorAction Stop
+                        $record = [PSCustomObject]@{ Name = [string]$svc.Name; DisplayName = [string]$svc.DisplayName; Was = "$($svc.StartType)"; Stopped = ("$($svc.Status)" -eq 'Stopped') }
+                        $disabled.Add($record)
+                        if ($null -ne $OemRunDisabled) { $OemRunDisabled[[string]$svc.Name] = $record }
+                    } catch { Write-Log "Could not disable service '$($svc.Name)': $($_.Exception.Message)" 'WARN' }
+                }
+            } elseif (-not $DryRun -and $null -ne $OemRunDisabled -and $OemRunDisabled.ContainsKey([string]$svc.Name)) {
+                # (disabled earlier in this run, by another product that shares this hint: it is still this run's doing, and the report of
+                # a product that stays must say so)
+                $record = $OemRunDisabled[[string]$svc.Name]
+                $disabled.Add($record)
+            }
+            if ($svc.Status -ne 'Stopped') {
+                if ($DryRun) {
+                    Write-Log "DRYRUN: Would stop service '$($svc.DisplayName)' ($($svc.Name)) before uninstalling '$ProductName'." 'DRYRUN'
+                } else {
+                    Write-Log "Stopping service '$($svc.DisplayName)' ($($svc.Name)) before uninstalling '$ProductName'."
+                    # A service that will not stop does not hold the run: its hinted processes are ended next, below. (Whether it did stop
+                    # is kept: the report must not say "stopped" about a service that is still running.)
+                    $stopped = [bool](Stop-ServiceBounded -Name $svc.Name -TimeoutSec 30)
+                    if ($record) { $record.Stopped = $stopped }
+                }
+            }
+        }
+    }
+    foreach ($procName in $hint.Processes) {
+        $running = @(Get-Process -Name $procName -ErrorAction SilentlyContinue | Where-Object { Test-OemProcessMayBeStopped -Process $_ -ProtectPaths $ProtectPaths })
+        if ($running.Count -gt 0) {
+            if ($DryRun) {
+                Write-Log "DRYRUN: Would stop $($running.Count) running '$procName' process(es) before uninstalling '$ProductName'." 'DRYRUN'
+            } else {
+                Write-Log "Stopping $($running.Count) running '$procName' process(es) before uninstalling '$ProductName'."
+                foreach ($p in $running) { try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { Write-Log "Could not stop '$procName' (PID $($p.Id)): $($_.Exception.Message)" 'WARN' } }
+            }
+        }
+    }
+    # Whatever runs from the product's own folder (when its Apps entry registers one) - but never from a folder that is shared: a
+    # vendor root such as C:\Program Files\Dell also holds the Dell Command | Update this tool deliberately keeps. A product folder
+    # is at least three levels deep (drive, Program Files, vendor, product).
+    # (the registry text is read as Get-OemProgramEvidence reads it - quotes and %VARIABLES% resolved - so that both see the same folder;
+    # a folder on a network share is never searched for processes)
+    $location = ConvertTo-OemFolderPath -Text $InstallLocation
+    $folderDepth = @($location.TrimEnd('\') -split '\\' | Where-Object { $_ }).Count
+    if ($location -and $location -notlike '\\*' -and $folderDepth -ge 4 -and (Test-PathQuiet -Path $location)) {
+        $root = $location.TrimEnd('\') + '\'
+        foreach ($p in @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase) -and (Test-OemProcessMayBeStopped -Process $_ -ProtectPaths $ProtectPaths) })) {
+            if ($DryRun) {
+                Write-Log "DRYRUN: Would stop '$($p.ProcessName)' (PID $($p.Id)), running from the install folder of '$ProductName'." 'DRYRUN'
+            } else {
+                Write-Log "Stopping '$($p.ProcessName)' (PID $($p.Id)), running from the install folder of '$ProductName'."
+                try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { Write-Log "Could not stop '$($p.ProcessName)': $($_.Exception.Message)" 'WARN' }
+            }
+        }
+    }
+    return $disabled.ToArray()
+}
+
+function Format-OemLayerCommand {
+    # Pure: the command line of an uninstaller layer as the log shows it (an MSI goes through msiexec).
+    param($Layer)
+    if ($Layer.Kind -eq 'Msi') { return "msiexec $($Layer.ArgumentList)" }
+    return "`"$($Layer.FilePath)`" $($Layer.ArgumentList)"
+}
+
+function Invoke-OemUninstallLayer {
+    # Runs ONE uninstaller layer of a product and reports what came of it (never throws). Windows Installer serialises all MSI
+    # work machine-wide, so msiexec is only started once it is idle, and a 1618 ("another installation is in progress") is
+    # waited out and retried instead of being taken as the final answer.
+    param($Layer, [string]$ProductName, [int]$TimeoutSec = 0)
+    $isMsi = ($Layer.Kind -eq 'Msi')
+    # A bundle runs its MSIs through the same machine-wide Windows Installer service, so it waits for it just like msiexec does.
+    $usesInstallerService = ($Layer.Kind -in 'Msi', 'Bundle')
+    # How long each kind may take before it is taken to be stuck: a Windows Installer product or a bundle of several can be large
+    # (and an MSI has no window under /qn, so what holds it is a stuck custom action or a file in use); a wrapper or plain EXE that
+    # has not finished after a few minutes is usually waiting for a click.
+    if ($TimeoutSec -le 0) { $TimeoutSec = switch ($Layer.Kind) { 'Msi' { 600 } 'Bundle' { 600 } 'Wrapper' { 240 } default { 300 } } }
+    $command = Format-OemLayerCommand -Layer $Layer
+    $attempt = [PSCustomObject]@{ Layer = $Layer.Kind; Command = $command; Class = 'NotStarted'; ExitCode = $null; ExitDisplay = $null; Text = ''; Seconds = 0; LogPath = $Layer.LogPath; Why = '' }
+    $startedAt = Get-Date
+    $maxTries = 4
+    for ($try = 1; $try -le $maxTries; $try++) {
+        # Waiting for Windows Installer has a budget for the whole run ($OemBudget): a machine whose installer is busy for good (first-boot
+        # updates, a stuck transaction) would otherwise cost every program four tries of two minutes each, twice.
+        $busyBudgetSpent = ($OemBudget -and $OemBudget.BusySeconds -ge $OemBudget.BusyLimitSec)
+        if ($usesInstallerService -and -not $busyBudgetSpent) {
+            $waitWatch = [System.Diagnostics.Stopwatch]::StartNew()
+            [void](Wait-WindowsInstallerIdle -TimeoutSec 120)
+            if ($OemBudget) { $OemBudget.BusySeconds += $waitWatch.Elapsed.TotalSeconds }
+        }
+        # The exact command line goes into the log: it is the only way to see afterwards which switches were really passed.
+        Write-Log "  Running the $($Layer.Kind) uninstaller for '$ProductName': $command"
+        $run = Start-ProcessLowPriority -FilePath $Layer.FilePath -ArgumentList $Layer.ArgumentList -TimeoutMs ($TimeoutSec * 1000)
+        $cls = Get-UninstallExitClass -ExitCode $run.ExitCode -TimedOut $run.TimedOut -Started $run.Started
+        $attempt.Class = $cls.Class
+        $attempt.ExitCode = if ($null -ne $cls.Code) { $cls.Code } else { $run.ExitCode }
+        $attempt.ExitDisplay = if ($cls.Display) { $cls.Display } elseif ($null -ne $run.ExitCode) { [string]$run.ExitCode } else { $null }
+        $attempt.Text = if ($run.Error) { $run.Error } else { $cls.Text }
+        $attempt.Seconds = $run.Seconds
+        # (a hang or a failed start has no exit code: the text alone says it)
+        $outcome = if ($null -ne $attempt.ExitDisplay) { "exit $($attempt.ExitDisplay) ($($attempt.Text))" } else { [string]$attempt.Text }
+        $level = if ($cls.Class -in 'Success', 'RebootRequired', 'NotInstalled') { 'INFO' } else { 'WARN' }
+        Write-Log "  $($Layer.Kind) uninstaller for '$ProductName': $outcome, $($attempt.Seconds)s" $level
+        if ($cls.Class -ne 'Busy') { break }
+        if ($OemBudget -and $OemBudget.BusySeconds -ge $OemBudget.BusyLimitSec) {
+            Write-Log "  Windows Installer has been busy for $([int]($OemBudget.BusySeconds / 60)) minutes of this run - not waiting for it any longer. Let Windows Update finish, restart the PC, then run the clean-up again." 'WARN'
+            break
+        }
+        if ($try -lt $maxTries) {
+            Write-Log '  Windows Installer was busy - waiting 20 s and trying again.'
+            Start-Sleep -Seconds 20
+            if ($OemBudget) { $OemBudget.BusySeconds += 20 }
+        }
+    }
+    if ($isMsi -and $attempt.Class -in 'Failed', 'NoSource', 'Blocked') {
+        # The exit code alone says "1603"; the installer's own log and the Application event log say WHY.
+        $why = Get-MsiLogFailureSummary -Path $Layer.LogPath
+        if (-not $why) { $why = (@(Get-OemMsiEventSummary -Since $startedAt) | Select-Object -First 1) }
+        if ($why) {
+            $attempt.Why = [string]$why
+            Write-Log "  Windows Installer says: $why" 'WARN'
+        }
+    }
+    return $attempt
+}
+
+function Remove-StaleUninstallEntry {
+    # Clears an Uninstall registry entry that can never be used again (its uninstaller is gone, or Windows Installer says the
+    # product is not installed) so it stops showing up in Settings > Apps. The key is exported to a .reg file first, so it can
+    # be restored; only keys directly under ...\Windows\CurrentVersion\Uninstall are ever touched. -Reason goes into the log line.
+    param([string]$PsPath, [string]$ProductName, [string]$Reason = 'its uninstaller no longer exists')
+    $regPath = $PsPath -replace '^Microsoft\.PowerShell\.Core\\Registry::', ''
+    if ($regPath -notmatch '^HKEY_(LOCAL_MACHINE|CURRENT_USER)\\.+\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\[^\\]+$') {
+        Write-Log "Not touching '$regPath': not a direct Uninstall entry." 'WARN'
+        return $false
+    }
+    $safeName = (($ProductName -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
+    if (-not $safeName) { $safeName = 'entry' }
+    # The key's own name is in the file name, and an existing file is never reused: one product can have several entries cleared in
+    # the same second, and each one's backup must survive. (The removed-uninstall-entry_ prefix is what the 30-day clean-up of the
+    # work folder keeps.)
+    $keyPart = ((($regPath -split '\\')[-1]) -replace '[^A-Za-z0-9._-]', '_').Trim('_')
+    if ($keyPart.Length -gt 40) { $keyPart = $keyPart.Substring(0, 40) }
+    if (-not $keyPart) { $keyPart = 'key' }
+    $backupBase = "removed-uninstall-entry_{0}_{1}_{2}" -f $safeName, $keyPart, (Get-Date -Format 'yyyyMMdd_HHmmss')
+    $backup = Join-Path $workDir ($backupBase + '.reg')
+    for ($copy = 2; (Test-Path -LiteralPath $backup); $copy++) { $backup = Join-Path $workDir ("{0}_{1}.reg" -f $backupBase, $copy) }
+    # (a failing reg.exe writes to stderr, and under $ErrorActionPreference = 'Stop' - the caller's, a test host's, a CI step's - Windows
+    # PowerShell 5.1 raises that as an exception instead of letting the exit code below speak: here it must never throw)
+    $ErrorActionPreference = 'Continue'
+    try { & reg.exe export $regPath $backup /y 2>&1 | Out-Null } catch { $null = $_ }
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $backup)) {
+        Write-Log "Could not back up the stale Uninstall entry of '$ProductName' (reg export failed) - leaving it alone." 'WARN'
+        return $false
+    }
+    try {
+        Remove-Item -LiteralPath $PsPath -Recurse -Force -ErrorAction Stop
+    } catch {
+        Write-Log "Could not remove the stale Uninstall entry of '$ProductName': $($_.Exception.Message)" 'WARN'
+        return $false
+    }
+    if (Test-Path -LiteralPath $PsPath) { return $false }
+    Write-Log "Removed the stale Uninstall entry of '$ProductName' ($Reason); backup: $backup"
+    return $true
+}
+
+function Remove-OemUninstallLogs {
+    # The verbose Windows Installer logs are only worth keeping for a product that could not be removed.
+    param($Layers)
+    foreach ($layer in $Layers) {
+        if ($layer.LogPath -and (Test-Path -LiteralPath $layer.LogPath)) { Remove-Item -LiteralPath $layer.LogPath -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function Get-OemProgramEvidence {
+    # Reasons to believe a program whose uninstaller cannot be run - or whose installer says it is "not installed" - is STILL INSTALLED:
+    # the install folder its entry registers (if it holds something), the folder its uninstaller used to sit in, the file its Apps icon
+    # points at (a program file, not a Windows one), a service its product hint names; a location that cannot be checked from here
+    # counts as well. An empty answer means nothing was found - the only case in which the Apps entry may be cleared as a leftover.
+    # "I could not find it" is not evidence that it is gone.
+    param($Layer, $Hint)
+    $reasons = New-Object System.Collections.Generic.List[string]
+    # (registry text is read as a rooted path: quotes and %VARIABLES% resolved, anything else - ".", "C:", a bare name - is not a folder)
+    $location = ConvertTo-OemFolderPath -Text $Layer.InstallLocation
+    $uninstallerFolder = Get-OemUninstallerFolder -UninstallerPath $Layer.FilePath
+    if ($location -and (Test-OemFolderHasContent -Path $location)) {
+        $reasons.Add("the program's folder still exists ($location)")
+    } elseif (Test-OemProgramFolderPresent -UninstallerPath $Layer.FilePath) {
+        $reasons.Add("the program's folder still exists ($uninstallerFolder)")
+    }
+    # A command that starts with a bare program name (powershell.exe, rundll32.exe) is found through PATH, which a file check does not
+    # search: it cannot be judged here either.
+    if ($Layer.Kind -ne 'Msi' -and $Layer.FilePath -and ([string]$Layer.FilePath).IndexOfAny([char[]]@('\', '/')) -lt 0) {
+        $reasons.Add("its command starts with a bare program name ($($Layer.FilePath)) that cannot be checked from here")
+    }
+    $icon = Get-OemIconFilePath -DisplayIcon $Layer.DisplayIcon
+    if ($icon -and (Test-PathQuiet -Path $icon -PathType Leaf)) { $reasons.Add("the file its Apps icon points at still exists ($icon)") }
+    # A location on a network share, or on a drive letter this session cannot see (a drive mapped in the non-elevated session, a
+    # volume that is locked or removed), cannot be judged from here: never proof that the program is gone.
+    foreach ($place in @($location, $uninstallerFolder, $icon)) {
+        if ($place -like '\\*') { $reasons.Add("its location is on a network share ($place) that cannot be checked from here"); break }
+        if ($place -match '^[A-Za-z]:\\' -and -not (Test-PathQuiet -Path $place.Substring(0, 3) -PathType Container)) {
+            $reasons.Add("its location is on a drive this session cannot see ($($place.Substring(0, 2))) and cannot be checked from here")
+            break
+        }
+    }
+    foreach ($svcName in @($Hint.Services)) {
+        $found = @(Get-Service -Name $svcName -ErrorAction SilentlyContinue)
+        if ($found.Count -eq 0) { $found = @(Get-Service -DisplayName $svcName -ErrorAction SilentlyContinue) }
+        if ($found.Count -gt 0) { $reasons.Add("its service '$($found[0].Name)' still exists"); break }
+    }
+    return $reasons.ToArray()
+}
+
+function Get-OemIconFilePath {
+    # Pure: the file an Apps entry's DisplayIcon points at, when that says something about the PROGRAM - a rooted path outside the
+    # Windows folder ("shell32.dll,-5" or "cmd.exe" would be judged against the working directory and is a system file, and a
+    # Windows Installer product keeps its icon cache under C:\Windows\Installer, which says nothing about the program itself).
+    # Quotes, an icon index and %VARIABLES% are read; anything else gives ''.
+    param([string]$DisplayIcon)
+    if (-not $DisplayIcon) { return '' }
+    $icon = ConvertTo-OemFolderPath -Text ($DisplayIcon -replace ',\s*-?\d+\s*$', '')
+    if (-not $icon) { return '' }
+    $windowsRoot = if ($env:SystemRoot) { $env:SystemRoot.TrimEnd('\') + '\' } else { '' }
+    if ($windowsRoot -and $icon.StartsWith($windowsRoot, [System.StringComparison]::OrdinalIgnoreCase)) { return '' }
+    return $icon
+}
+
+function Get-OemProgramFootprints {
+    # The places an Apps entry DECLARES that can be looked at to see whether its program is still installed: its install folder, the
+    # folder its uninstaller sits in (unless that is an installer cache, which exists only for the uninstaller's sake), the icon file
+    # (unless it is a Windows file) and the services its product hint names. An entry that declares none of them cannot be proven gone -
+    # there is nothing to look at, so "nothing found" would mean nothing - and is never cleared on the strength of an installer's
+    # "not installed" or a missing uninstaller alone.
+    param($Layer, $Hint)
+    $declared = New-Object System.Collections.Generic.List[string]
+    if (ConvertTo-OemFolderPath -Text $Layer.InstallLocation) { $declared.Add('install folder') }
+    $uninstallerFolder = Get-OemUninstallerFolder -UninstallerPath $Layer.FilePath
+    if ($uninstallerFolder -and $uninstallerFolder -notmatch '[\\/](Package Cache|InstallShield Installation Information)([\\/]|$)') { $declared.Add('uninstaller folder') }
+    if (Get-OemIconFilePath -DisplayIcon $Layer.DisplayIcon) { $declared.Add('icon file') }
+    if (@($Hint.Services | Where-Object { $_ }).Count -gt 0) { $declared.Add('service') }
+    return $declared.ToArray()
+}
+
+function Format-OemNothingToCheck {
+    # Pure: the sentence for an Apps entry that registers nothing that could show whether its program is still installed - it is kept,
+    # and the technician is told how to take it away by hand if it is the dead leftover it looks like.
+    param([string[]]$PsPaths = @())
+    $keys = @($PsPaths | Where-Object { $_ } | ForEach-Object { ([string]$_) -replace '^Microsoft\.PowerShell\.Core\\Registry::', '' })
+    $where = if ($keys.Count -gt 0) { " (registry key: $($keys -join '; '))" } else { '' }
+    return "its Apps entry registers nothing that could show whether the program is still installed (no install folder, icon file or service to look at); it probably is a dead leftover - if so, delete the key by hand (export it first)$where, and it is left alone"
+}
+
+function Test-OemProgramFolderPresent {
+    # True when the folder an uninstaller used to sit in still holds something and is a PROGRAM folder - not an installer cache such as
+    # ...\Package Cache\{GUID} or ...\InstallShield Installation Information\{GUID}, which only exist for the uninstaller's sake. A
+    # registry entry whose uninstaller file is gone but whose program folder is still full is a program that is still installed.
+    param([string]$UninstallerPath)
+    $dir = Get-OemUninstallerFolder -UninstallerPath $UninstallerPath
+    if (-not $dir) { return $false }
+    if ($dir -match '[\\/](Package Cache|InstallShield Installation Information)([\\/]|$)') { return $false }
+    if (-not (Test-PathQuiet -Path $dir -PathType Container)) { return $false }
+    return (Test-OemFolderHasContent -Path $dir)
+}
+
+function Test-OemFolderHasContent {
+    # True when the path exists and, if it is a folder, holds at least one item. An EMPTY folder (the install folder an uninstaller left
+    # behind) is not a program that is still installed; a folder with anything in it, or a file, is treated as one.
+    param([string]$Path)
+    if (-not (Test-PathQuiet -Path $Path)) { return $false }
+    if (-not (Test-PathQuiet -Path $Path -PathType Container)) { return $true }
+    # (a folder that cannot be listed, or a path the provider rejects, is "nothing found", not an error in the log)
+    try { return [bool](Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue | Select-Object -First 1) } catch { return $false }
+}
+
+function Remove-OemWin32Product {
+    # Removes ONE Win32 product with everything the registry knows about it, and says plainly how it went: every layer's exit
+    # code is logged, success is only believed when the Uninstall entry is really gone, the product's services and processes are
+    # stopped before every pass (the first included) and a failed pass is followed by one more, and what could not be removed is
+    # reported with the reason.
+    # -SkipPsPaths: Uninstall entries whose layer already hit a wall in an earlier call (it hung, was refused, ...) and is not run
+    # again. -EarlierAttempts: what an earlier look at this product already did - a restart it asked for and an uninstaller that
+    # worked count here too (without them a program that an uninstaller really removed would be called "a leftover entry cleared").
+    # Returns Status: Removed, RemovedRestartNeeded, StaleEntryCleared, DryRun or Failed (+ Detail, Attempts, WallPsPaths, ...).
+    param($Product, [int]$Passes = 2, [string[]]$SkipPsPaths = @(), [object[]]$EarlierAttempts = @())
+    $name = $Product.Name
+    $result = [PSCustomObject]@{ Name = $name; Version = $Product.Version; Status = 'Failed'; Detail = ''; RestartNeeded = $false; Attempts = (New-Object System.Collections.Generic.List[object]); WallPsPaths = @(); DetailNotes = @(); Shared = $false; DisabledServices = @(); LogLayers = @() }
+    $hint = Get-OemProductHint -ProductName $name
+    # (set at once, not only on the last path: every way out of this function, the early returns included, reports it)
+    $result.Shared = [bool]$hint.RespectDependencies
+    $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    $safeName = (($name -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
+    $layers = New-Object System.Collections.Generic.List[object]
+    $n = 0
+    foreach ($entry in @($Product.Entries)) {
+        $n++
+        $logPath = Join-Path $workDir ("uninstall_{0}_{1}_{2}.log" -f $safeName, $stamp, $n)
+        $layer = Get-OemUninstallLayer -Entry $entry -LogPath $logPath -SilentArgs $hint.SilentArgs -IgnoreDependencies (-not $hint.RespectDependencies)
+        $layer | Add-Member -NotePropertyName LogPath -NotePropertyValue $logPath -Force
+        $layer | Add-Member -NotePropertyName PsPath -NotePropertyValue ([string]$entry.PSPath) -Force
+        $layer | Add-Member -NotePropertyName InstallLocation -NotePropertyValue ([string]$entry.InstallLocation) -Force
+        $layer | Add-Member -NotePropertyName DisplayIcon -NotePropertyValue ([string]$entry.DisplayIcon) -Force
+        $layer | Add-Member -NotePropertyName Index -NotePropertyValue $n -Force
+        $layers.Add($layer)
+    }
+    # A bundle removes the MSIs it carries, and an InstallShield wrapper is the suite uninstaller that removes the MSI it wraps (Dell's
+    # own script runs Optimizer's wrapper and nothing else), so both go before the MSI; a plain EXE goes last - the usual one that
+    # sits next to an MSI is an interactive front end (McAfee's), which would wait for a click when the MSI alone would have worked.
+    $order = @{ Bundle = 0; Wrapper = 1; Msi = 2; Exe = 3 }
+    $runnable = @($layers | Where-Object {
+        ($_.Kind -eq 'Msi') -or ($order.ContainsKey($_.Kind) -and $_.FilePath -and (Test-PathQuiet -Path $_.FilePath))
+    } | Sort-Object { $order[$_.Kind] }, Index)    # (Index: Sort-Object is not stable in Windows PowerShell 5.1, same-kind layers would come out in no particular order)
+    $notRunnable = @($layers | Where-Object { $runnable -notcontains $_ })
+    # (the verbose installer logs of these layers are deleted by Remove-OemBloatware, after its last look at the Apps list, for a program that is gone)
+    $result.LogLayers = $layers.ToArray()
+    if ($DryRun) {
+        if ($runnable.Count -gt 0) {
+            Write-Log "DRYRUN: Uninstalling: $name ($($runnable.Count) usable installer layer(s): $((@($runnable | ForEach-Object { $_.Kind })) -join ', '))" 'DRYRUN'
+            # What a real run would do, step by step: the commands (so that the silent switches can be checked before anything runs),
+            # then the services it would disable and the processes it would end first. Nothing is changed.
+            foreach ($layer in $runnable) { Write-Log "DRYRUN:   would run the $($layer.Kind) uninstaller: $(Format-OemLayerCommand -Layer $layer)" 'DRYRUN' }
+            $dryLocation = (@($layers | Where-Object { $_.InstallLocation } | Select-Object -First 1)).InstallLocation
+            [void]@(Stop-OemProductActivity -ProductName $name -InstallLocation $dryLocation -ProtectPaths @($runnable | ForEach-Object { $_.FilePath }))
+        } else {
+            # Say what would really happen with an entry nothing can be run for (read-only checks): a proven leftover is cleared from
+            # the Apps list - a .reg backup is saved first - and anything else is only reported.
+            $unreadableDry = @($notRunnable | Where-Object { $_.Kind -in 'None', 'Unparseable' })
+            $stillThereDry = @($notRunnable | ForEach-Object { Get-OemProgramEvidence -Layer $_ -Hint $hint })
+            $declaredDry = @($notRunnable | ForEach-Object { Get-OemProgramFootprints -Layer $_ -Hint $hint })
+            $fate = if ($unreadableDry.Count -gt 0 -or $stillThereDry.Count -gt 0 -or $declaredDry.Count -eq 0) { 'it would be reported as NOT REMOVED (its command cannot be read, the program still seems to be there, or the entry registers nothing that could be checked)' } else { 'its Apps entry would be cleared as a leftover (a .reg backup is saved first)' }
+            Write-Log "DRYRUN: $name - no usable uninstaller; $fate" 'DRYRUN'
+        }
+        $result.Status = 'DryRun'
+        return $result
+    }
+    # Already gone when its turn comes (an earlier program's uninstaller took it with it): nothing to do, and its services must not be
+    # stopped and disabled for nothing.
+    if (-not (Test-OemProductPresent -Name $name)) {
+        Write-Log "'$name' is already gone - nothing to uninstall."
+        $result.Status = 'Removed'
+        return $result
+    }
+    # A second look at a program whose runnable layers all hit a wall in the first look has nothing to start: it is not announced, and
+    # its services and processes are not stopped again for nothing. What is wrong with its other entries is still worked out below.
+    if ($SkipPsPaths.Count -gt 0 -and $runnable.Count -gt 0 -and @($runnable | Where-Object { -not ($_.PsPath -and $SkipPsPaths -contains $_.PsPath) }).Count -eq 0) {
+        $Passes = 0
+    } else {
+        Write-Log "Uninstalling: $name$(if ($Product.Version) { ' ' + $Product.Version }) ($($runnable.Count) usable installer layer(s): $((@($runnable | ForEach-Object { $_.Kind })) -join ', '))"
+    }
+    # What is wrong with the layers that cannot be run, for the report.
+    $unrunnableNotes = New-Object System.Collections.Generic.List[string]
+    foreach ($layer in $notRunnable) {
+        if ($layer.Kind -in 'None', 'Unparseable') {
+            $unrunnableNotes.Add($(if ($layer.EffectiveString) { "its uninstall command cannot be read ('$($layer.EffectiveString)')" } else { 'it has no uninstall command registered' }))
+        } else {
+            $unrunnableNotes.Add("its uninstaller file is missing ($($layer.FilePath))")
+        }
+    }
+    if ($runnable.Count -eq 0) {
+        # Nothing can be run. Only a leftover that is PROVEN gone may be cleared from the Apps list: its uninstaller file is missing, the
+        # entry DECLARES something that can be looked at (its install folder, the folder the uninstaller sat in, an icon file, a service
+        # its product hint names) AND nothing of that is found. Not finding something is not evidence that it is gone - and an entry
+        # that declares nothing has nothing to find - so an entry whose command merely cannot be read, whose program seems to be still
+        # installed, or that registers nothing to look at, is reported as it is and never deleted.
+        $unreadable = @($notRunnable | Where-Object { $_.Kind -in 'None', 'Unparseable' })
+        $evidence = New-Object System.Collections.Generic.List[string]
+        $declared = New-Object System.Collections.Generic.List[string]
+        foreach ($layer in $notRunnable) {
+            foreach ($reason in @(Get-OemProgramEvidence -Layer $layer -Hint $hint)) { if (-not $evidence.Contains($reason)) { $evidence.Add($reason) } }
+            foreach ($place in @(Get-OemProgramFootprints -Layer $layer -Hint $hint)) { $declared.Add($place) }
+        }
+        if ($unreadable.Count -gt 0 -or $evidence.Count -gt 0 -or $declared.Count -eq 0) {
+            $why = ''
+            if ($evidence.Count -gt 0) { $why = 'the program still seems to be installed: ' + ($evidence -join '; ') }
+            elseif ($declared.Count -eq 0) { $why = Format-OemNothingToCheck -PsPaths @($notRunnable | ForEach-Object { $_.PsPath }) }
+            $result.Detail = (@($unrunnableNotes) + @($why | Where-Object { $_ })) -join '; '
+            # (the notes in the spelling of the main path, so that a second look which comes out here says each fact once, not twice)
+            $result.DetailNotes = @(@($unrunnableNotes | ForEach-Object { "another entry of this program: $_" }) + @($why | Where-Object { $_ }))
+            return $result
+        }
+        $cleared = $true
+        foreach ($layer in $notRunnable) {
+            if ($layer.PsPath) { if (-not (Remove-StaleUninstallEntry -PsPath $layer.PsPath -ProductName $name -Reason 'its uninstaller file is missing and nothing it registers (install folder, icon file, service) shows the program is still there')) { $cleared = $false } } else { $cleared = $false }
+        }
+        if ($cleared) {
+            # (an uninstaller of an earlier look that really worked is the one who removed the program)
+            $earlierWorked = @($EarlierAttempts | Where-Object { $_ -and $_.Class -in 'Success', 'RebootRequired' })
+            $earlierRestart = @($EarlierAttempts | Where-Object { $_ -and $_.Class -eq 'RebootRequired' }).Count -gt 0
+            $result.Status = if ($earlierWorked.Count -gt 0) { if ($earlierRestart) { 'RemovedRestartNeeded' } else { 'Removed' } } else { 'StaleEntryCleared' }
+            return $result
+        }
+        $result.Detail = (@($unrunnableNotes) -join '; ') + '; the entry could not be cleared'
+        $result.DetailNotes = @(@($unrunnableNotes | ForEach-Object { "another entry of this program: $_" }) + @('the entry could not be cleared'))
+        return $result
+    }
+
+    $anyRestart = @($EarlierAttempts | Where-Object { $_ -and $_.Class -eq 'RebootRequired' }).Count -gt 0
+    $installLocation = (@($layers | Where-Object { $_.InstallLocation } | Select-Object -First 1)).InstallLocation
+    $doNotRepeat = @{}      # layers (by log path) that would do the same again: they hung, were refused, said "not installed" ...
+    $deadLayers = @{}       # layers with nothing left to run: their uninstaller file is gone, or their own Apps entry is not listed any more
+    $fileGone = @{}         # ... and of those, the ones whose uninstaller FILE is gone (an entry that is merely not listed may be registered again)
+    $wallPsPaths = New-Object System.Collections.Generic.List[string]
+    $disabledServices = New-Object System.Collections.Generic.List[object]    # services set to Disabled on the way; they stay so if the product stays
+    $protectPaths = @($runnable | ForEach-Object { $_.FilePath })
+    for ($pass = 1; $pass -le $Passes; $pass++) {
+        if ($pass -ge 2) {
+            if (-not (Test-OemProductPresent -Name $name)) { break }
+            # Nothing left that is worth trying again (every layer hung, was refused, is gone or is waiting for a restart): do not say otherwise.
+            # (judged against the registry as it is NOW: a layer whose own Apps entry or uninstaller file an earlier layer took away has
+            # nothing left to run, and nothing is stopped or announced for it)
+            $liveNow = @(Get-UninstallEntries | ForEach-Object { [string]$_.PSPath })
+            $worthTrying = @($runnable | Where-Object {
+                -not $doNotRepeat.ContainsKey($_.LogPath) -and -not $deadLayers.ContainsKey($_.LogPath) -and -not ($_.PsPath -and $SkipPsPaths -contains $_.PsPath) -and
+                (-not $_.PsPath -or $liveNow -contains $_.PsPath) -and ($_.Kind -eq 'Msi' -or (Test-PathQuiet -Path $_.FilePath))
+            })
+            if ($worthTrying.Count -eq 0) { break }
+            Write-Log "  '$name' is still installed - stopping its services and processes and trying once more."
+        }
+        foreach ($service in @(Stop-OemProductActivity -ProductName $name -InstallLocation $installLocation -ProtectPaths $protectPaths)) {
+            if ($service -and @($disabledServices | Where-Object { $_.Name -eq $service.Name }).Count -eq 0) { $disabledServices.Add($service) }
+        }
+        foreach ($layer in $runnable) {
+            if (-not (Test-OemProductPresent -Name $name)) { break }
+            # A layer that hung, could not even start, was told to wait for a restart, has lost its cached installer, is blocked by a
+            # policy or was told "not installed" would do exactly the same again - here, and in a second look at the product.
+            if ($doNotRepeat.ContainsKey($layer.LogPath)) { continue }
+            if ($layer.PsPath -and $SkipPsPaths -contains $layer.PsPath) { continue }
+            # An earlier layer can take a later layer's uninstaller with it (an MSI removes the folder that held an EXE uninstaller),
+            # and can unregister a later layer's own Apps entry: neither has anything left to run.
+            if ($layer.Kind -ne 'Msi' -and -not (Test-PathQuiet -Path $layer.FilePath)) {
+                if (-not $deadLayers.ContainsKey($layer.LogPath)) {
+                    $deadLayers[$layer.LogPath] = $true
+                    $fileGone[$layer.LogPath] = $true
+                    Write-Log "  The $($layer.Kind) uninstaller of '$name' is gone ($($layer.FilePath)) - an earlier step removed it."
+                }
+                continue
+            }
+            if ($layer.PsPath) {
+                $livePsPaths = @(Get-UninstallEntries | ForEach-Object { [string]$_.PSPath })
+                if ($livePsPaths -notcontains $layer.PsPath) {
+                    if (-not $deadLayers.ContainsKey($layer.LogPath)) {
+                        $deadLayers[$layer.LogPath] = $true
+                        Write-Log "  The $($layer.Kind) entry of '$name' is gone already - nothing left to run for it."
+                    }
+                    continue
+                }
+            }
+            # A layer that is runnable again - its entry is listed again, its uninstaller file is back - is no longer "dead": what it has
+            # said from now on is what counts, not what it looked like a moment ago.
+            if ($deadLayers.ContainsKey($layer.LogPath)) { $deadLayers.Remove($layer.LogPath); $fileGone.Remove($layer.LogPath) }
+            # (a product hint's time limit is for the product's own EXE / wrapper / bundle uninstallers; an MSI keeps its default)
+            $attempt = Invoke-OemUninstallLayer -Layer $layer -ProductName $name -TimeoutSec $(if ($layer.Kind -eq 'Msi') { 0 } else { $hint.TimeoutSec })
+            $result.Attempts.Add($attempt)
+            if ($attempt.Class -in 'TimedOut', 'NotStarted', 'RebootFirst', 'NoSource', 'Blocked', 'NotInstalled') {
+                $doNotRepeat[$layer.LogPath] = $true
+                if ($layer.PsPath) { $wallPsPaths.Add($layer.PsPath) }
+            }
+            if ($attempt.Class -eq 'RebootRequired') { $anyRestart = $true }
+            if ($attempt.Class -in 'Success', 'RebootRequired') {
+                # Installers that hand the real work to a copy of themselves and exit at once (NSIS, InstallShield) need longer.
+                $waitSec = if ($layer.Kind -in 'Exe', 'Wrapper') { 90 } else { 30 }
+                [void](Wait-OemProductGone -Name $name -TimeoutSec $waitSec)
+            }
+        }
+        if (-not (Test-OemProductPresent -Name $name)) { break }
+    }
+    $result.WallPsPaths = @($wallPsPaths | Select-Object -Unique)
+    $result.RestartNeeded = $anyRestart
+    $result.DisabledServices = $disabledServices.ToArray()
+
+    if (-not (Test-OemProductPresent -Name $name)) {
+        $result.Status = if ($anyRestart) { 'RemovedRestartNeeded' } else { 'Removed' }
+        return $result
+    }
+    # Still registered. Entries that can never be of use again are cleared (backed up first) and the product is looked at once more:
+    # an MSI or an InstallShield wrapper that says "not installed" is a dead registration; an uninstaller that an earlier step took
+    # away is a leftover - provided nothing else says the program is still there.
+    $deadCandidates = New-Object System.Collections.Generic.List[object]
+    $keptNotes = New-Object System.Collections.Generic.List[string]
+    foreach ($layer in $runnable) {
+        if (-not $layer.PsPath) { continue }
+        $layerLog = $layer.LogPath
+        $saidNotInstalled = @($result.Attempts | Where-Object { $_.LogPath -eq $layerLog -and $_.Class -eq 'NotInstalled' }).Count -gt 0
+        if ($layer.Kind -in 'Msi', 'Wrapper' -and $saidNotInstalled) {
+            # "Not installed" (1605/1614) is only proof that the REGISTRATION is dead - Windows Installer can answer it for a program that
+            # is still on the disk (a damaged installer registration, a per-user install of another account). The entry is cleared only
+            # when nothing else shows the program is still there; otherwise it stays, and the report says why.
+            # ... and not even then when the entry registers nothing that could be looked at: "nothing found" would then mean nothing.
+            $stillThere = @(Get-OemProgramEvidence -Layer $layer -Hint $hint)
+            $declaredPlaces = @(Get-OemProgramFootprints -Layer $layer -Hint $hint)
+            if ($stillThere.Count -eq 0 -and $declaredPlaces.Count -gt 0) {
+                $deadCandidates.Add([PSCustomObject]@{ Layer = $layer; Reason = 'the installer says the product is not installed and nothing it registers (install folder, icon file, service) shows it is still there' })
+            } elseif ($stillThere.Count -gt 0) {
+                $keptNotes.Add("the $($layer.Kind) uninstaller says the product is not installed, yet the program still seems to be installed: " + ($stillThere -join '; ') + ' (its Apps entry is left alone)')
+            } else {
+                $keptNotes.Add("the $($layer.Kind) uninstaller says the product is not installed, but " + (Format-OemNothingToCheck -PsPaths @($layer.PsPath)))
+            }
+        } elseif ($fileGone.ContainsKey($layer.LogPath)) {
+            # (only a layer whose uninstaller FILE is gone: one whose entry was merely not listed for a moment is a live entry if it is back)
+            $stillThereGone = @(Get-OemProgramEvidence -Layer $layer -Hint $hint)
+            $declaredGone = @(Get-OemProgramFootprints -Layer $layer -Hint $hint)
+            if ($stillThereGone.Count -eq 0 -and $declaredGone.Count -gt 0) {
+                $deadCandidates.Add([PSCustomObject]@{ Layer = $layer; RequireFileGone = $true; Reason = 'its uninstaller file was removed by an earlier step and nothing it registers (install folder, icon file, service) shows the program is still there' })
+            } elseif ($stillThereGone.Count -eq 0) {
+                $keptNotes.Add("the $($layer.Kind) uninstaller file is gone, but " + (Format-OemNothingToCheck -PsPaths @($layer.PsPath)))
+            }
+        }
+    }
+    if ($deadCandidates.Count -gt 0) {
+        $clearedAny = $false
+        $livePsPaths = @(Get-UninstallEntries | ForEach-Object { [string]$_.PSPath })
+        foreach ($candidate in $deadCandidates) {
+            $layer = $candidate.Layer
+            # The file is looked at once more right before the delete: a program that put it back (a repair, an update tool) is installed.
+            if ($candidate.RequireFileGone -and (Test-PathQuiet -Path $layer.FilePath)) { continue }
+            # (only an entry that is still listed is cleared; one that is gone already needs no backup and no delete)
+            if (($livePsPaths -contains $layer.PsPath) -and (Remove-StaleUninstallEntry -PsPath $layer.PsPath -ProductName $name -Reason $candidate.Reason)) { $clearedAny = $true }
+        }
+        if ($clearedAny -and -not (Test-OemProductPresent -Name $name)) {
+            # An uninstaller that really worked is the one who removed it; only a product nothing ran for is "a leftover entry cleared".
+            $workedAttempts = @(@($EarlierAttempts) + @($result.Attempts | Where-Object { $_ }) | Where-Object { $_ -and $_.Class -in 'Success', 'RebootRequired' })
+            $result.Status = if ($workedAttempts.Count -gt 0) { if ($anyRestart) { 'RemovedRestartNeeded' } else { 'Removed' } } else { 'StaleEntryCleared' }
+            return $result
+        }
+    }
+    # The reason is kept in its parts as well: a second look at the product rebuilds it from everything attempted in both looks.
+    $result.DetailNotes = @(@($unrunnableNotes | ForEach-Object { "another entry of this program: $_" }) + @($keptNotes))
+    $result.Shared = [bool]$hint.RespectDependencies
+    $result.Detail = Format-OemFailureDetail -AttemptLines @(Get-OemAttemptLines -Attempts $result.Attempts) -Notes $result.DetailNotes -Shared $result.Shared -DisabledServices $result.DisabledServices
+    return $result
+}
+
+function Get-OemAttemptLines {
+    # Pure (apart from looking for each installer log): what the attempts of one product said, one text per distinct outcome of a
+    # layer - the same layer failing the same way again (in the second pass, or in the second look at the product) is said once, with
+    # how often. The installer's own log of the LATEST such attempt is named (msiexec /L*v, or the Burn bundle's /log; it is kept
+    # when the program could not be removed).
+    param($Attempts)
+    $texts = New-Object System.Collections.Generic.List[string]
+    $counts = @{}
+    $logs = @{}
+    # (iterated directly: in Windows PowerShell 5.1, @(<a List held in an object's property>) throws "Argument types do not match")
+    foreach ($a in $Attempts) {
+        if (-not $a) { continue }
+        $why = "$($a.Layer): " + $(if ($null -ne $a.ExitDisplay) { "exit $($a.ExitDisplay) ($($a.Text))" } elseif ($null -ne $a.ExitCode) { "exit $($a.ExitCode) ($($a.Text))" } else { [string]$a.Text })
+        # An uninstaller that says "success" while the program is still listed is the case that used to go unnoticed.
+        if ($a.Class -in 'Success', 'RebootRequired') { $why += ', yet the program is still listed in Apps' }
+        if ($a.Class -in 'RebootFirst', 'RebootRequired') { $why += '; restart the PC, then run the clean-up again' }
+        if ($a.Why) { $why += "; Windows Installer says: $($a.Why)" }
+        if (-not $counts.ContainsKey($why)) { $texts.Add($why); $counts[$why] = 0; $logs[$why] = '' }
+        $counts[$why] = 1 + [int]$counts[$why]
+        if ($a.Layer -in 'Msi', 'Bundle' -and $a.Class -in 'Failed', 'NoSource', 'Blocked', 'RebootFirst', 'TimedOut', 'Success', 'RebootRequired' -and $a.LogPath -and (Test-Path -LiteralPath $a.LogPath)) { $logs[$why] = "; verbose log $($a.LogPath)" }
+    }
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($text in $texts) { $lines.Add($text + $logs[$text] + $(if ($counts[$text] -gt 1) { " (tried $($counts[$text]) times)" } else { '' })) }
+    # (not "return ,$array": the caller's @() would then wrap the array a second time)
+    return $lines.ToArray()
+}
+
+function Format-OemFailureDetail {
+    # Pure: the whole "why it stayed" text of a product - what its attempts said, what is wrong with its other registry entries, which
+    # of its services were set to Disabled on the way (they stay that way, and the technician has to know) and, for software that
+    # other programs depend on, why it is left in place on purpose.
+    param([string[]]$AttemptLines = @(), [string[]]$Notes = @(), [bool]$Shared = $false, [object[]]$DisabledServices = @())
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($line in @($AttemptLines | Where-Object { $_ })) { $parts.Add($line) }
+    foreach ($note in @($Notes | Where-Object { $_ })) { $parts.Add($note) }
+    $services = @($DisabledServices | Where-Object { $_ })
+    if ($services.Count -gt 0 -and $parts.Count -gt 0) {
+        # (a service that could not be stopped is said to be still running: "Stopped" is $false only when a stop was tried and failed)
+        $named = (@($services | ForEach-Object { "'$($_.Name)' (was $($_.Was)$(if ($null -ne $_.Stopped -and -not $_.Stopped) { '; could not be stopped and is still running' }))" })) -join ', '
+        $parts.Add("its service(s) $named were set to Disabled before the uninstall and stay Disabled; to undo: Set-Service -Name <service name> -StartupType <what it was>")
+    }
+    if ($Shared -and $parts.Count -gt 0) { $parts.Add('this program may be shared with other Dell software: its installer can refuse to remove it while other software depends on it (the exit code above says what happened)') }
+    if ($parts.Count -gt 0) { return ($parts -join ' | ') }
+    return 'no uninstaller could be started'
+}
+
+function Get-PendingRestartReasons {
+    # What the registry says about a restart that is waiting to happen. Read-only; returns short texts (an empty array = none).
+    # PendingFileRenameOperations is deliberately not read: almost every running Windows PC has some.
+    param([string]$Hklm = 'HKLM:')
+    $reasons = New-Object System.Collections.Generic.List[string]
+    if (Test-Path -LiteralPath "$Hklm\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") { $reasons.Add('Windows servicing is waiting for a restart') }
+    if (Test-Path -LiteralPath "$Hklm\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired") { $reasons.Add('Windows Update is waiting for a restart') }
+    # A WiX Burn bundle that needs a restart leaves a volatile "<bundle id>.RebootRequired" key next to its Uninstall entry.
+    foreach ($root in @("$Hklm\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", "$Hklm\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall")) {
+        foreach ($key in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -like '*.RebootRequired' })) {
+            $reasons.Add("an installer ($($key.PSChildName -replace '\.RebootRequired$', '')) is waiting for a restart")
+        }
+    }
+    return $reasons.ToArray()
+}
+
+function Test-OemResultRetryable {
+    # Pure: whether a second go at a product that failed could come out differently. It cannot when every attempt hit a wall that
+    # repeating will not move: a hang, an uninstaller that would not start, a pending restart, a missing cached installer, a policy,
+    # an installer that says the product is not installed.
+    param($Result)
+    # (@($null) is an array of one null in PowerShell, hence the filter.)
+    $attempts = @($Result.Attempts | Where-Object { $_ })
+    if ($attempts.Count -eq 0) { return $false }
+    $wall = @($attempts | Where-Object { $_.Class -in 'TimedOut', 'NotStarted', 'RebootFirst', 'NoSource', 'Blocked', 'NotInstalled' })
+    return ($wall.Count -lt $attempts.Count)
+}
+
+function Get-OemRemovalSummaryLines {
+    # Pure: the closing report of Phase 1 as { Level; Message } lines. Anything that is still installed is a WARN with its reason,
+    # so the run's warning count (and the window's banner) can no longer say "complete" over a machine where nothing changed.
+    # The banner counts warning LINES, not programs: -WarningsRaised (the WARN lines this phase wrote before the report) lets the
+    # report say so when every program is gone although warnings were raised on the way.
+    param($AppxResult, $ProductResults, [int]$WarningsRaised = 0)
+    $lines = New-Object System.Collections.Generic.List[object]
+    $products = @($ProductResults)
+    $removed = @($products | Where-Object { $_.Status -in 'Removed', 'RemovedRestartNeeded' })
+    # A leftover entry cleared from the Apps list is not a removed program: it is counted on its own, so that "removed" only ever
+    # means that an uninstaller ran and the program left.
+    $cleared = @($products | Where-Object { $_.Status -eq 'StaleEntryCleared' })
+    $failed = @($products | Where-Object { $_.Status -eq 'Failed' })
+    $restart = @($products | Where-Object { $_.Status -eq 'RemovedRestartNeeded' })
+    $appxUnverified = if ($AppxResult -and $AppxResult.Unverified) { ", $($AppxResult.Unverified) could not be checked" } else { '' }
+    $appxText = if ($AppxResult) { "Store apps: $($AppxResult.Removed) removed, $($AppxResult.Failed) not removed$appxUnverified" } else { 'Store apps: none matched' }
+    $clearedText = if ($cleared.Count -gt 0) { ", $($cleared.Count) leftover Apps entr$(if ($cleared.Count -eq 1) { 'y' } else { 'ies' }) cleared" } else { '' }
+    $progText = if ($products.Count -eq 0) { 'programs: none matched' } else { "programs: $($removed.Count) removed$clearedText, $($failed.Count) NOT removed" }
+    $lines.Add([PSCustomObject]@{ Level = 'INFO'; Message = "Phase 1 result - $appxText; $progText." })
+    foreach ($p in $restart) { $lines.Add([PSCustomObject]@{ Level = 'INFO'; Message = "  '$($p.Name)' is removed; a restart finishes the clean-up." }) }
+    foreach ($p in $failed) { $lines.Add([PSCustomObject]@{ Level = 'WARN'; Message = "  NOT REMOVED: '$($p.Name)'$(if ($p.Version) { ' ' + $p.Version }) - $($p.Detail)" }) }
+    if ($AppxResult) {
+        foreach ($f in @($AppxResult.FailedNames)) { $lines.Add([PSCustomObject]@{ Level = 'WARN'; Message = "  NOT REMOVED (Store app): $f" }) }
+    }
+    $restartFirst = @($failed | Where-Object { @($_.Attempts | Where-Object { $_.Class -eq 'RebootFirst' }).Count -gt 0 })
+    if ($restartFirst.Count -gt 0) {
+        $lines.Add([PSCustomObject]@{ Level = 'WARN'; Message = '  Some uninstallers answered that a restart must come first (a restart from an earlier installation is pending) and took no action: restart the PC and run the clean-up again.' })
+    }
+    # An uninstaller that finished and asked for a restart while the program is still listed: the restart finishes it.
+    $restartFinishes = @($failed | Where-Object { @($_.Attempts | Where-Object { $_.Class -eq 'RebootRequired' }).Count -gt 0 })
+    if ($restartFinishes.Count -gt 0) {
+        $lines.Add([PSCustomObject]@{ Level = 'INFO'; Message = '  Some uninstallers finished and asked for a restart before the program leaves the Apps list: restart the PC, then check again.' })
+    }
+    if ($failed.Count -gt 0 -or ($AppxResult -and @($AppxResult.FailedNames).Count -gt 0)) {
+        $lines.Add([PSCustomObject]@{ Level = 'INFO'; Message = '  What is listed as NOT REMOVED can usually be removed by hand in Settings > Apps (a program that other software depends on, such as Dell Core Services, may refuse; a Store app that is only provisioned is not listed there). Where an exit code or a log path exists, it is in that program''s NOT REMOVED line.' })
+    }
+    # Everything targeted is gone, yet the run raised warnings (a first attempt that failed and a later one made good, a restart
+    # that was already pending): say so, because the finish banner counts warning lines, not programs.
+    $appxFailedCount = if ($AppxResult) { [int]$AppxResult.Failed } else { 0 }
+    $appxUnverifiedCount = if ($AppxResult) { [int]$AppxResult.Unverified } else { 0 }
+    $targeted = $products.Count + $(if ($AppxResult) { [int]$AppxResult.Removed + $appxFailedCount + $appxUnverifiedCount } else { 0 })
+    if ($targeted -gt 0 -and $failed.Count -eq 0 -and $appxFailedCount -eq 0 -and $appxUnverifiedCount -eq 0 -and $WarningsRaised -gt 0) {
+        $lines.Add([PSCustomObject]@{ Level = 'INFO'; Message = "  Nothing that was targeted is left. The $WarningsRaised warning line(s) above are failed first attempts, refusals and notices; the finish banner counts warning lines, not programs." })
+    } elseif ($targeted -eq 0 -and $WarningsRaised -gt 0) {
+        # (nothing matched at all, yet the banner will count the warning lines - typically the notice of a restart that is pending)
+        $lines.Add([PSCustomObject]@{ Level = 'INFO'; Message = "  Nothing matched the removal patterns. The $WarningsRaised warning line(s) above are notices (for example a restart that is already pending); the finish banner counts warning lines." })
+    }
+    return $lines.ToArray()
+}
+
+function Get-OemAppxIdentity {
+    # Pure: what identifies a Store app in BOTH lists - the installed one (Get-AppxPackage PackageFullName, "Name_Version_Arch_ResourceId_
+    # Publisher", e.g. DellInc.MyDell_3.1.12.0_x64__htrsf667h5kn2) and the provisioned one (Get-AppxProvisionedPackage PackageName, the staged
+    # bundle: DellInc.MyDell_3.1.12.0_neutral_~_htrsf667h5kn2): its name and its publisher id, lower-cased. A package name holds no
+    # underscore, so the string is split on it. Anything that does not have five parts is its own identity.
+    param([string]$PackageName)
+    $parts = ([string]$PackageName) -split '_'
+    if ($parts.Count -ge 5) { return ($parts[0] + '|' + $parts[$parts.Count - 1]).ToLowerInvariant() }
+    return ([string]$PackageName).ToLowerInvariant()
+}
+
+function Remove-OemAppxPackages {
+    # Store (AppX/MSIX) apps: de-provisioned FIRST (so a new user profile does not get them back - DISM needs the package's staged
+    # files, which Remove-AppxPackage -AllUsers deletes) and then removed for every existing user; both states are re-read
+    # afterwards, and only a package that is really still there is reported. Returns { Removed; Failed; FailedNames }.
+    $result = [PSCustomObject]@{ Removed = 0; Failed = 0; FailedNames = @(); Unverified = 0 }
+    # Query once and filter in memory - Get-AppxProvisionedPackage -Online is a slow DISM-backed call, and running it once per
+    # pattern (instead of once total) was the main source of the CPU/disk spike during this phase.
+    $allInstalledAppx = @(Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue)
+    $allProvisionedAppx = @(Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue)
+
+    $removeTargets = New-Object System.Collections.Generic.List[object]
+    $deprovisionTargets = New-Object System.Collections.Generic.List[object]
+    $seenInstalled = @{}
+    $seenProvisioned = @{}
     foreach ($pattern in $OemBloatAppxPatterns) {
-        $installed = $allInstalledAppx | Where-Object { $_.Name -like $pattern }
-        foreach ($pkg in $installed) {
+        foreach ($pkg in @($allInstalledAppx | Where-Object { $_.Name -like $pattern })) {
             if ($ProtectWorkTeams -and (Test-IsWorkSchoolTeams -AppxName $pkg.Name)) {
                 Write-Log "Skipping removal of '$($pkg.Name)' - identified as work/school Teams, protected by -ProtectWorkTeams." 'WARN'
                 continue
             }
-            $appxRemoveSteps.Add(@{
-                Description = "Removing AppX package: $($pkg.PackageFullName)"
-                Action = $appxRemoveAction
-                Args = @{ FullName = $pkg.PackageFullName }
-            })
+            if ($seenInstalled.ContainsKey($pkg.PackageFullName)) { continue }
+            $seenInstalled[$pkg.PackageFullName] = $true
+            $removeTargets.Add($pkg)
         }
-        $provisioned = $allProvisionedAppx | Where-Object { $_.DisplayName -like $pattern }
-        foreach ($pkg in $provisioned) {
+        foreach ($pkg in @($allProvisionedAppx | Where-Object { $_.DisplayName -like $pattern })) {
             if ($ProtectWorkTeams -and (Test-IsWorkSchoolTeams -AppxName $pkg.DisplayName)) {
                 Write-Log "Skipping de-provisioning of '$($pkg.DisplayName)' - identified as work/school Teams, protected by -ProtectWorkTeams." 'WARN'
                 continue
             }
-            $appxDeprovisionSteps.Add(@{
-                Description = "De-provisioning AppX package: $($pkg.DisplayName)"
-                Action = $appxDeprovisionAction
-                Args = @{ PackageName = $pkg.PackageName }
-            })
+            if ($seenProvisioned.ContainsKey($pkg.PackageName)) { continue }
+            $seenProvisioned[$pkg.PackageName] = $true
+            $deprovisionTargets.Add($pkg)
         }
     }
-    if ($appxRemoveSteps.Count -gt 0) {
-        Write-Log "Removing $($appxRemoveSteps.Count) AppX package(s) (up to 3 at a time)..."
+    if ($DryRun) {
+        foreach ($pkg in $deprovisionTargets) { Write-Log "DRYRUN: De-provisioning AppX package: $($pkg.DisplayName)" 'DRYRUN' }
+        foreach ($pkg in $removeTargets) { Write-Log "DRYRUN: Removing AppX package: $($pkg.PackageFullName)" 'DRYRUN' }
+        return $result
     }
-    Invoke-ThrottledSteps -Steps $appxRemoveSteps -MaxConcurrency 3
 
-    # De-provisioning goes through DISM's online image API, which is not thread-safe for
-    # concurrent in-process calls the way Remove-AppxPackage is - running these 3-wide
-    # like the removals above silently corrupted/dropped some calls. MaxConcurrency 1
-    # keeps them on the same Invoke-ThrottledSteps/Streams.Error plumbing but strictly serial.
-    if ($appxDeprovisionSteps.Count -gt 0) {
-        Write-Log "De-provisioning $($appxDeprovisionSteps.Count) AppX package(s) (serially - DISM's online API isn't safe to call concurrently)..."
-    }
-    Invoke-ThrottledSteps -Steps $appxDeprovisionSteps -MaxConcurrency 1
-
-    if ($appxDeprovisionSteps.Count -gt 0 -and -not $DryRun) {
-        $stillProvisioned = Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
-        foreach ($pattern in $OemBloatAppxPatterns) {
-            $remaining = $stillProvisioned | Where-Object { $_.DisplayName -like $pattern }
-            foreach ($pkg in $remaining) {
-                Write-Log "Still provisioned after de-provisioning pass: $($pkg.DisplayName) - may need a manual Remove-AppxProvisionedPackage or a reboot." 'WARN'
-            }
+    # De-provisioning goes through DISM's online image API, which is not thread-safe for concurrent in-process calls the way
+    # Remove-AppxPackage is, so these run strictly one at a time.
+    $deprovisionErrors = @{}
+    if ($deprovisionTargets.Count -gt 0) { Write-Log "De-provisioning $($deprovisionTargets.Count) AppX package(s) (one at a time - DISM's online API isn't safe to call concurrently)..." }
+    foreach ($pkg in $deprovisionTargets) {
+        try {
+            Remove-AppxProvisionedPackage -Online -PackageName $pkg.PackageName -ErrorAction Stop | Out-Null
+        } catch {
+            $deprovisionErrors[$pkg.PackageName] = $_.Exception.Message
         }
     }
 
-    # --- Win32 programs, via their own registry uninstall string ---
-    # (Previously also tried winget first on every match, but the registry uninstall
-    # string below always ran anyway - winget rarely recognizes OEM-bundled software
-    # by name, so it was pure added latency for no extra removals.)
-    # These stay serial - Windows Installer serializes MSI operations internally
-    # regardless, so "parallel" here would just queue up and fail with "another
-    # installation is already in progress." Instead: run each uninstaller at
-    # BelowNormal priority and pause briefly between them so disk/AV activity
-    # has a moment to settle instead of stacking back-to-back at full throttle.
-    $entries = Get-UninstallEntries
+    # AppX removals are cheap and independent of each other, so a few run at once in a bounded pool instead of one at a time -
+    # real time drops without the machine-choking effect an unbounded parallel pass would cause. No -ErrorAction
+    # SilentlyContinue in the action: inside a separate [powershell] runspace instance it would keep the error from ever
+    # reaching that instance's own Streams.Error collection, which Invoke-ThrottledSteps reads to log a WARN afterward.
+    $removeAction = { param($FullName) Remove-AppxPackage -Package $FullName -AllUsers }
+    $removeSteps = New-Object System.Collections.Generic.List[hashtable]
+    foreach ($pkg in $removeTargets) {
+        # (Invoke-ThrottledSteps logs this text AFTER the step ran and before it reports any error, so it must not claim success:
+        # what is really gone is read back below and reported by the summary.)
+        $removeSteps.Add(@{ Description = "Removal requested for AppX package (all users): $($pkg.PackageFullName)"; Action = $removeAction; Args = @{ FullName = $pkg.PackageFullName } })
+    }
+    if ($removeSteps.Count -gt 0) { Write-Log "Removing $($removeSteps.Count) AppX package(s) (up to 3 at a time)..." }
+    Invoke-ThrottledSteps -Steps $removeSteps -MaxConcurrency 3
 
-    foreach ($pattern in $Win32BloatPatterns) {
-        $matches = $entries | Where-Object { $_.DisplayName -like $pattern }
-        foreach ($match in $matches) {
-            $name = $match.DisplayName
-            if ($ProtectWorkTeams -and (Test-IsWorkSchoolTeams -Win32DisplayName $name)) {
-                Write-Log "Skipping uninstall of '$name' - identified as work/school Teams, protected by -ProtectWorkTeams." 'WARN'
+    # Believe only what is there afterwards - and say so when it cannot be read: a list that failed to load must not pass for an empty one.
+    $installedKnown = $true
+    $provisionedKnown = $true
+    $installedAfter = @()
+    $provisionedAfter = @()
+    $unreadable = New-Object System.Collections.Generic.List[string]
+    try { $installedAfter = @(Get-AppxPackage -AllUsers -ErrorAction Stop) } catch { $installedKnown = $false; $unreadable.Add("the installed Store apps ($($_.Exception.Message))") }
+    try { $provisionedAfter = @(Get-AppxProvisionedPackage -Online -ErrorAction Stop) } catch { $provisionedKnown = $false; $unreadable.Add("the provisioned Store apps ($($_.Exception.Message))") }
+    # One entry per APP, whether it was targeted as installed, as provisioned or both. The two lists do NOT spell a package the same way
+    # (Get-AppxPackage: "Name_Version_x64__Publisher"; Get-AppxProvisionedPackage: the staged bundle, "Name_Version_neutral_~_Publisher"),
+    # so an app is identified by its name and publisher id - otherwise it would be counted, and reported, once per spelling.
+    $targetNames = New-Object System.Collections.Generic.List[string]
+    $targetKeys = @{}
+    foreach ($pkg in $removeTargets) {
+        $appKey = Get-OemAppxIdentity -PackageName ([string]$pkg.PackageFullName)
+        if (-not $targetKeys.ContainsKey($appKey)) { $targetKeys[$appKey] = $true; $targetNames.Add([string]$pkg.PackageFullName) }
+    }
+    foreach ($pkg in $deprovisionTargets) {
+        $appKey = Get-OemAppxIdentity -PackageName ([string]$pkg.PackageName)
+        if (-not $targetKeys.ContainsKey($appKey)) { $targetKeys[$appKey] = $true; $targetNames.Add([string]$pkg.PackageName) }
+    }
+    $failedNames = New-Object System.Collections.Generic.List[string]
+    $unverified = 0
+    foreach ($targetName in $targetNames) {
+        $targetKey = Get-OemAppxIdentity -PackageName $targetName
+        # (what is LEFT is named, not the spelling that was targeted: the installed package may be gone while its staged bundle stays)
+        $leftInstalled = @($installedAfter | Where-Object { (Get-OemAppxIdentity -PackageName ([string]$_.PackageFullName)) -eq $targetKey } | ForEach-Object { [string]$_.PackageFullName })
+        $leftProvisioned = @($provisionedAfter | Where-Object { (Get-OemAppxIdentity -PackageName ([string]$_.PackageName)) -eq $targetKey } | ForEach-Object { [string]$_.PackageName })
+        if ($leftInstalled.Count -gt 0 -or $leftProvisioned.Count -gt 0) {
+            $failedNames.Add((@($leftInstalled) + @($leftProvisioned) | Select-Object -Unique) -join ' + ')
+        } elseif (-not $installedKnown -or -not $provisionedKnown) {
+            $unverified++
+        } else {
+            $result.Removed++
+        }
+    }
+    foreach ($pkg in $deprovisionTargets) {
+        $stillProvisioned = @($provisionedAfter | Where-Object { $_.PackageName -eq $pkg.PackageName }).Count -gt 0
+        if ($stillProvisioned) {
+            $why = if ($deprovisionErrors.ContainsKey($pkg.PackageName)) { $deprovisionErrors[$pkg.PackageName] } else { 'it is still listed after the de-provisioning pass' }
+            Write-Log "Still provisioned after de-provisioning: $($pkg.DisplayName) - new user profiles may get it back ($why)." 'WARN'
+        } elseif ($provisionedKnown) {
+            Write-Log "De-provisioned: $($pkg.DisplayName)"
+        }
+    }
+    if ($unreadable.Count -gt 0) {
+        Write-Log "Could not read $($unreadable -join ' or ') after the removal, so $unverified Store app(s) could not be checked and are not counted as removed." 'WARN'
+    }
+    $result.Failed = $failedNames.Count
+    $result.FailedNames = $failedNames.ToArray()
+    $result.Unverified = $unverified
+    return $result
+}
+
+function Remove-OemBloatware {
+    Write-Log '--- Phase 1: Removing OEM (Dell/Lenovo) bloatware and McAfee software ---'
+    $warningsAtStart = Get-RunWarningCount
+
+    # An uninstaller started while a restart is pending may do nothing at all (a WiX Burn bundle exits 350, "no action was taken as a
+    # system reboot is required"), so say so before the report below shows programs that are still there.
+    $pendingRestart = @(Get-PendingRestartReasons)
+    if ($pendingRestart.Count -gt 0) {
+        Write-Log "A restart is pending on this PC ($($pendingRestart -join '; ')). An installer can refuse to run, or do nothing, until it has happened - if programs are listed as NOT REMOVED below, restart the PC and run the clean-up again." $(if ($DryRun) { 'INFO' } else { 'WARN' })
+    }
+
+    # --- Store apps (AppX): removed for all users and de-provisioned ---
+    $appxResult = Remove-OemAppxPackages
+
+    # --- Win32 programs, via their own registry uninstall entries ---
+    # (Previously also tried winget first on every match, but the registry uninstall string always ran anyway - winget rarely
+    # recognizes OEM-bundled software by name, so it was pure added latency for no extra removals.)
+    # One record per product with all of its installer layers: a product that several patterns match, or that registers an
+    # MSI plus the bundle around it, used to be attempted again and again with no word on the outcome. These stay serial -
+    # Windows Installer serializes MSI operations internally regardless - and each uninstaller runs at BelowNormal priority with
+    # a short pause between products so that disk/AV activity has a moment to settle.
+    $products = @(Group-OemProductEntries -Entries @(Get-UninstallEntries) -Patterns $Win32BloatPatterns)
+    $results = @{}
+    $resultOrder = New-Object System.Collections.Generic.List[string]
+    $finished = @('Removed', 'RemovedRestartNeeded', 'StaleEntryCleared', 'DryRun')
+    # Vendors disagree on the order products must go in (Dell's own wiki and Dell's own script differ), and one product can hold
+    # another in place; so after a pass in which something WAS removed, what is left gets one more try on a fresh look at the registry.
+    for ($sweep = 1; $sweep -le 2; $sweep++) {
+        $progress = $false
+        foreach ($product in $products) {
+            if ($ProtectWorkTeams -and (Test-IsWorkSchoolTeams -Win32DisplayName $product.Name)) {
+                if ($sweep -eq 1) { Write-Log "Skipping uninstall of '$($product.Name)' - identified as work/school Teams, protected by -ProtectWorkTeams." 'WARN' }
                 continue
             }
-            Invoke-Step "Uninstalling: $name" {
-                $decision = ConvertFrom-UninstallString -UninstallString $match.UninstallString -QuietUninstallString $match.QuietUninstallString
-                switch ($decision.Type) {
-                    'Msi' {
-                        # PSChildName is the registry key name, which for some Dell entries
-                        # is a product name, not the GUID - only used as a fallback when the
-                        # uninstall string itself didn't contain a GUID.
-                        $productCode = if ($decision.ProductCode) { $decision.ProductCode } else { $match.PSChildName }
-                        Write-Log "Running msiexec /x $productCode /qn /norestart for '$name' (low priority)"
-                        Start-ProcessLowPriority -FilePath 'msiexec.exe' -ArgumentList "/x $productCode /qn /norestart"
-                    }
-                    'Exe' {
-                        if (Test-Path $decision.FilePath) {
-                            Write-Log "Running '$($decision.FilePath)' $($decision.ArgumentList) for '$name' (low priority)"
-                            Start-ProcessLowPriority -FilePath $decision.FilePath -ArgumentList $decision.ArgumentList
-                        } else {
-                            Write-Log "Could not resolve an uninstaller executable from '$($decision.EffectiveString)' for '$name' - skipping." 'WARN'
-                        }
-                    }
-                    'Unparseable' {
-                        Write-Log "Could not resolve an uninstaller executable from '$($decision.EffectiveString)' for '$name' - skipping." 'WARN'
-                    }
+            $key = $product.Name.Trim().ToLowerInvariant()
+            $before = $null
+            if ($sweep -gt 1) {
+                # Only what failed in a way a second go could change: not what is done, and not what hung, was refused or is waiting
+                # for a restart (those would just hang, be refused or wait again).
+                if (-not $results.ContainsKey($key) -or $results[$key].Status -in $finished) { continue }
+                if (-not (Test-OemResultRetryable -Result $results[$key])) { continue }
+                $before = $results[$key]
+            }
+            $skip = if ($before) { @($before.WallPsPaths) } else { @() }
+            # Nothing left that a second look could run (every entry still listed belongs to a layer that already hit a wall): the first
+            # look's result and its explanation stand, and nothing is stopped or announced for nothing.
+            if ($before -and @($product.Entries | Where-Object { $skip -notcontains [string]$_.PSPath }).Count -eq 0) { continue }
+            # (iterated into a plain array: in Windows PowerShell 5.1, @(<a List held in an object's property>) throws)
+            $earlier = New-Object System.Collections.Generic.List[object]
+            if ($before) { foreach ($a in $before.Attempts) { if ($a) { $earlier.Add($a) } } }
+            $result = Remove-OemWin32Product -Product $product -Passes $(if ($sweep -eq 1) { 2 } else { 1 }) -SkipPsPaths $skip -EarlierAttempts $earlier.ToArray()
+            if ($before) {
+                # The second look adds to the first one's story, it does not replace it: what was attempted and what needs a restart.
+                # (iterated directly: in Windows PowerShell 5.1, @(<a List held in an object's property>) throws "Argument types do not match")
+                $merged = New-Object System.Collections.Generic.List[object]
+                foreach ($a in $before.Attempts) { $merged.Add($a) }
+                foreach ($a in $result.Attempts) { $merged.Add($a) }
+                $result | Add-Member -NotePropertyName Attempts -NotePropertyValue $merged -Force
+                $result | Add-Member -NotePropertyName WallPsPaths -NotePropertyValue @(@($before.WallPsPaths) + @($result.WallPsPaths) | Select-Object -Unique) -Force
+                if ($before.RestartNeeded) {
+                    $result | Add-Member -NotePropertyName RestartNeeded -NotePropertyValue $true -Force
+                    if ($result.Status -eq 'Removed') { $result.Status = 'RemovedRestartNeeded' }
+                }
+                # (the services the first look disabled are already Disabled in the second, which therefore does not report them)
+                $mergedServices = New-Object System.Collections.Generic.List[object]
+                foreach ($s in @($before.DisabledServices)) { if ($s) { $mergedServices.Add($s) } }
+                foreach ($s in @($result.DisabledServices)) { if ($s -and @($mergedServices | Where-Object { $_.Name -eq $s.Name }).Count -eq 0) { $mergedServices.Add($s) } }
+                $result | Add-Member -NotePropertyName DisabledServices -NotePropertyValue $mergedServices.ToArray() -Force
+                # (the notes of the first look - a layer that said "not installed" while the program is still there, an entry that could not
+                # be run - belong to the report as well; the second look may skip those layers and say nothing about them)
+                $mergedNotes = New-Object System.Collections.Generic.List[string]
+                foreach ($note in @($before.DetailNotes)) { if ($note) { $mergedNotes.Add([string]$note) } }
+                foreach ($note in @($result.DetailNotes)) { if ($note -and -not $mergedNotes.Contains([string]$note)) { $mergedNotes.Add([string]$note) } }
+                $result | Add-Member -NotePropertyName DetailNotes -NotePropertyValue $mergedNotes.ToArray() -Force
+                # (the installer logs of both looks are cleaned up together, once the program is known to be gone)
+                $result | Add-Member -NotePropertyName LogLayers -NotePropertyValue @(@($before.LogLayers) + @($result.LogLayers) | Where-Object { $_ }) -Force
+                # What it says about a product that stayed is rebuilt from everything attempted in BOTH looks (a program that got the
+                # second look would otherwise be reported from that look alone, with the first one's attempts missing from the text).
+                if ($result.Status -eq 'Failed') {
+                    $result.Detail = Format-OemFailureDetail -AttemptLines @(Get-OemAttemptLines -Attempts $merged) -Notes @($result.DetailNotes) -Shared ([bool]$result.Shared) -DisabledServices @($result.DisabledServices)
                 }
             }
+            if (-not $results.ContainsKey($key)) { $resultOrder.Add($key) }
+            $results[$key] = $result
+            if ($result.Status -in $finished) { $progress = $true }
             if (-not $DryRun) { Start-Sleep -Milliseconds 400 }
+        }
+        if ($sweep -eq 1) {
+            $retry = @($resultOrder | Where-Object { $results[$_].Status -eq 'Failed' -and (Test-OemResultRetryable -Result $results[$_]) })
+            # An uninstaller that said "restart first" (a Burn bundle's own lock, or a restart that is pending on the whole PC) is not likely
+            # to be the only one: another sweep would probably only hit the same wall.
+            $restartWall = @($resultOrder | Where-Object { @($results[$_].Attempts | Where-Object { $_.Class -eq 'RebootFirst' }).Count -gt 0 }).Count -gt 0
+            if ($DryRun -or -not $progress -or $retry.Count -eq 0 -or $restartWall) { break }
+            $products = @(Group-OemProductEntries -Entries @(Get-UninstallEntries) -Patterns $Win32BloatPatterns)
+            # (there is a second sweep only if some program has an entry that did not hit a wall; a program whose runnable layers all did
+            # is passed over by the look itself: nothing is announced or stopped for it, and its first result stands)
+            $again = @($products | Where-Object {
+                $againKey = $_.Name.Trim().ToLowerInvariant()
+                $results.ContainsKey($againKey) -and $retry -contains $againKey -and
+                @($_.Entries | Where-Object { @($results[$againKey].WallPsPaths) -notcontains [string]$_.PSPath }).Count -gt 0
+            })
+            if ($again.Count -eq 0) { break }
+            Write-Log 'Some programs are still installed although others were removed - taking a second look at them.'
         }
     }
 
-    Write-Log 'OEM bloatware / McAfee removal pass complete.'
-    Write-Log 'If McAfee remnants remain (rare once the MSI above runs cleanly), download the official removal tool from https://www.mcafee.com/en-us/consumer-support/mcpr.html and run it manually - it is designed to run interactively.'
+    if (-not $DryRun) {
+        # A last look: the report says what is on the PC NOW, not what each step believed when it ran. A program can be gone after all -
+        # taken along by another program's uninstaller, or by an installer that finished after it had been given up on.
+        if ($resultOrder.Count -gt 0) {
+            $endKeys = @(Group-OemProductEntries -Entries @(Get-UninstallEntries) -Patterns $Win32BloatPatterns | ForEach-Object { $_.Name.Trim().ToLowerInvariant() })
+            foreach ($key in $resultOrder) {
+                if ($results[$key].Status -eq 'Failed' -and $endKeys -notcontains $key) {
+                    $results[$key].Status = if ($results[$key].RestartNeeded) { 'RemovedRestartNeeded' } else { 'Removed' }
+                    $results[$key].Detail = ''
+                } elseif ($results[$key].Status -in 'Removed', 'RemovedRestartNeeded', 'StaleEntryCleared' -and $endKeys -contains $key) {
+                    # ... and the other way round: a program that is listed in Apps AGAIN at the end (an update tool or a delivery
+                    # service installed it back, or an installer finished late) is not a removed program.
+                    $results[$key].Status = 'Failed'
+                    # (what its uninstallers said stays in the report - the exit codes are the only diagnosis there is - and the cause is a
+                    # possibility, not a fact: an update tool, a delivery service, a late installer, or another program with the same name)
+                    $flipLines = @('it was removed, but it is listed in Apps again - possibly installed back by Dell Command | Update, a Dell delivery service or another installer') + @(Get-OemAttemptLines -Attempts $results[$key].Attempts)
+                    $results[$key].Detail = Format-OemFailureDetail -AttemptLines $flipLines -DisabledServices @($results[$key].DisabledServices)
+                }
+            }
+        }
+        $productResults = @($resultOrder | ForEach-Object { $results[$_] })
+        # The verbose installer logs are only worth keeping for a program that is NOT gone: they are deleted now, after the last look (a
+        # program that turns out to be listed again keeps its logs - they are what its exit codes can be checked against).
+        foreach ($finishedResult in @($productResults | Where-Object { $_.Status -in 'Removed', 'RemovedRestartNeeded', 'StaleEntryCleared' })) { Remove-OemUninstallLogs -Layers @($finishedResult.LogLayers) }
+        foreach ($line in @(Get-OemRemovalSummaryLines -AppxResult $appxResult -ProductResults $productResults -WarningsRaised ((Get-RunWarningCount) - $warningsAtStart))) {
+            Write-Log $line.Message $line.Level
+        }
+        # Dell Command | Update (kept on purpose) can fetch some of these programs again with its "Application" updates.
+        $removedAny = @($productResults | Where-Object { $_.Status -in 'Removed', 'RemovedRestartNeeded' }).Count -gt 0
+        if ($removedAny -and (@('C:\Program Files\Dell\CommandUpdate\dcu-cli.exe', 'C:\Program Files (x86)\Dell\CommandUpdate\dcu-cli.exe') | Where-Object { Test-Path -LiteralPath $_ }).Count -gt 0) {
+            Write-Log "Dell Command | Update is installed and can download some of these programs again (for example, Dell's catalog for the Vostro 16 5630 lists the SupportAssist OS Recovery Plugin and Dell Update as 'Application' updates): in its settings, un-tick 'Application' under Update Type, or run dcu-cli.exe /configure -updateType=bios,firmware,driver (Dell's documented switch; whether its scheduled run honours it has not been tested)."
+        }
+    }
+    if ($DryRun) {
+        # (a dry run prints no result line and removes nothing, so there is nothing to refer to and no remnant to advise about)
+        Write-Log 'OEM bloatware / McAfee removal pass finished (dry run: nothing was changed).'
+    } else {
+        Write-Log 'OEM bloatware / McAfee removal pass finished (the result line above says what is gone and what is not).'
+        # (the keys of $resultOrder are the lower-cased product names)
+        if (@($resultOrder | Where-Object { $_ -like 'mcafee*' }).Count -gt 0) {
+            Write-Log 'McAfee software was part of this run: if remnants remain, download McAfee''s own removal tool from https://www.mcafee.com/en-us/consumer-support/mcpr.html and run it manually - it is designed to run interactively.'
+        }
+    }
 }
 
 function Disable-OemScheduledTasksAndServices {
@@ -811,13 +2149,18 @@ function Disable-OemScheduledTasksAndServices {
 
     # Same bloat keywords used for the Win32 program removal above, matched against
     # Windows services instead - disabling stops the app respawning itself even when
-    # its uninstaller didn't clean up its service registration.
+    # its uninstaller didn't clean up its service registration. This is done whether or
+    # not the program was removed: a program that could not be uninstalled stays installed
+    # with its service stopped and Disabled. What each service was set to goes into the log.
     foreach ($pattern in $OemServicePatterns) {
         $services = Get-Service -ErrorAction SilentlyContinue |
             Where-Object { $_.DisplayName -like $pattern -or $_.Name -like $pattern }
         foreach ($svc in $services) {
-            Invoke-Step "Disabling service: $($svc.DisplayName) ($($svc.Name))" {
-                Stop-Service -Name $svc.Name -Force -ErrorAction SilentlyContinue
+            # (Phase 1 may have stopped and disabled it already: nothing left to do, nothing to log)
+            if ("$($svc.StartType)" -eq 'Disabled' -and "$($svc.Status)" -eq 'Stopped') { continue }
+            Invoke-Step "Disabling service: $($svc.DisplayName) ($($svc.Name); currently set to $($svc.StartType), $($svc.Status))" {
+                # (bounded: a plain Stop-Service waits for ever on a service stuck in StopPending)
+                if ($svc.Status -ne 'Stopped') { [void](Stop-ServiceBounded -Name $svc.Name -TimeoutSec 30) }
                 Set-Service -Name $svc.Name -StartupType Disabled -ErrorAction SilentlyContinue
             }
         }

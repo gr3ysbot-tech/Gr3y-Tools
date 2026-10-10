@@ -183,11 +183,11 @@ Describe 'Remove-OldWorkDirFiles' {
         }
     }
 
-    It 'deletes old logs and downloads, but never the break-glass credential or the Revert Last Run snapshots' {
+    It 'deletes old logs and downloads, but never the break-glass credential, the Revert Last Run snapshots or the backups of cleared Uninstall entries' {
         $dir = Join-Path $TestDrive 'sweep'
         New-Item -ItemType Directory -Path $dir | Out-Null
         $old = 'run_20260101_000000_x.log', 'gui_run_20260101_000000.out.log', 'gui_fix_20260101_000000.err.log', 'winget_install_20260101.log', 'dism_restorehealth.log', 'setup.exe', 'wu_resume_state.json'
-        $keep = 'breakglass-admin_PC_SER123.txt', 'undo_PC_20260101_000000.json', 'undo_PC_20260101_000000_HKCU_Software_X.reg'
+        $keep = 'breakglass-admin_PC_SER123.txt', 'undo_PC_20260101_000000.json', 'undo_PC_20260101_000000_HKCU_Software_X.reg', 'removed-uninstall-entry_Dell_Pair_20260101_000000.reg'
         foreach ($n in $old + $keep) { $null = New-AgedFile $dir $n 45 }
         $recent = New-AgedFile $dir 'run_recent.log' 10
         New-Item -ItemType Directory -Path (Join-Path $dir 'handoff') | Out-Null

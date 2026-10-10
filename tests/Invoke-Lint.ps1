@@ -134,6 +134,38 @@ if (Test-Path $bloatPatternsPath) {
         }
     }
     if (-not $hadFailure) { Write-LintOk "$patternCount wildcard pattern(s) in bloat-patterns.json are all valid" }
+
+    # "productHints" is per-product knowledge for the removal engine: which services and processes keep a product busy, and the
+    # silent switches to use when the vendor's own uninstall string would open a wizard. A typo in a property name would silently
+    # switch a hint off, so every property is checked.
+    $hintProblems = 0
+    $hintCount = 0
+    foreach ($oemName in $bloatPatterns.PSObject.Properties.Name) {
+        $hints = $bloatPatterns.$oemName.productHints
+        if ($null -eq $hints) { continue }
+        foreach ($hint in @($hints)) {
+            $hintCount++
+            $label = "bloat-patterns.json: '$oemName.productHints' entry #$hintCount"
+            $unknown = @($hint.PSObject.Properties.Name | Where-Object { $_ -notin @('match', 'services', 'processes', 'silentArgs', 'timeoutSec', 'respectDependencies') })
+            if ($unknown.Count -gt 0) { Write-LintError "$label has unknown propert(y/ies): $($unknown -join ', ')"; $hintProblems++ }
+            if (-not ($hint.match -is [string]) -or -not $hint.match.Trim()) { Write-LintError "$label has no 'match' text"; $hintProblems++ }
+            foreach ($listName in @('match', 'services', 'processes')) {
+                foreach ($item in @($hint.$listName)) {
+                    if ($null -eq $item) { continue }
+                    if (-not ($item -is [string]) -or -not $item.Trim()) { Write-LintError "$label has an empty or non-text item in '$listName'"; $hintProblems++; continue }
+                    try { $null = [System.Management.Automation.WildcardPattern]::new($item) } catch { Write-LintError "$label '$listName' item '$item' is not a valid wildcard: $($_.Exception.Message)"; $hintProblems++ }
+                    # A pattern is executed against every service / process / program on the PC: one that is mostly wildcard ('*', '?*')
+                    # would stop or disable things that have nothing to do with the product.
+                    if ($item -match '[\*\?\[]' -and ($item -replace '[\*\?\[\]]', '').Length -lt 6) { Write-LintError "$label '$listName' item '$item' is too broad: a wildcard pattern needs at least 6 literal characters"; $hintProblems++ }
+                }
+            }
+            if ($null -ne $hint.silentArgs -and (-not ($hint.silentArgs -is [string]) -or -not $hint.silentArgs.Trim())) { Write-LintError "$label has an empty 'silentArgs'"; $hintProblems++ }
+            if ($null -ne $hint.timeoutSec -and (-not ($hint.timeoutSec -is [int] -or $hint.timeoutSec -is [long]) -or $hint.timeoutSec -lt 30 -or $hint.timeoutSec -gt 3600)) { Write-LintError "$label 'timeoutSec' must be a whole number from 30 to 3600"; $hintProblems++ }
+            if ($null -ne $hint.respectDependencies -and -not ($hint.respectDependencies -is [bool])) { Write-LintError "$label 'respectDependencies' must be true or false"; $hintProblems++ }
+            if ($hint.match -and -not $hint.services -and -not $hint.processes -and -not $hint.silentArgs -and -not $hint.timeoutSec -and $hint.respectDependencies -ne $true) { Write-LintError "$label says nothing: no services, processes, silentArgs, timeoutSec or respectDependencies"; $hintProblems++ }
+        }
+    }
+    if ($hintProblems -eq 0) { Write-LintOk "$hintCount productHints entr(y/ies) in bloat-patterns.json are well-formed" }
 }
 
 Write-Host '--- XAML here-string parse check (Gr3ysUtilities.ps1) ---'
@@ -210,6 +242,22 @@ foreach ($f in $psFiles) {
     }
 }
 if (-not $hadFailure) { Write-LintOk "$($psFiles.Count) PowerShell file(s) parse with 0 syntax errors" }
+
+# PowerShell lets a later definition silently replace an earlier one, so a function pasted in twice (or twice with small
+# differences) runs whichever copy comes last and nothing complains. Only top-level definitions are compared: the same name
+# inside two different branches or scriptblocks is legitimate.
+Write-Host '--- Duplicate top-level function definitions ---'
+$dupeFunctionCount = 0
+foreach ($f in $psFiles) {
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$null)
+    $topLevel = @($ast.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.FunctionDefinitionAst] })
+    foreach ($group in ($topLevel | Group-Object { $_.Name.ToLowerInvariant() } | Where-Object { $_.Count -gt 1 })) {
+        $dupeFunctionCount++
+        $where = ($group.Group | ForEach-Object { $_.Extent.StartLineNumber }) -join ', '
+        Write-LintError "$($f.Name): function '$($group.Group[0].Name)' is defined $($group.Count) times (lines $where) - only the last copy would run"
+    }
+}
+if ($dupeFunctionCount -eq 0) { Write-LintOk 'no function is defined twice at the top level of any PowerShell file' }
 
 Write-Host '--- PSScriptAnalyzer: PSUseCompatibleSyntax (hard fail) + PSUseCompatibleCommands (reported) ---'
 if (Get-Module -ListAvailable -Name PSScriptAnalyzer) {
