@@ -94,11 +94,12 @@ function Remove-OldWorkDirFiles {
     # Cleanup of old run/fix/scan/winget logs and downloaded installers on every GUI launch - this directory otherwise
     # only ever grows, run after run, laptop after laptop. NEVER touched, whatever their age: the break-glass
     # administrator's credential file (breakglass-admin_*, on a machine that is not Entra-joined it is the ONLY copy
-    # of that password) and the "Revert Last Run" snapshots (undo_*), which stop working if they disappear.
+    # of that password), the "Revert Last Run" snapshots (undo_*), which stop working if they disappear, and the .reg
+    # backups of stale Uninstall entries the removal cleared (removed-uninstall-entry_*), the only way to restore one.
     param([string]$Path, [int]$OlderThanDays = 30)
     $limit = (Get-Date).AddDays(-$OlderThanDays)
     Get-ChildItem -LiteralPath $Path -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTime -lt $limit -and $_.Name -notlike 'breakglass-admin_*' -and $_.Name -notlike 'undo_*' } |
+        Where-Object { $_.LastWriteTime -lt $limit -and $_.Name -notlike 'breakglass-admin_*' -and $_.Name -notlike 'undo_*' -and $_.Name -notlike 'removed-uninstall-entry_*' } |
         Remove-Item -Force -ErrorAction SilentlyContinue
 }
 Remove-OldWorkDirFiles -Path $workDir
@@ -1000,7 +1001,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                 <DockPanel LastChildFill="False" Margin="0,0,0,1">
                   <CheckBox DockPanel.Dock="Left" Name="OptDryRun" Content="Dry run (preview only)"/>
                   <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
-                             ToolTip="Preview only: logs everything a real run would do without changing anything."/>
+                             ToolTip="Preview only: lists what a real run would do - the programs it would uninstall (with the command for each) and the Store apps it would remove, the services and processes it would stop, the services and scheduled tasks it would disable - without changing anything."/>
                 </DockPanel>
                 <DockPanel LastChildFill="False" Margin="0,0,0,1">
                   <CheckBox DockPanel.Dock="Left" Name="OptCreateRestorePoint" Content="Create System Restore point" IsChecked="True"/>
@@ -1015,7 +1016,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                 <DockPanel LastChildFill="False" Margin="22,0,0,1">
                   <CheckBox DockPanel.Dock="Left" Name="OptDell" Content="Debloat Dell software" IsChecked="True"/>
                   <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
-                             ToolTip="Checks the Dell bloat patterns (SupportAssist, Optimizer, Digital Delivery, ...). Dell Command Update is kept."/>
+                             ToolTip="Checks the Dell bloat patterns (SupportAssist - the Business PCs edition too -, Optimizer, Digital Delivery, ...). Dell Command Update is kept."/>
                 </DockPanel>
                 <DockPanel LastChildFill="False" Margin="22,0,0,1">
                   <CheckBox DockPanel.Dock="Left" Name="OptLenovo" Content="Debloat Lenovo software" IsChecked="True"/>
@@ -4375,7 +4376,7 @@ $btnStart.Add_Click({
 
     if (-not $optDryRun.IsChecked) {
         $summaryParts = New-Object System.Collections.Generic.List[string]
-        if (-not $optSkipDebloat.IsChecked) { $summaryParts.Add('- Remove OEM/McAfee bloatware') }
+        if (-not $optSkipDebloat.IsChecked) { $summaryParts.Add('- Remove OEM/McAfee bloatware (including SupportAssist for Business PCs and managed McAfee)') }
         if ($optInstallOemUpdate.IsChecked) { $summaryParts.Add('- Install Dell Command Update / Lenovo System Update (if applicable)') }
         if (-not $optSkipOfficeRemoval.IsChecked) { $summaryParts.Add('- Remove any existing Office install') }
         if (-not $optSkipOfficeInstall.IsChecked) {
