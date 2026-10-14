@@ -73,6 +73,7 @@ Apps list; a program counts as removed only when it has really left that list.
 - `DellInc.DellProductRegistration`
 - `DellInc.DellPremierColor`
 - `DellInc.DellCinemaColor`
+- `*CinemaColor*`
 - `DellInc.DellPowerManager`
 - `DellInc.DellPeripheralManager`
 - `DellInc.DellPair`
@@ -90,6 +91,7 @@ Apps list; a program counts as removed only when it has really left that list.
 - `Dell Peripheral Manager*`
 - `Dell Mobile Connect*`
 - `Dell Pair`
+- `Dell CinemaColor*`
 - `Dell Core Services`
 - `Waves MaxxAudio*`
 - `MaxxAudioPro*`
