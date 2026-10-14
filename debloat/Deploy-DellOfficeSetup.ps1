@@ -762,6 +762,111 @@ function Wait-WindowsInstallerIdle {
     }
 }
 
+function Get-WindowsInstallerServiceProcess {
+    # The process that hosts the Windows Installer service (msiserver): the side that really carries out an MSI transaction (the
+    # msiexec.exe this script starts is only its client). $null when the service is not running, or when what the service manager
+    # names is not an msiexec.exe - this is the process that may be ended, so it is never a guess.
+    try {
+        $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name = 'msiserver'" -ErrorAction Stop
+        $procId = if ($svc) { [int]$svc.ProcessId } else { 0 }
+        if ($procId -le 4 -or $procId -eq $PID) { return $null }
+        $proc = Get-Process -Id $procId -ErrorAction Stop
+        if ($proc.ProcessName -ne 'msiexec') { return $null }
+        return $proc
+    } catch {
+        return $null
+    }
+}
+
+function Stop-ProcessTree {
+    # Ends a process and everything it started (taskkill /T: an installer's helper processes would otherwise keep running).
+    param([int]$ProcessId)
+    try { & taskkill.exe /PID $ProcessId /T /F 2>&1 | Out-Null } catch { $null = $_ }
+    try { Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue } catch { $null = $_ }
+}
+
+function Format-OemProcessTree {
+    # Pure: the processes that descend from the given root process ids, one "name (PID n): command line" text each (at most $Max,
+    # then a count of the rest), for the log line that says what a hung installer was waiting on. The roots themselves are not listed.
+    param([object[]]$Processes, [int[]]$RootId, [int]$Max = 12)
+    $children = @{}
+    foreach ($p in @($Processes)) {
+        if ($null -eq $p) { continue }
+        $parent = [int]$p.ParentProcessId
+        if (-not $children.ContainsKey($parent)) { $children[$parent] = New-Object System.Collections.Generic.List[object] }
+        $children[$parent].Add($p)
+    }
+    $seen = New-Object System.Collections.Generic.HashSet[int]
+    $queue = New-Object System.Collections.Generic.Queue[int]
+    foreach ($root in @($RootId)) { if ($seen.Add([int]$root)) { $queue.Enqueue([int]$root) } }
+    $lines = New-Object System.Collections.Generic.List[string]
+    $total = 0
+    while ($queue.Count -gt 0) {
+        $id = $queue.Dequeue()
+        if (-not $children.ContainsKey($id)) { continue }
+        foreach ($c in $children[$id]) {
+            $childId = [int]$c.ProcessId
+            if (-not $seen.Add($childId)) { continue }
+            $total++
+            if ($lines.Count -lt $Max) {
+                $text = "$($c.Name) (PID $childId)"
+                $cmd = ([string]$c.CommandLine -replace '\s+', ' ').Trim()
+                if ($cmd) {
+                    if ($cmd.Length -gt 140) { $cmd = $cmd.Substring(0, 140) + '...' }
+                    $text = "${text}: $cmd"
+                }
+                $lines.Add($text)
+            }
+            $queue.Enqueue($childId)
+        }
+    }
+    if ($total -gt $lines.Count) { $lines.Add("and $($total - $lines.Count) more") }
+    return $lines.ToArray()
+}
+
+function Get-OemLogTail {
+    # The last few non-empty lines of a log file, each cut to one short line. Empty when the file is missing; never throws.
+    param([string]$Path, [int]$Lines = 8)
+    try {
+        if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return @() }
+        $tail = @(Get-Content -LiteralPath $Path -Tail 80 -ErrorAction Stop | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+        return @($tail | Select-Object -Last $Lines | ForEach-Object { if ($_.Length -gt 220) { $_.Substring(0, 220) + '...' } else { $_ } })
+    } catch {
+        return @()
+    }
+}
+
+function Resolve-HungWindowsInstaller {
+    # Called after an uninstaller was stopped for not finishing. Stopping it ends its own processes, but a Windows Installer product
+    # is carried out by the Windows Installer SERVICE, which goes on with the stuck change and keeps the machine-wide installer lock:
+    # every uninstall after it then answers 1618 ("another installation is in progress") until the run gives up (seen on a Dell
+    # Vostro 5620, 2026-10-14: one hung SupportAssist MSI made every later program fail). So: first say what the installer's own log
+    # ended with (the step that hung), give the service a minute to finish by itself, and only if it still holds the lock end the
+    # service process and what it started - Windows undoes the interrupted change the next time the installer is used. Returns
+    # 'Free' (nothing held), 'Cleared' (the stuck service was ended) or 'StillBusy'. Never ends anything else than the msiexec.exe the
+    # service manager names for msiserver.
+    param([string]$ProductName, [string]$LogPath, [int]$GraceSec = 60, [int]$AfterSec = 60)
+    foreach ($line in @(Get-OemLogTail -Path $LogPath)) { Write-Log "    installer log, last lines: $line" }
+    if (Wait-WindowsInstallerIdle -TimeoutSec $GraceSec) { return 'Free' }
+    $service = Get-WindowsInstallerServiceProcess
+    if (-not $service) {
+        Write-Log "  Windows Installer is still busy after '$ProductName' was stopped, and its service process could not be identified - nothing was ended. Restart the PC, then run the clean-up again." 'WARN'
+        return 'StillBusy'
+    }
+    Write-Log "  Windows Installer is still busy $GraceSec s after '$ProductName' was stopped: its service (msiexec.exe, PID $($service.Id)) is still working on that change and every other uninstall would wait behind it. Ending the service and what it started; Windows undoes an interrupted change the next time it is used." 'WARN'
+    try {
+        $all = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
+        foreach ($line in @(Format-OemProcessTree -Processes $all -RootId @($service.Id))) { Write-Log "    was running under it: $line" }
+    } catch { $null = $_ }
+    Stop-ProcessTree -ProcessId $service.Id
+    if (Wait-WindowsInstallerIdle -TimeoutSec $AfterSec) {
+        Write-Log '  Windows Installer is free again.'
+        return 'Cleared'
+    }
+    Write-Log '  Windows Installer is still busy after its service was ended. Restart the PC, then run the clean-up again.' 'WARN'
+    return 'StillBusy'
+}
+
 function Get-OemHangGuess {
     # Pure: the likely reason an uninstaller has not finished, for the warning that says it is being stopped. A Windows Installer
     # product (msiexec) has no window under /qn, so a dialog is not the likely reason for it; any other installer may be waiting on one.
@@ -811,9 +916,9 @@ function Start-ProcessLowPriority {
         Write-Log "Uninstaller '$FilePath' did not exit within $($TimeoutMs / 1000)s ($(Get-OemHangGuess -FilePath $FilePath)) - killing it." 'WARN'
         # /T: the whole tree - an installer's child (msiexec, a temp copy of itself) would otherwise keep running. When the process IS
         # msiexec (a Windows Installer product that has not finished after the limit - 10 minutes, with no window to wait on under
-        # /qn), its client is stopped too; the work itself runs in the Windows Installer service, and what that service does with an
-        # interrupted transaction is NOT known. Leaving it running would be worse - every other MSI of the run would sit behind it
-        # until its 1618 retries ran out - so the product stays "NOT REMOVED" and its verbose log is kept.
+        # /qn), only its client is stopped here: the work itself runs in the Windows Installer service, which was seen (Dell Vostro
+        # 5620, 2026-10-14) to keep the machine-wide installer lock, so that every other MSI of the run answered 1618. The caller
+        # (Invoke-OemUninstallLayer -> Resolve-HungWindowsInstaller) clears that; the product stays "NOT REMOVED" and its verbose log is kept.
         try { & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null } catch {}
         try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
     }
@@ -1284,6 +1389,10 @@ function Invoke-OemUninstallLayer {
         $outcome = if ($null -ne $attempt.ExitDisplay) { "exit $($attempt.ExitDisplay) ($($attempt.Text))" } else { [string]$attempt.Text }
         $level = if ($cls.Class -in 'Success', 'RebootRequired', 'NotInstalled') { 'INFO' } else { 'WARN' }
         Write-Log "  $($Layer.Kind) uninstaller for '$ProductName': $outcome, $($attempt.Seconds)s" $level
+        if ($run.TimedOut) {
+            # What was stopped may have left the Windows Installer service running its change and holding the machine-wide lock.
+            try { [void](Resolve-HungWindowsInstaller -ProductName $ProductName -LogPath $Layer.LogPath) } catch { Write-Log "  Could not check whether Windows Installer is still held: $($_.Exception.Message)" 'WARN' }
+        }
         if ($cls.Class -ne 'Busy') { break }
         if ($OemBudget -and $OemBudget.BusySeconds -ge $OemBudget.BusyLimitSec) {
             Write-Log "  Windows Installer has been busy for $([int]($OemBudget.BusySeconds / 60)) minutes of this run - not waiting for it any longer. Let Windows Update finish, restart the PC, then run the clean-up again." 'WARN'

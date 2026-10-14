@@ -130,6 +130,16 @@ phases 0-3 and part of phase 4 (optional items were deliberately not built):
 
 ### Fixed
 
+- **Debloat: one hung Windows Installer product no longer makes every later uninstall fail.** On a Dell
+  Vostro 5620 the SupportAssist MSI ran into its 10-minute limit and was stopped, but the Windows
+  Installer SERVICE kept working on that change and kept the machine-wide installer lock, so every
+  program after it answered 1618 ("another installation is already in progress") and the run was
+  wasted. After an uninstaller is stopped for not finishing, the engine now logs the last lines of
+  the installer's own log (the step that hung), waits a minute for the service to finish by itself,
+  and only if it still holds the lock logs what was running under it and ends that service process
+  (only the msiexec.exe the service manager names for msiserver); Windows undoes the interrupted
+  change the next time the installer is used. The hung product is still reported as NOT REMOVED, with
+  its verbose log kept. `tests/OemRemoval.Hang.Tests.ps1` covers it.
 - **Debloat: the Dell/OEM removal (Phase 1) now checks what it did and says what stayed.** On a Dell
   Vostro 16 the owner reported "nothing was removed"; the run ended "Run complete with 5
   warning(s)/error(s)" - four from the Store-app step and one about Dell Pair - and said nothing about
@@ -180,8 +190,8 @@ phases 0-3 and part of phase 4 (optional items were deliberately not built):
     already alone, and now warns when a service cannot be stopped.
   - An installer that has not finished after its limit (10 minutes for an MSI or a bundle, 4 for a
     wrapper, 5 for any other uninstaller, 7 for Optimizer's own) is stopped together with its child
-    processes and the program is reported as NOT REMOVED; what Windows Installer does with an
-    interrupted transaction is not known.
+    processes and the program is reported as NOT REMOVED. (If Windows Installer is then still held by
+    the interrupted change, the service is cleared - see the entry above.)
   - Retries: a failed pass is followed by one more, with the services and processes stopped again. A
     layer that hung, could not be started, lost its cached installer, is blocked by a policy or said
     "not installed" is not asked again. A layer that said "restart first" is not asked again and no

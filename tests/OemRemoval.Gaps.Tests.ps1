@@ -13,6 +13,9 @@ BeforeAll {
         . ([scriptblock]::Create((Get-FunctionSource -ScriptPath $deployScript -FunctionName $fn)))
     }
 
+    # (after a hung uninstaller the engine looks at the real Windows Installer service and may end it: never from these tests - OemRemoval.Hang.Tests.ps1 covers it)
+    function Resolve-HungWindowsInstaller { param([string]$ProductName, [string]$LogPath) "Free" }
+
     function Write-Log {
         param([string]$Message, [string]$Level = 'INFO')
         $global:OemTestLog.Add("[$Level] $Message")
