@@ -10,6 +10,7 @@
       "DellInc.DellProductRegistration",
       "DellInc.DellPremierColor",
       "DellInc.DellCinemaColor",
+      "*CinemaColor*",
       "DellInc.DellPowerManager",
       "DellInc.DellPeripheralManager",
       "DellInc.DellPair",
@@ -26,6 +27,7 @@
       "Dell Peripheral Manager*",
       "Dell Mobile Connect*",
       "Dell Pair",
+      "Dell CinemaColor*",
       "Dell Core Services",
       "Waves MaxxAudio*",
       "MaxxAudioPro*"

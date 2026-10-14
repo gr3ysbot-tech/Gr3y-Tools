@@ -130,6 +130,11 @@ phases 0-3 and part of phase 4 (optional items were deliberately not built):
 
 ### Fixed
 
+- **Debloat: Dell CinemaColor is now removed.** The Store app is published by Portrait Displays, so
+  the existing `DellInc.DellCinemaColor` pattern never matched it and it stayed on every Dell. The
+  Dell lists now also match any Store package named `*CinemaColor*` and any program named
+  `Dell CinemaColor*`. Dell Command | Update and Dell Connected Service Delivery (Dell's own
+  re-install mechanism) are still left alone on purpose.
 - **Debloat: one hung Windows Installer product no longer makes every later uninstall fail.** On a Dell
   Vostro 5620 the SupportAssist MSI ran into its 10-minute limit and was stopped, but the Windows
   Installer SERVICE kept working on that change and kept the machine-wide installer lock, so every
