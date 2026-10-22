@@ -350,7 +350,7 @@ function Write-Log {
     Write-Host $line
 }
 
-Write-Log "Gr3yLabs Support $(if ($Version) { "v$Version" } else { '(unversioned - launched directly, not via debloat.ps1)' })$(if ($Commit) { " ($Commit)" } else { '' }) | Worker PID: $PID | Profile: $env:USERNAME"
+Write-Log "Gr3yLabs $(if ($Version) { "v$Version" } else { '(unversioned - launched directly, not via debloat.ps1)' })$(if ($Commit) { " ($Commit)" } else { '' }) | Worker PID: $PID | Profile: $env:USERNAME"
 Write-Log "Machine: $machineHost | $machineManufacturer $machineModel | Serial/Service Tag: $machineSerial"
 if ($osInfo) {
     Write-Log "OS: $($osInfo.Caption) (Build $($osInfo.BuildNumber)) | Logged-in user: $env:USERNAME"
@@ -3304,6 +3304,11 @@ function Invoke-OfficePreflight {
     }
 }
 
+function Get-OfficeProductIds {
+    param([string]$ProductReleaseIds)
+    @($ProductReleaseIds -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
+}
+
 function Uninstall-ExistingOffice {
     param([string]$SetupPath)
     Write-Log '--- Phase 2: Removing existing Office installation(s) ---'
@@ -3314,10 +3319,10 @@ function Uninstall-ExistingOffice {
     if ($hasC2R) {
         $config = Get-ItemProperty -Path $c2rKey -ErrorAction SilentlyContinue
         $products = @()
-        if ($config -and $config.ProductReleaseIds) { $products = @($config.ProductReleaseIds -split ';' | Where-Object { $_ }) }
+        if ($config -and $config.ProductReleaseIds) { $products = @(Get-OfficeProductIds $config.ProductReleaseIds) }
         Write-Log "Existing Click-to-Run product(s): $($products -join ', ')"
 
-        $expectedSkuPattern = '^(O365BusinessRetail|O365ProPlusRetail|O365HomePremRetail|HomeStudentRetail|HomeBusinessRetail|PersonalRetail)$'
+        $expectedSkuPattern = '^(O365BusinessRetail|O365ProPlusRetail|O365HomePremRetail|HomeStudentRetail|HomeBusinessRetail|PersonalRetail|OneNoteFreeRetail)$'
         $unexpected = @($products | Where-Object { $_ -notmatch $expectedSkuPattern })
 
         # Well-known ODT/CDN per-channel base-URL GUIDs (Microsoft's own, published in
@@ -3335,8 +3340,8 @@ function Uninstall-ExistingOffice {
         $onTargetChannel = $targetGuid -and $config.UpdateChannel -and ($config.UpdateChannel -match [regex]::Escape($targetGuid))
         $onlyExpectedSku = $products.Count -eq 1 -and $products[0] -eq 'O365BusinessRetail'
 
-        if ($unexpected.Count -gt 0) {
-            Write-Log "Refusing to run remove-all.xml - found product(s) beyond the expected business/consumer SKUs: $($unexpected -join ', '). This usually means a licensed Visio/Project (or similar add-on) is installed, and remove-all.xml would take it out too. Leaving the existing Click-to-Run install in place; Phase 3's install.xml only adds/updates O365BusinessRetail and never removes anything, so it still runs normally." 'ERROR'
+        if ($products.Count -eq 0 -or $unexpected.Count -gt 0) {
+            Write-Log "Skipping Click-to-Run removal: the product inventory is empty or contains protected/unrecognized product IDs: $($unexpected -join ', '). Existing products will be preserved. Phase 3 can add/reconfigure O365BusinessRetail. This does not establish that Visio or Project is installed." 'WARN'
         } elseif ($onlyExpectedSku -and $onTargetChannel) {
             Write-Log "O365BusinessRetail is already installed on the $OfficeChannel channel - skipping removal, Phase 3 will reconfigure it in place."
         } else {

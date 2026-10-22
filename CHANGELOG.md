@@ -9,6 +9,17 @@ GitHub Releases `v1.0.0`-`v1.0.6` predate this model and are not maintained.)
 
 ## [Unreleased]
 
+### Fixed (2026-10-22)
+
+- Normalize comma- and semicolon-separated Office product inventories, including
+  whitespace and duplicate IDs. Recognize the free OneNote SKU alongside consumer
+  Office so that this preload can be removed before business Office is installed.
+  Empty inventories and protected/unknown products still block remove-all; the
+  warning no longer claims that an unknown product establishes Visio/Project presence.
+- Replace the application logo with the supplied neon artwork and remove the
+  Gr3yLabs Support text branding. The header shows the logo alone; window and log
+  identifiers use Gr3yLabs.
+
 The current state of `main` reflects the core of `docs/improvement-plan.md`
 phases 0-3 and part of phase 4 (optional items were deliberately not built):
 
