@@ -11,9 +11,9 @@
 // "serve" also has POST /__test/advance?ms=N, which moves the Worker's clock forward (harness
 // only - the Worker knows nothing about it) so guest-code expiry can be tested without waiting.
 //
-// WHAT THIS CANNOT TEST: a plain Map is strongly consistent with no edge cache. Real
-// Workers KV is eventually consistent and caches "not found" reads, so the timing between
-// /open, /submit and /poll must be confirmed against the live deployed relay. Needs Node 18+
+// WHAT THIS CANNOT TEST: guest-code KV storage is eventually consistent. Pairings now
+// use a serialized transactional stand-in for Durable Objects; runtime.mjs also checks
+// concurrency against Cloudflare's local runtime. Needs Node 18+
 // (global fetch/Request/Response/crypto). The Worker is an ES module with no imports, so it
 // is loaded from a data: URL - no temp files are written.
 
@@ -29,7 +29,8 @@ Date.now = () => realNow() + clockOffsetMs;
 
 const WORKER_URL = new URL('../../cloudflare/export-relay-worker.js', import.meta.url);
 const src = readFileSync(WORKER_URL, 'utf8');
-const worker = (await import('data:text/javascript;base64,' + Buffer.from(src).toString('base64'))).default;
+const workerModule = await import('data:text/javascript;base64,' + Buffer.from(src).toString('base64'));
+const worker = workerModule.default;
 
 // Stricter than a plain Map where the real KV bites: a key written with an absolute `expiration` is
 // gone once that moment has passed (on the movable clock), a PUT whose expiration is not a whole
@@ -74,7 +75,40 @@ function makeKv() {
 }
 
 const ADMIN = 'AdminCode-Long-Enough-123';
-const env = { EXPORT_RELAY_KV: makeKv(), ADMIN_KEY: ADMIN };
+function makePairings() {
+  const instances = new Map();
+  return {
+    idFromName: name => name,
+    get(name) {
+      if (!instances.has(name)) {
+        const data = new Map();
+        let tail = Promise.resolve();
+        const storage = {
+          async setAlarm() {},
+          transaction(action) {
+            const work = tail.then(async () => {
+              const draft = structuredClone(data);
+              const result = await action({
+                get: async key => structuredClone(draft.get(key)),
+                put: async (key, value) => draft.set(key, structuredClone(value)),
+                delete: async key => draft.delete(key),
+              });
+              data.clear(); for (const [k, v] of draft) data.set(k, v);
+              return result;
+            });
+            tail = work.catch(() => {});
+            return work;
+          },
+        };
+        const object = new workerModule.PairingSession({ storage });
+        instances.set(name, { data, fetch: request => object.fetch(request) });
+      }
+      return instances.get(name);
+    },
+    active(name) { return !this.get(name).data.get('pairing')?.consumed; },
+  };
+}
+const env = { EXPORT_RELAY_KV: makeKv(), PAIRING_SESSIONS: makePairings(), ADMIN_KEY: ADMIN };
 // Every call gets its own client address (CF-Connecting-IP, which Cloudflare sets in
 // production) unless the test names one, so the wrong-code brake only ever sees the
 // addresses a test chooses to hammer. Same header spelling in both places on purpose.
@@ -127,7 +161,7 @@ async function runTests() {
   assert.match(r.headers.get('Content-Type'), /application\/json; charset=utf-8/, 'poll body has charset');
   assert.equal(await r.text(), '{"hostname":"OLD"}');
   r = await call('GET', '/poll?code=ABC234', { 'X-Session': open.session }); assert.equal(r.status, 404, 'claimed once');
-  assert.equal(env.EXPORT_RELAY_KV.store.has('slot:ABC234'), false, 'slot cleaned up');
+  assert.equal(env.PAIRING_SESSIONS.active('ABC234'), false, 'slot consumed');
 
   // --- non-ASCII round-trips intact (byte-for-byte) ---
   r = await call('POST', '/open?code=UTF234', { 'X-Access-Key': ADMIN }); const u = await r.json();
@@ -139,9 +173,9 @@ async function runTests() {
   // --- /close drops the slot (idempotent) ---
   r = await call('POST', '/open?code=CLS234', { 'X-Access-Key': ADMIN }); const cl = await r.json();
   r = await call('POST', '/close?code=CLS234', { 'X-Session': 'wrong' }); assert.equal(r.status, 200, 'close is always 200');
-  assert.equal(env.EXPORT_RELAY_KV.store.has('slot:CLS234'), true, 'wrong session does not close');
+  assert.equal(env.PAIRING_SESSIONS.active('CLS234'), true, 'wrong session does not close');
   r = await call('POST', '/close?code=CLS234', { 'X-Session': cl.session }); assert.equal(r.status, 200);
-  assert.equal(env.EXPORT_RELAY_KV.store.has('slot:CLS234'), false, 'right session closes');
+  assert.equal(env.PAIRING_SESSIONS.active('CLS234'), false, 'right session closes');
   r = await call('POST', '/submit?code=CLS234', {}, '{"x":1}'); assert.equal(r.status, 404, 'submit after close -> 404');
 
   // --- disable / enable / delete ---
@@ -634,6 +668,14 @@ async function runTests() {
     const g = await (await call('POST', '/admin/keys?label=x' + i, { 'X-Access-Key': ADMIN })).json();
     assert.match(g.key, /^[A-HJ-NP-Z2-9-]{14}$/); assert.ok(!seen.has(g.key)); seen.add(g.key);
   }
+  const opens = await Promise.all(Array.from({ length: 20 }, () => call('POST', '/open?code=RAC234', { 'X-Access-Key': ADMIN })));
+  assert.equal(opens.filter(x => x.status === 200).length, 1, 'one concurrent open wins');
+  const winner = await opens.find(x => x.status === 200).json();
+  const sends = await Promise.all(Array.from({ length: 20 }, (_, i) => call('POST', '/submit?code=RAC234', {}, JSON.stringify({ i }))));
+  assert.equal(sends.filter(x => x.status === 200).length, 1, 'one concurrent submit wins');
+  const polls = await Promise.all(Array.from({ length: 20 }, () => call('GET', '/poll?code=RAC234', { 'X-Session': winner.session })));
+  assert.equal(polls.filter(x => x.status === 200).length, 1, 'one concurrent poll wins');
+  assert.equal((await call('POST', '/submit?code=RAC234', {}, '{}')).status, 404, 'consumed slot cannot refill');
   console.log('ALL WORKER TESTS PASSED');
 }
 

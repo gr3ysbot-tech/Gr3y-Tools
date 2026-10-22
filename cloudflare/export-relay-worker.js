@@ -529,9 +529,8 @@ async function handle(request, env) {
     return text('Invalid or missing code', 400);
   }
   const code = rawCode.toUpperCase();
-  const kv = env.EXPORT_RELAY_KV;
-  const slotKey = `slot:${code}`;
-  const exportKey = `export:${code}`;
+  if (!env.PAIRING_SESSIONS) return text('Relay pairing storage is not configured', 503);
+  const sessionObject = env.PAIRING_SESSIONS.get(env.PAIRING_SESSIONS.idFromName(code));
 
   if (path === '/open' && request.method === 'POST') {
     const supplied = (request.headers.get('X-Access-Key') || '').trim();
@@ -553,63 +552,11 @@ async function handle(request, env) {
     }
     if (access.denied) return text('Access code not accepted', 401);
     if (attempt && attempt.ok) giveBackAttempt(attempt);
-    // Another app instance already has this exact code open - the GUI picks a new one
-    // and retries rather than taking over someone else's session.
-    if ((await kv.get(slotKey)) !== null) return text('Code already in use', 409);
-    const session = crypto.randomUUID();
-    const expiresAt = nowSeconds() + TTL_SECONDS;
-    await kv.put(slotKey, JSON.stringify({ session, label: access.label, expiresAt }), { expirationTtl: TTL_SECONDS });
-    return json({ session, label: access.label });
+    return sessionObject.fetch(new Request('https://pairing/open', {
+      method: 'POST', headers: { 'X-Access-Label': access.label || '' },
+    }));
   }
-
-  if (path === '/submit' && request.method === 'POST') {
-    const slot = parseRecord((await kv.get(slotKey)) ?? '');
-    if (!slot) return text('No app is waiting for this code', 404);
-    if ((await kv.get(exportKey)) !== null) return text('Something was already sent for this code', 409);
-    // Reject an oversize body before reading it, when the length is declared.
-    const declared = Number(request.headers.get('Content-Length') || '0');
-    if (declared > MAX_BODY_BYTES) return text('Body too large', 413);
-    const buf = await request.arrayBuffer();
-    if (buf.byteLength === 0) return text('Body missing', 400);
-    // Count real bytes, not UTF-16 units, so multi-byte content can't slip past the cap.
-    if (buf.byteLength > MAX_BODY_BYTES) return text('Body too large', 413);
-    const body = new TextDecoder().decode(buf);
-    // Tie the export's lifetime to the slot's, so it can't outlive the dialog that opened
-    // the code. Clamp to KV's 60 s minimum.
-    const remaining = (slot.expiresAt || 0) - nowSeconds();
-    const ttl = Math.max(MIN_TTL_SECONDS, remaining);
-    // The session rides along with the export, so a poll only needs one read to both
-    // find the data and check it's asking on behalf of the app that opened the code.
-    await kv.put(exportKey, JSON.stringify({ session: slot.session, data: body }), { expirationTtl: ttl });
-    return text('OK', 200);
-  }
-
-  if (path === '/poll' && request.method === 'GET') {
-    const raw = await kv.get(exportKey);
-    if (raw === null) return text('Not found', 404);
-    const entry = parseRecord(raw);
-    const session = request.headers.get('X-Session') || '';
-    if (!entry || !session || !(await sameSecret(session, entry.session || ''))) {
-      return text('Wrong session', 401);
-    }
-    // Claim it - a poll that successfully reads data also consumes it, so a second
-    // poll for the same code (a retry after a slow response) gets 404 instead of
-    // silently handing out the same export twice.
-    await Promise.all([kv.delete(exportKey), kv.delete(slotKey)]);
-    return new Response(entry.data, { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8', ...COMMON_HEADERS } });
-  }
-
-  if (path === '/close' && request.method === 'POST') {
-    // The GUI calls this on Cancel/close so the old machine can't submit into a dialog
-    // that is gone, and so the export doesn't linger. Idempotent: only the holder of the
-    // session can drop the slot, but a miss is still a 200 so Cancel never shows an error.
-    const slot = parseRecord((await kv.get(slotKey)) ?? '');
-    const session = request.headers.get('X-Session') || '';
-    if (slot && session && (await sameSecret(session, slot.session || ''))) {
-      await Promise.all([kv.delete(slotKey), kv.delete(exportKey)]);
-    }
-    return text('OK', 200);
-  }
+  if (['/submit', '/poll', '/close'].includes(path)) return sessionObject.fetch(request);
 
   return text('Not found', 404);
 }
@@ -629,3 +576,82 @@ export default {
     }
   },
 };
+
+
+async function readExportBody(request) {
+  if (Number(request.headers.get('Content-Length') || 0) > MAX_BODY_BYTES) return null;
+  if (!request.body) return '';
+  const reader = request.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_BODY_BYTES) { await reader.cancel(); return null; }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder().decode(bytes);
+}
+
+// One object per pairing code. Every read/modify/write is a storage transaction;
+// concurrent requests and different Worker isolates cannot consume the same export.
+export class PairingSession {
+  constructor(ctx) { this.ctx = ctx; }
+  async fetch(request) {
+    const path = new URL(request.url).pathname;
+    const body = path === '/submit' && request.method === 'POST' ? await readExportBody(request) : undefined;
+    return this.ctx.storage.transaction(async (tx) => {
+      let record = await tx.get('pairing');
+      if (record && record.expiresAt <= nowSeconds()) { await tx.delete('pairing'); record = undefined; }
+      if (path === '/open' && request.method === 'POST') {
+        if (record) return text('Code already in use', 409);
+        record = { session: crypto.randomUUID(), label: request.headers.get('X-Access-Label') || '', expiresAt: nowSeconds() + TTL_SECONDS };
+        await tx.put('pairing', record);
+        await this.ctx.storage.setAlarm(record.expiresAt * 1000);
+        return json({ session: record.session, label: record.label });
+      }
+      if (path === '/submit' && request.method === 'POST') {
+        if (!record || record.consumed) return text('No app is waiting for this code', 404);
+        if (record.data !== undefined) return text('Something was already sent for this code', 409);
+        if (body === null) return text('Body too large', 413);
+        if (body === '') return text('Body missing', 400);
+        record.data = body;
+        await tx.put('pairing', record);
+        return text('OK', 200);
+      }
+      if (path === '/poll' && request.method === 'GET') {
+        if (!record || record.data === undefined || record.consumed) return text('Not found', 404);
+        if (!(await sameSecret(request.headers.get('X-Session') || '', record.session))) return text('Wrong session', 401);
+        const data = record.data;
+        // Keep a tombstone until expiry: a late submit cannot refill a consumed code.
+        delete record.data;
+        record.consumed = true;
+        await tx.put('pairing', record);
+        return new Response(data, { headers: { 'Content-Type': 'application/json; charset=utf-8', ...COMMON_HEADERS } });
+      }
+      if (path === '/close' && request.method === 'POST') {
+        if (record && await sameSecret(request.headers.get('X-Session') || '', record.session)) {
+          delete record.data;
+          record.consumed = true;
+          await tx.put('pairing', record);
+        }
+        return text('OK', 200);
+      }
+      return text('Not found', 404);
+    });
+  }
+  async alarm() {
+    // A refreshed slot can move the alarm; never erase a newer unexpired pairing.
+    await this.ctx.storage.transaction(async (tx) => {
+      const record = await tx.get('pairing');
+      if (record && record.expiresAt <= nowSeconds()) await tx.delete('pairing');
+      else if (record) await this.ctx.storage.setAlarm(record.expiresAt * 1000);
+    });
+  }
+}

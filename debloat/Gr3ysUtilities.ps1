@@ -254,6 +254,16 @@ function Get-DescendantProcessIds {
     return $result
 }
 
+function Get-TrackedProcessSurvivors {
+    param($Descendants)
+    foreach ($d in $Descendants) {
+        try {
+            $live = Get-CimInstance Win32_Process -Filter "ProcessId=$($d.ProcessId)" -ErrorAction Stop
+            if ($live -and $live.CreationDate -eq $d.CreationDate) { $d }
+        } catch { $d } # An unreadable process is not proof of termination.
+    }
+}
+
 function Stop-ProcessTreeSafely {
     # Re-checks each PID's CreationDate immediately before killing it - the scan and the
     # kill aren't atomic, and a short-lived descendant can exit and have its PID reused
@@ -6693,16 +6703,21 @@ $btnUpgradeAll.Add_Click({
 })
 
 $btnStopInstall.Add_Click({
-    if ($script:installProc -and -not $script:installProc.HasExited) {
-        try { Stop-Process -Id $script:installProc.Id -Force -ErrorAction SilentlyContinue } catch {}
-    }
+    $script:installMode = 'cancelled'
     $script:installQueue.Clear()
+    if ($script:installProc -and -not $script:installProc.HasExited) {
+        $ids = Get-DescendantProcessIds -RootId $script:installProc.Id
+        Stop-ProcessTreeSafely -Descendants $ids
+        $remaining = @(Get-TrackedProcessSurvivors -Descendants $ids)
+        if ($remaining.Count) {
+            $installStatusText.Text = 'Cancellation requested; tracked processes are still running. Wait and try Stop again.'
+            return
+        }
+    }
     $script:currentQueueEntry = $null
     $script:installPendingAction = $null
-    # Forget the killed process: left in place, the poll timer sees it as a job that just
-    # finished and overwrites "Stopped." with a wrong "Done" status a moment later.
     $script:installProc = $null
-    $installStatusText.Text = 'Stopped.'
+    $installStatusText.Text = 'Tracked processes stopped. An installer service may still be finishing; check before retrying.'
     $btnInstallSelected.IsEnabled = $true
     $btnUninstallSelected.IsEnabled = $true
     $btnUpgradeAll.IsEnabled = $true
@@ -6820,7 +6835,17 @@ $timer.Add_Tick({
             $running = -not $script:installProc.HasExited
         } catch {}
         if (-not $running) {
-            if ($script:installMode -eq 'check') {
+            if ($script:installMode -eq 'cancelled') {
+                $installStatusText.Text = 'Tracked launcher exited after cancellation. Check installer activity before retrying.'
+                $script:installProc = $null
+                $btnInstallSelected.IsEnabled = $true
+                $btnUninstallSelected.IsEnabled = $true
+                $btnUpgradeAll.IsEnabled = $true
+                $btnCheckInstalled.IsEnabled = $true
+                $btnExportInstalled.IsEnabled = $true
+                $btnCompareBaseline.IsEnabled = $true
+                $btnStopInstall.Visibility = 'Collapsed'
+            } elseif ($script:installMode -eq 'check') {
                 $installedIds = Get-WingetListedIds -Path $script:installLogFile
 
                 if ($script:installPendingAction -eq 'export') {

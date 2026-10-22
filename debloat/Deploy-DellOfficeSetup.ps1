@@ -3222,6 +3222,83 @@ function Invoke-WinGetReinstall {
 # PHASE 2 - Remove existing Office (clears out every preloaded language too)
 # ============================================================================
 
+function Write-ProtectedTextFile {
+    # CreateNew prevents following an existing file/link. The DACL is applied by
+    # Windows as the file is created, before the first byte of secret data exists.
+    param([string]$Path, [string]$Text)
+    $acl = New-Object System.Security.AccessControl.FileSecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($sid in 'S-1-5-32-544', 'S-1-5-18') {
+        $identity = New-Object System.Security.Principal.SecurityIdentifier($sid)
+        $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', 'Allow'))
+    }
+    $stream = $null
+    try {
+        $stream = [System.IO.FileStream]::new($Path, [System.IO.FileMode]::CreateNew,
+            [System.Security.AccessControl.FileSystemRights]::FullControl,
+            [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $acl)
+        $actual = $stream.GetAccessControl()
+        $rules = @($actual.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+        if (-not $actual.AreAccessRulesProtected -or $rules.Count -ne 2 -or
+            @($rules | Where-Object { $_.IdentityReference.Value -notin @('S-1-5-32-544', 'S-1-5-18') -or $_.AccessControlType -ne 'Allow' -or $_.FileSystemRights -ne 'FullControl' }).Count -gt 0) {
+            throw 'Secret file permissions could not be verified.'
+        }
+        $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($Text)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    } catch {
+        # Never include the exception text: native errors can contain supplied data.
+        if ($stream) { $stream.Dispose(); $stream = $null; [System.IO.File]::Delete($Path) }
+        throw 'Could not securely write the secret file; no account should be created using an unsaved password.'
+    } finally {
+        if ($stream) { $stream.Dispose() }
+    }
+}
+
+function Invoke-OfficeSetup {
+    param([string]$SetupPath, [string]$Arguments, [string]$Operation, [int]$TimeoutSeconds = 3600)
+    $process = Start-Process -FilePath $SetupPath -ArgumentList $Arguments -PassThru -ErrorAction Stop
+    $null = $process.Handle
+    $started = Get-Date
+    $lastNotice = $started
+    while (-not $process.WaitForExit(1000)) {
+        $now = Get-Date
+        if (($now - $lastNotice).TotalSeconds -ge 30) {
+            Write-Log ("Office {0} is still running ({1:N0}s elapsed, PID {2})." -f $Operation, ($now - $started).TotalSeconds, $process.Id)
+            $lastNotice = $now
+        }
+        if (($now - $started).TotalSeconds -ge $TimeoutSeconds) {
+            # Killing an MSI/Click-to-Run client can leave its service installing.
+            # Block later phases; leave that transaction intact for diagnosis.
+            $script:officePreflightOk = $false
+            throw "Office $Operation exceeded ${TimeoutSeconds}s (PID $($process.Id)). Later Office phases are blocked. The installer may still be running; check Task Manager and Office logs before retrying."
+        }
+    }
+    $process.WaitForExit()
+    $process.Refresh()
+    return $process
+}
+
+function Test-OfficeBusinessConfiguration {
+    param($Configuration, [string]$Channel)
+    $ids = @(Get-OfficeProductIds $Configuration.ProductReleaseIds)
+    if ($ids -notcontains 'O365BusinessRetail') { Write-Log 'Business Office product was not found after setup.' 'ERROR'; return $false }
+    if ($Configuration.Platform -ne 'x64') { Write-Log 'Office architecture could not be verified as x64.' 'ERROR'; return $false }
+    $channels = @{
+        MonthlyEnterprise = '55336b82-a18d-4dd6-b5f6-9e5095c314a6'
+        Current = '492350f6-3a01-4f97-b9c0-c7c6ddf67d60'
+        SemiAnnual = '7ffbc6bf-bc32-4f92-8982-f9dd17fd3114'
+        SemiAnnualPreview = 'b8f9b850-328d-4355-9145-c59439a0c4cf'
+    }
+    if (-not $channels.ContainsKey($Channel) -or $Configuration.UpdateChannel -notmatch [regex]::Escape($channels[$Channel])) {
+        Write-Log "Office update channel does not match $Channel." 'ERROR'; return $false
+    }
+    $leftovers = @($ids | Where-Object { $_ -match '^(O365HomePremRetail|HomeStudentRetail|HomeBusinessRetail|PersonalRetail)$' })
+    if ($leftovers.Count) { Write-Log "Consumer Office products remain: $($leftovers -join ', ')." 'WARN'; return $false }
+    Write-Log "Verified business Office: $($Configuration.VersionToReport), x64, $Channel."
+    return $true
+}
+
 function Get-OfficeDeploymentTool {
     # Always re-fetch, rather than caching setup.exe in $workDir forever - an old cached
     # copy eventually fails against the current CDN with "setup.exe is out of date", and
@@ -3229,7 +3306,11 @@ function Get-OfficeDeploymentTool {
     # current build instead of trying to version-check a cached one.
     $setupPath = Join-Path $workDir 'setup.exe'
     Write-Log 'Downloading Office Click-to-Run setup.exe from officecdn.microsoft.com'
-    Invoke-WebRequest -Uri 'https://officecdn.microsoft.com/pr/wsus/setup.exe' -OutFile $setupPath -UseBasicParsing
+    Invoke-WebRequest -Uri 'https://officecdn.microsoft.com/pr/wsus/setup.exe' -OutFile $setupPath -UseBasicParsing -ErrorAction Stop
+    $signature = Get-AuthenticodeSignature -LiteralPath $setupPath -ErrorAction Stop
+    if ($signature.Status -ne 'Valid' -or -not $signature.SignerCertificate -or $signature.SignerCertificate.Subject -notmatch '(?:^|,\s*)O=Microsoft Corporation(?:,|$)') {
+        throw 'Office setup signature is invalid or is not signed by Microsoft Corporation. No Office changes were made.'
+    }
     return $setupPath
 }
 
@@ -3244,8 +3325,8 @@ function New-OfficeInstallXml {
     # ExcludeApp ID list before allowing them into the XML.
     # SourcePath points /download and /configure at the same local cache, so /configure
     # installs from what pre-flight already verified downloaded cleanly instead of
-    # re-pulling from the CDN. RemoveMSI clears any old MSI-based Office as part of this
-    # same install pass instead of a separate manual msiexec loop. AUTOACTIVATE is a
+    # re-pulling from the CDN. RemoveMSI clears old MSI-based Office suites as part of this
+    # same install pass while preserving MSI Visio/Project with IgnoreProduct. AUTOACTIVATE is a
     # volume-licence Property and is silently ignored for O365BusinessRetail - omitted so
     # the config doesn't imply activation behavior it doesn't actually control.
     $allowedExcludeApps = @('Teams', 'OneDrive', 'Access', 'Publisher', 'Lync', 'OneNote')
@@ -3274,7 +3355,12 @@ $excludeAppXml
   <Updates Enabled="TRUE" Channel="$OfficeChannel" />
   <Display Level="None" AcceptEULA="TRUE" />
   <Logging Level="Standard" Path="C:\ProgramData\DellOfficeDeploy" />
-  <RemoveMSI />$sharedLicensingXml
+  <RemoveMSI>
+    <IgnoreProduct ID="VisPro" />
+    <IgnoreProduct ID="VisStd" />
+    <IgnoreProduct ID="PrjPro" />
+    <IgnoreProduct ID="PrjStd" />
+  </RemoveMSI>$sharedLicensingXml
 </Configuration>
 "@ | Set-Content -Path $Path -Encoding UTF8
 }
@@ -3294,7 +3380,7 @@ function Invoke-OfficePreflight {
     Write-Log "Free space check OK ($freeGb GB free on $env:SystemDrive)."
 
     Invoke-Step 'Pre-downloading the Microsoft 365 Apps install source (so the existing Office is only removed once the new install source is confirmed good)' {
-        $proc = Start-Process -FilePath $SetupPath -ArgumentList "/download ""$InstallXmlPath""" -PassThru -Wait
+        $proc = Invoke-OfficeSetup -SetupPath $SetupPath -Arguments "/download ""$InstallXmlPath""" -Operation download
         if ($proc.ExitCode -ne 0) {
             Write-Log "setup.exe /download exited with code $($proc.ExitCode) - could not stage the install source." 'ERROR'
             $script:officePreflightOk = $false
@@ -3354,8 +3440,9 @@ function Uninstall-ExistingOffice {
 '@ | Set-Content -Path $removeXmlPath -Encoding UTF8
 
             Invoke-Step 'Removing existing Click-to-Run Office (all products, all languages)' {
-                $proc = Start-Process -FilePath $SetupPath -ArgumentList "/configure ""$removeXmlPath""" -PassThru -Wait
-                if ($proc.ExitCode -ne 0) {
+                $proc = Invoke-OfficeSetup -SetupPath $SetupPath -Arguments "/configure ""$removeXmlPath""" -Operation removal
+                if ($proc.ExitCode -notin @(0, 3010)) {
+                    $script:officePreflightOk = $false
                     Write-Log "setup.exe /configure remove-all.xml exited with code $($proc.ExitCode) - Office removal may not have fully completed." 'ERROR'
                 } else {
                     Write-Log 'Existing Click-to-Run Office removed.'
@@ -3385,14 +3472,20 @@ function Install-Microsoft365Business {
     param([string]$SetupPath, [string]$InstallXmlPath)
     Write-Log "--- Phase 3: Installing Microsoft 365 Apps for business ($OfficeLanguage, $OfficeChannel channel) ---"
 
+    $script:officeInstallSucceeded = $false
     Invoke-Step "Installing Microsoft 365 Apps for business ($OfficeLanguage)" {
-        $proc = Start-Process -FilePath $SetupPath -ArgumentList "/configure ""$InstallXmlPath""" -PassThru -Wait
-        if ($proc.ExitCode -ne 0) {
+        $proc = Invoke-OfficeSetup -SetupPath $SetupPath -Arguments "/configure ""$InstallXmlPath""" -Operation installation
+        if ($proc.ExitCode -notin @(0, 3010)) {
+            $script:officeInstallSucceeded = $false
             Write-Log "setup.exe /configure install.xml exited with code $($proc.ExitCode) - Office may not be fully installed." 'ERROR'
         } else {
+            $script:officeInstallSucceeded = $true
             Write-Log 'setup.exe reported success installing Microsoft 365 Apps for business.'
         }
     }
+
+    if ($DryRun) { return }
+    if (-not $script:officeInstallSucceeded) { return }
 
     # The ODT's Display Level="None" only suppresses the INSTALLER's own UI - it has
     # no effect on the separate "Default File Types" prompt (Office Open XML vs
@@ -3414,18 +3507,15 @@ function Install-Microsoft365Business {
     }
 
     $c2rKey = 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration'
-    if (Test-Path $c2rKey) {
-        $config = Get-ItemProperty -Path $c2rKey -ErrorAction SilentlyContinue
-        if ($config -and $config.ProductReleaseIds) {
-            Write-Log "Verified: ClickToRun Configuration shows $($config.ProductReleaseIds) installed, version $($config.VersionToReport)."
-        } else {
-            Write-Log 'ClickToRun Configuration key exists but ProductReleaseIds is empty - Office install may not have completed.' 'ERROR'
-        }
-    } else {
-        Write-Log 'ClickToRun Configuration key not found after install - Office does not appear to be installed.' 'ERROR'
+    try { $config = Get-ItemProperty -LiteralPath $c2rKey -ErrorAction Stop } catch {
+        Write-Log 'Office configuration could not be read after installation.' 'ERROR'
+        return
     }
-
-    Write-Log 'Install complete. Activation happens on first app launch when the user signs in with their Microsoft 365 business account.'
+    if (Test-OfficeBusinessConfiguration -Configuration $config -Channel $OfficeChannel) {
+        Write-Log 'Install complete. Activation happens on first app launch when the user signs in with their Microsoft 365 business account.'
+    } else {
+        Write-Log 'Office setup finished, but the requested configuration was not verified. Review the messages above before handing over the laptop.' 'WARN'
+    }
 }
 
 # ============================================================================
@@ -3468,7 +3558,8 @@ $languageLines
 "@ | Set-Content -Path $langXmlPath -Encoding UTF8
 
     Invoke-Step "Removing extra Office languages: $($installed -join ', ')" {
-        Start-Process -FilePath $setupPath -ArgumentList "/configure ""$langXmlPath""" -Wait
+        $proc = Invoke-OfficeSetup -SetupPath $setupPath -Arguments "/configure ""$langXmlPath""" -Operation 'language removal'
+        if ($proc.ExitCode -notin @(0, 3010)) { Write-Log "Office language removal exited with code $($proc.ExitCode)." 'ERROR' }
     }
 }
 
@@ -3675,9 +3766,6 @@ function New-BreakGlassLocalAdmin {
             } else {
                 $password = New-BreakGlassPassword
                 $secure = ConvertTo-SecureString -String $password -AsPlainText -Force
-                New-LocalUser -Name $AccountName -Password $secure -PasswordNeverExpires -AccountNeverExpires -ErrorAction Stop | Out-Null
-                Add-LocalGroupMember -Group 'Administrators' -Member $AccountName -ErrorAction Stop
-                Write-Log "Created local administrator '$AccountName' with a random password (not logged here)."
 
                 $dsregOutput = & dsregcmd /status 2>&1 | Out-String
                 $isAzureAdJoined = $dsregOutput -match 'AzureAdJoined\s*:\s*YES'
@@ -3686,7 +3774,7 @@ function New-BreakGlassLocalAdmin {
                 # password cannot be read back from Windows later the way a BitLocker
                 # recovery key can (Get-BitLockerKeyData re-reads live state at handoff
                 # time; there is no equivalent re-read for a local account's password) -
-                # same icacls ACL hardening as bitlocker-recovery.txt, same "never
+                # same protected creation as the BitLocker recovery file, same "never
                 # Write-Log the secret itself" rule.
                 $credLines = New-Object System.Collections.Generic.List[string]
                 $credLines.Add("Break-glass local administrator for $env:COMPUTERNAME - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
@@ -3705,12 +3793,15 @@ function New-BreakGlassLocalAdmin {
                     $credLines.Add('rotate it. This file is the only copy - there is no central recovery.')
                 }
                 $credPath = Join-Path $workDir "breakglass-admin_$(Get-SafeFileNamePart $env:COMPUTERNAME)_$(Get-SafeFileNamePart $machineSerial).txt"
-                ($credLines -join "`r`n") | Set-Content -Path $credPath -Encoding UTF8
+                Write-ProtectedTextFile -Path $credPath -Text ($credLines -join "`r`n")
                 try {
-                    & icacls $credPath '/inheritance:r' '/grant:r' '*S-1-5-32-544:F' 'SYSTEM:F' 2>&1 | Out-Null
+                    New-LocalUser -Name $AccountName -Password $secure -PasswordNeverExpires -AccountNeverExpires -ErrorAction Stop | Out-Null
                 } catch {
-                    Write-Log "Could not restrict permissions on $(Split-Path -Leaf $credPath): $($_.Exception.Message)" 'WARN'
+                    [System.IO.File]::Delete($credPath)
+                    throw
                 }
+                Add-LocalGroupMember -Group 'Administrators' -Member $AccountName -ErrorAction Stop
+                Write-Log "Created local administrator '$AccountName' with a random password (not logged here)."
                 Write-Log "Credential written to $credPath (ACL-restricted to Administrators/SYSTEM) - not logged here."
             }
 
@@ -4441,7 +4532,7 @@ function New-ValidationHandoffPackage {
         # bitlocker-recovery.txt - written only when a recovery password protector
         # actually exists, and only the recovery keys themselves, never logged via
         # Write-Log. ProgramData is world-readable by default, so this file's
-        # permissions are restricted to Administrators/SYSTEM right after writing it -
+        # permissions are restricted to Administrators/SYSTEM at creation, before writing -
         # this repo's handoff folder isn't meant to be a place a standard user could read
         # a decryption secret out of.
         $bitLockerData = Get-BitLockerKeyData
@@ -4459,14 +4550,9 @@ function New-ValidationHandoffPackage {
                         $bitLockerLines.Add('')
                     }
                 }
-                $bitLockerPath = Join-Path $handoffDir 'bitlocker-recovery.txt'
-                ($bitLockerLines -join "`r`n") | Set-Content -Path $bitLockerPath -Encoding UTF8
-                try {
-                    & icacls $bitLockerPath '/inheritance:r' '/grant:r' '*S-1-5-32-544:F' 'SYSTEM:F' 2>&1 | Out-Null
-                } catch {
-                    Write-Log "Could not restrict permissions on bitlocker-recovery.txt: $($_.Exception.Message)" 'WARN'
-                }
-                Write-Log "BitLocker recovery key(s) for $($bitLockerData.Volumes.Count) volume(s) written to bitlocker-recovery.txt (not logged here)."
+                $bitLockerPath = Join-Path $handoffDir ('bitlocker-recovery_' + [guid]::NewGuid().ToString('N') + '.txt')
+                Write-ProtectedTextFile -Path $bitLockerPath -Text ($bitLockerLines -join "`r`n")
+                Write-Log "BitLocker recovery key(s) for $($bitLockerData.Volumes.Count) volume(s) written to $bitLockerPath (not logged here)."
             } else {
                 Write-Log 'No BitLocker recovery password protectors found - bitlocker-recovery.txt not created.'
             }
@@ -4640,7 +4726,7 @@ if (-not $SkipOfficeRemoval -or -not $SkipOfficeInstall) {
 
     if ($script:officePreflightOk) {
         if (-not $SkipOfficeRemoval) { Uninstall-ExistingOffice -SetupPath $officeSetupPath }
-        if (-not $SkipOfficeInstall) { Install-Microsoft365Business -SetupPath $officeSetupPath -InstallXmlPath $officeInstallXmlPath }
+        if ($script:officePreflightOk -and -not $SkipOfficeInstall) { Install-Microsoft365Business -SetupPath $officeSetupPath -InstallXmlPath $officeInstallXmlPath }
     } else {
         Write-Log 'Skipping both Office removal and install - pre-flight check failed (see ERROR above).' 'ERROR'
     }
