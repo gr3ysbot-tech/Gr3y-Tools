@@ -1,0 +1,17 @@
+# Copy to wrangler.toml and replace the namespace ID before deployment.
+# Keep the existing ADMIN_KEY secret on the Worker; do not add it to this file.
+name = "gr3y-export-relay"
+main = "export-relay-worker.js"
+compatibility_date = "2026-10-22"
+
+[[kv_namespaces]]
+binding = "EXPORT_RELAY_KV"
+id = "REPLACE_WITH_EXISTING_KV_NAMESPACE_ID"
+
+[[durable_objects.bindings]]
+name = "PAIRING_SESSIONS"
+class_name = "PairingSession"
+
+[[migrations]]
+tag = "pairing-sessions-v1"
+new_sqlite_classes = ["PairingSession"]

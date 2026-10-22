@@ -16,6 +16,27 @@ installed-software names), and it is deleted the moment it is read or after 10 m
 
 ## Deploy (one-time setup)
 
+The transactional pairing build requires a SQLite-backed Durable Object. The old
+dashboard-only code-paste instructions below describe the previous KV-only build.
+For this build, copy `wrangler.example.toml` to `wrangler.toml`, replace the marked
+namespace ID with the existing `EXPORT_RELAY_KV` namespace ID, and deploy with
+`npx wrangler deploy --config cloudflare/wrangler.toml` from the repository root.
+Keep the existing `ADMIN_KEY` secret and KV namespace: guest codes remain there.
+The migration creates `PairingSession` and binds it as `PAIRING_SESSIONS`.
+Without this binding pairing returns 503; admin guest-code management still works.
+The change affects in-flight pairings: finish them before deployment, then generate
+new codes. Existing KV pairing records are not migrated and expire naturally.
+
+Pairings now use per-code storage transactions, enforce a ten-minute expiry on
+every operation, and retain a consumed tombstone until expiry to reject late
+submissions. An alarm deletes expired data. Concurrent requests have a single
+winner. This provides at-most-once consumption: if a successful poll response is
+lost in transit, generate a new pairing code and resend the export.
+
+For local runtime verification use `cloudflare/wrangler.local.toml` with
+`npx wrangler dev --local --config cloudflare/wrangler.local.toml`. That config
+has a separate local-only Worker name and must not be used for production deploys.
+
 1. [dash.cloudflare.com](https://dash.cloudflare.com) -> **Workers & Pages** -> **Create**
    -> **Create Worker**. Give it any name (e.g. `gr3y-export-relay`) -> **Deploy** (the
    default "Hello World" template is fine for now, it gets replaced next).

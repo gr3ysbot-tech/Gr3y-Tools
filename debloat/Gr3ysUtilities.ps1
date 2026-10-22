@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Gr3yLabs Support - native Windows GUI for Dell/Lenovo debloat, Microsoft 365 Apps
+    Gr3yLabs - native Windows GUI for Dell/Lenovo debloat, Microsoft 365 Apps
     for business deploy, and a categorized app install catalog.
 
 .DESCRIPTION
@@ -252,6 +252,16 @@ function Get-DescendantProcessIds {
         }
     }
     return $result
+}
+
+function Get-TrackedProcessSurvivors {
+    param($Descendants)
+    foreach ($d in $Descendants) {
+        try {
+            $live = Get-CimInstance Win32_Process -Filter "ProcessId=$($d.ProcessId)" -ErrorAction Stop
+            if ($live -and $live.CreationDate -eq $d.CreationDate) { $d }
+        } catch { $d } # An unreadable process is not proof of termination.
+    }
 }
 
 function Stop-ProcessTreeSafely {
@@ -531,7 +541,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
 [xml]$xamlDoc = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Gr3yLabs Support" Height="820" Width="1150" MinHeight="640" MinWidth="980"
+        Title="Gr3yLabs" Height="820" Width="1150" MinHeight="640" MinWidth="980"
         WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize"
         AllowsTransparency="False" Background="#232629"
         FontFamily="Segoe UI" FontSize="12"
@@ -938,9 +948,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
       </Grid.ColumnDefinitions>
 
       <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-        <Image Name="LogoImage" Width="26" Height="26" Margin="14,0,8,0" VerticalAlignment="Center" Visibility="Collapsed"/>
-        <TextBlock Text="Gr3yLabs Support" FontFamily="Consolas" FontSize="16" FontWeight="Bold"
-                   Foreground="{StaticResource HeaderBrush}" VerticalAlignment="Center" Margin="0,0,16,0"/>
+        <Image Name="LogoImage" Width="44" Height="44" Margin="14,0,16,0" VerticalAlignment="Center" Visibility="Collapsed"/>
       </StackPanel>
 
       <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
@@ -1521,7 +1529,7 @@ try {
 }
 
 if ($Version) {
-    $window.Title = "Gr3yLabs Support v$Version" + $(if ($Commit) { " ($Commit)" } else { '' })
+    $window.Title = "Gr3yLabs v$Version" + $(if ($Commit) { " ($Commit)" } else { '' })
 }
 
 # Logo is optional - ships as a 6th hash-pinned file alongside the 5 tracked ones (see
@@ -2087,7 +2095,7 @@ function New-BitLockerBackupText {
     if ($Info.Machine) { $t.Add("Machine  : $($Info.Machine)") }
     if ($Info.Tpm) { $t.Add("TPM      : $($Info.Tpm)") }
     $t.Add('')
-    $t.Add('Made by Gr3yLabs Support BEFORE BitLocker was disabled. THIS FILE HOLDS DECRYPTION SECRETS IN PLAIN TEXT:')
+    $t.Add('Made by Gr3yLabs BEFORE BitLocker was disabled. THIS FILE HOLDS DECRYPTION SECRETS IN PLAIN TEXT:')
     $t.Add('keep it OFF the encrypted drives listed below and off any drive that is being decrypted, store it somewhere safe, and delete it when you no longer need it.')
     $t.Add('When BitLocker is turned on again Windows makes NEW keys - this backup does not unlock a drive encrypted later.')
     $t.Add('It holds every key Windows can export (recovery passwords and key IDs). A PIN, a password you typed and a startup-key (.BEK) file cannot be read back from Windows, so they are not in it.')
@@ -6695,16 +6703,21 @@ $btnUpgradeAll.Add_Click({
 })
 
 $btnStopInstall.Add_Click({
-    if ($script:installProc -and -not $script:installProc.HasExited) {
-        try { Stop-Process -Id $script:installProc.Id -Force -ErrorAction SilentlyContinue } catch {}
-    }
+    $script:installMode = 'cancelled'
     $script:installQueue.Clear()
+    if ($script:installProc -and -not $script:installProc.HasExited) {
+        $ids = Get-DescendantProcessIds -RootId $script:installProc.Id
+        Stop-ProcessTreeSafely -Descendants $ids
+        $remaining = @(Get-TrackedProcessSurvivors -Descendants $ids)
+        if ($remaining.Count) {
+            $installStatusText.Text = 'Cancellation requested; tracked processes are still running. Wait and try Stop again.'
+            return
+        }
+    }
     $script:currentQueueEntry = $null
     $script:installPendingAction = $null
-    # Forget the killed process: left in place, the poll timer sees it as a job that just
-    # finished and overwrites "Stopped." with a wrong "Done" status a moment later.
     $script:installProc = $null
-    $installStatusText.Text = 'Stopped.'
+    $installStatusText.Text = 'Tracked processes stopped. An installer service may still be finishing; check before retrying.'
     $btnInstallSelected.IsEnabled = $true
     $btnUninstallSelected.IsEnabled = $true
     $btnUpgradeAll.IsEnabled = $true
@@ -6822,7 +6835,17 @@ $timer.Add_Tick({
             $running = -not $script:installProc.HasExited
         } catch {}
         if (-not $running) {
-            if ($script:installMode -eq 'check') {
+            if ($script:installMode -eq 'cancelled') {
+                $installStatusText.Text = 'Tracked launcher exited after cancellation. Check installer activity before retrying.'
+                $script:installProc = $null
+                $btnInstallSelected.IsEnabled = $true
+                $btnUninstallSelected.IsEnabled = $true
+                $btnUpgradeAll.IsEnabled = $true
+                $btnCheckInstalled.IsEnabled = $true
+                $btnExportInstalled.IsEnabled = $true
+                $btnCompareBaseline.IsEnabled = $true
+                $btnStopInstall.Visibility = 'Collapsed'
+            } elseif ($script:installMode -eq 'check') {
                 $installedIds = Get-WingetListedIds -Path $script:installLogFile
 
                 if ($script:installPendingAction -eq 'export') {

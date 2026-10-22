@@ -91,7 +91,7 @@ Describe 'New-BreakGlassLocalAdmin (real function, stand-ins for the account cmd
         function Add-LocalGroupMember { [CmdletBinding()] param([string]$Group, [string]$Member) $script:added.Add("$Group|$Member") }
         function Disable-LocalUser { [CmdletBinding()] param([string]$Name) $script:disabled.Add($Name) }
         function dsregcmd { if ($script:entra) { 'AzureAdJoined : YES' } else { 'AzureAdJoined : NO' } }
-        function icacls { $script:icaclsCalls.Add(($args -join ' ')); return '' }
+        function Write-ProtectedTextFile { param($Path, $Text) $script:icaclsCalls.Add('protected-create'); [IO.File]::WriteAllText($Path, $Text) }
         function Invoke-LapsPolicyProcessing { [CmdletBinding()] param() $script:lapsRan = $true }
     }
 
@@ -128,7 +128,7 @@ Describe 'New-BreakGlassLocalAdmin (real function, stand-ins for the account cmd
         $text | Should -Match 'NOT Entra-joined'
         $text | Should -Match 'only copy'
         @($script:icaclsCalls).Count | Should -Be 1
-        $script:icaclsCalls[0] | Should -Match '/inheritance:r'
+        $script:icaclsCalls[0] | Should -Be 'protected-create'
         # the password is never logged
         (@($script:logLines) -join "`n").Contains($script:passwordGiven) | Should -BeFalse
         (@($script:logLines) -join "`n") | Should -Not -Match 'Could not create'

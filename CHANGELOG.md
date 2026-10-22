@@ -9,6 +9,30 @@ GitHub Releases `v1.0.0`-`v1.0.6` predate this model and are not maintained.)
 
 ## [Unreleased]
 
+### Fixed (2026-10-22)
+
+- Create recovery-key/password files with verified Administrators/SYSTEM permissions
+  before writing secret data. Save break-glass credentials before creating the account;
+  refuse to overwrite existing credential files.
+- Verify the Microsoft signature on Office setup, preserve MSI Visio/Project, verify
+  the business product/architecture/channel, and report consumer leftovers. Office
+  operations report elapsed progress and stop waiting after one hour without killing
+  the underlying installation transaction or starting later Office phases.
+- Cancel the tracked app-install process tree and report surviving processes or possible
+  installer-service work instead of unconditionally reporting that everything stopped.
+- Move pairing records to per-code Durable Object transactions, with expiry and consumed
+  tombstones to prevent simultaneous opens, duplicate submissions and duplicate polls.
+  This requires a new Cloudflare binding/migration; deployment templates are included.
+
+- Normalize comma- and semicolon-separated Office product inventories, including
+  whitespace and duplicate IDs. Recognize the free OneNote SKU alongside consumer
+  Office so that this preload can be removed before business Office is installed.
+  Empty inventories and protected/unknown products still block remove-all; the
+  warning no longer claims that an unknown product establishes Visio/Project presence.
+- Replace the application logo with the supplied neon artwork and remove the
+  Gr3yLabs Support text branding. The header shows the logo alone; window and log
+  identifiers use Gr3yLabs.
+
 The current state of `main` reflects the core of `docs/improvement-plan.md`
 phases 0-3 and part of phase 4 (optional items were deliberately not built):
 

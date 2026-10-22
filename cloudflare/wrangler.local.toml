@@ -1,0 +1,15 @@
+# Local runtime checks only. Do not use this file to deploy production.
+name = "gr3y-relay-local"
+main = "export-relay-worker.js"
+compatibility_date = "2026-10-22"
+
+[[kv_namespaces]]
+binding = "EXPORT_RELAY_KV"
+
+[[durable_objects.bindings]]
+name = "PAIRING_SESSIONS"
+class_name = "PairingSession"
+
+[[migrations]]
+tag = "pairing-sessions-v1"
+new_sqlite_classes = ["PairingSession"]
