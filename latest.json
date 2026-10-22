@@ -1,6 +1,6 @@
 {
     "version":  "beta",
-    "commit":  "b22467fe62a131083a4c8efcdaf7c96312a725a6",
+    "commit":  "8f96dbe837626fb5794df8a504f3516ef23d72ff",
     "files":  {
                   "Deploy-DellOfficeSetup.ps1":  "9BD7CE6C7457F7E2AB4E040B15D53F90B4F3ED8AD70EDD621A8D28165A866AD1",
                   "Gr3ysUtilities.ps1":  "29E1252FFD72CD97DABBA47E09C17A0E8E6D3511A7B6A3C8557179B818658E61",
