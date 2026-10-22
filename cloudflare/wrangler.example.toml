@@ -1,6 +1,8 @@
 # Copy to wrangler.toml and replace the namespace ID before deployment.
 # Keep the existing ADMIN_KEY secret on the Worker; do not add it to this file.
 name = "gr3y-export-relay"
+keep_vars = true
+preview_urls = false
 main = "export-relay-worker.js"
 compatibility_date = "2026-10-22"
 

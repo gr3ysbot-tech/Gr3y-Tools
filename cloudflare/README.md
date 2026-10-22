@@ -20,8 +20,10 @@ The transactional pairing build requires a SQLite-backed Durable Object. The old
 dashboard-only code-paste instructions below describe the previous KV-only build.
 For this build, copy `wrangler.example.toml` to `wrangler.toml`, replace the marked
 namespace ID with the existing `EXPORT_RELAY_KV` namespace ID, and deploy with
-`npx wrangler deploy --config cloudflare/wrangler.toml` from the repository root.
-Keep the existing `ADMIN_KEY` secret and KV namespace: guest codes remain there.
+`npx wrangler deploy --config cloudflare/wrangler.toml --keep-vars` from the repository root.
+Keep the existing `ADMIN_KEY` and KV namespace: guest codes remain there. The template
+sets `keep_vars = true` to preserve dashboard-configured variables as well as secrets,
+and disables preview URLs so only the existing production endpoint is exposed.
 The migration creates `PairingSession` and binds it as `PAIRING_SESSIONS`.
 Without this binding pairing returns 503; admin guest-code management still works.
 The change affects in-flight pairings: finish them before deployment, then generate
