@@ -213,6 +213,10 @@
 .PARAMETER OfficeLanguage
     Language to install. Default: en-us.
 
+.PARAMETER OfficeArchitecture
+    Auto preserves detected Office bitness (or uses the Windows bitness on a clean PC).
+    Choose 32 for accounting add-ins that require 32-bit Office, or 64 explicitly.
+
 .PARAMETER NoReboot
     Suppress the end-of-run reboot prompt (still logs that a reboot is recommended).
 
@@ -248,6 +252,8 @@ param(
     [ValidateSet('Current', 'MonthlyEnterprise', 'SemiAnnual', 'SemiAnnualPreview')]
     [string]$OfficeChannel = 'MonthlyEnterprise',
     [string]$OfficeLanguage = 'en-us',
+    [ValidateSet('Auto', '32', '64')]
+    [string]$OfficeArchitecture = 'Auto',
     [string]$OfficeExcludeApps = '',
     [switch]$OfficeSharedComputerLicensing,
     [switch]$NoReboot,
@@ -3279,11 +3285,107 @@ function Invoke-OfficeSetup {
     return $process
 }
 
+# Keep these read-only helpers identical in the standalone worker and GUI.
+function Get-OfficeExecutableEdition {
+    param([string]$Path)
+    $stream = $null
+    $reader = $null
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        $reader = New-Object IO.BinaryReader($stream)
+        if ($stream.Length -lt 64 -or $reader.ReadUInt16() -ne 0x5A4D) { return 'Unknown' }
+        $stream.Position = 60
+        $offset = $reader.ReadInt32()
+        if ($offset -lt 64 -or $offset -gt ($stream.Length - 6)) { return 'Unknown' }
+        $stream.Position = $offset
+        if ($reader.ReadUInt32() -ne 0x00004550) { return 'Unknown' }
+        switch ($reader.ReadUInt16()) {
+            0x014C { return '32' }
+            0x8664 { return '64' }
+            0xAA64 { return '64' }
+            default { return 'Unknown' }
+        }
+    } catch { return 'Unknown' } finally {
+        if ($reader) { $reader.Dispose() } elseif ($stream) { $stream.Dispose() }
+    }
+}
+
+function Get-OfficeArchitectureInventory {
+    # Inspect both registry locations, independently of the Windows/Office bitness.
+    # Legacy InstallRoot keys are only evidence when an Office executable still exists.
+    $bases = @('HKLM:\SOFTWARE\Microsoft\Office', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office')
+    $seen = @{}
+    foreach ($base in $bases) {
+        $path = "$base\ClickToRun\Configuration"
+        if (Test-Path -LiteralPath $path -ErrorAction Stop) {
+            $config = Get-ItemProperty -LiteralPath $path -ErrorAction Stop
+            $edition = switch ($config.Platform) { 'x86' { '32' }; 'x64' { '64' }; 'arm64' { '64' }; default { 'Unknown' } }
+            $products = @($config.ProductReleaseIds -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            $unexpected = @($products | Where-Object { $_ -notmatch '^(O365BusinessRetail|O365ProPlusRetail|O365HomePremRetail|HomeStudentRetail|HomeBusinessRetail|PersonalRetail|OneNoteFreeRetail)$' })
+            [pscustomobject]@{
+                Name = "Click-to-Run Office ($($products -join ', '))"
+                Edition = $edition
+                Kind = 'ClickToRun'
+                Protected = ($products.Count -eq 0 -or $unexpected.Count -gt 0)
+                Source = $path
+            }
+        }
+        foreach ($version in @('16.0', '15.0', '14.0', '12.0')) {
+            foreach ($product in @('', 'Visio', 'Project')) {
+                $path = if ($product) { "$base\$version\$product\InstallRoot" } else { "$base\$version\Common\InstallRoot" }
+                if (-not (Test-Path -LiteralPath $path -ErrorAction Stop)) { continue }
+                $root = (Get-ItemProperty -LiteralPath $path -ErrorAction Stop).Path
+                if (-not $root) { continue }
+                $executables = if ($product -eq 'Visio') { @('VISIO.EXE') } elseif ($product -eq 'Project') { @('WINPROJ.EXE') } else { @('WINWORD.EXE', 'EXCEL.EXE', 'OUTLOOK.EXE', 'MSACCESS.EXE', 'POWERPNT.EXE', 'VISIO.EXE', 'WINPROJ.EXE') }
+                foreach ($exe in $executables) {
+                    $exePath = Join-Path $root $exe
+                    if ($seen.ContainsKey($exePath) -or -not (Test-Path -LiteralPath $exePath -PathType Leaf -ErrorAction Stop)) { continue }
+                    $seen[$exePath] = $true
+                    [pscustomobject]@{
+                        Name = "Office $version ($exe)"
+                        Edition = Get-OfficeExecutableEdition -Path $exePath
+                        Kind = 'Legacy'
+                        Protected = ($exe -in @('VISIO.EXE', 'WINPROJ.EXE'))
+                        Source = $exePath
+                    }
+                }
+            }
+        }
+    }
+}
+
+function Resolve-OfficeClientEdition {
+    param(
+        [ValidateSet('Auto', '32', '64')][string]$Requested = 'Auto',
+        [object[]]$Inventory = @(),
+        [bool]$SkipRemoval = $false,
+        [bool]$Is64BitOperatingSystem = [Environment]::Is64BitOperatingSystem
+    )
+    if (@($Inventory | Where-Object { $_.Edition -notin @('32', '64') }).Count) {
+        throw 'Existing Office architecture could not be verified. No Office changes were made. Check the installation before retrying.'
+    }
+    $editions = @($Inventory | Select-Object -ExpandProperty Edition -Unique)
+    $target = $Requested
+    if ($target -eq 'Auto') {
+        if ($editions.Count -gt 1) { throw 'Mixed 32-bit and 64-bit Office components were detected. Choose an architecture after reviewing the installed products. No Office changes were made.' }
+        $target = if ($editions.Count -eq 1) { $editions[0] } elseif ($Is64BitOperatingSystem) { '64' } else { '32' }
+    }
+    if ($target -eq '64' -and -not $Is64BitOperatingSystem) { throw '64-bit Office requires 64-bit Windows. Choose 32-bit Office. No Office changes were made.' }
+    foreach ($entry in $Inventory) {
+        if ($entry.Edition -eq $target) { continue }
+        if ($entry.Protected) { throw "Cannot install $target-bit Office while preserving $($entry.Name), which is $($entry.Edition)-bit. Match its architecture or remove/reinstall that product separately. No Office changes were made." }
+        if ($entry.Kind -eq 'ClickToRun' -and $SkipRemoval) { throw "Changing Office from $($entry.Edition)-bit to $target-bit requires removal first. Uncheck 'Skip removing existing Office' and retry. No Office changes were made." }
+    }
+    return $target
+}
+
 function Test-OfficeBusinessConfiguration {
-    param($Configuration, [string]$Channel)
+    param($Configuration, [string]$Channel, [ValidateSet('32', '64')][string]$Edition = '64')
     $ids = @(Get-OfficeProductIds $Configuration.ProductReleaseIds)
     if ($ids -notcontains 'O365BusinessRetail') { Write-Log 'Business Office product was not found after setup.' 'ERROR'; return $false }
-    if ($Configuration.Platform -ne 'x64') { Write-Log 'Office architecture could not be verified as x64.' 'ERROR'; return $false }
+    $expectedPlatform = if ($Edition -eq '32') { 'x86' } else { 'x64' }
+    $validPlatforms = if ($Edition -eq '32') { @('x86') } else { @('x64', 'arm64') }
+    if ($Configuration.Platform -notin $validPlatforms) { Write-Log "Office architecture could not be verified as $Edition-bit ($expectedPlatform)." 'ERROR'; return $false }
     $channels = @{
         MonthlyEnterprise = '55336b82-a18d-4dd6-b5f6-9e5095c314a6'
         Current = '492350f6-3a01-4f97-b9c0-c7c6ddf67d60'
@@ -3295,7 +3397,7 @@ function Test-OfficeBusinessConfiguration {
     }
     $leftovers = @($ids | Where-Object { $_ -match '^(O365HomePremRetail|HomeStudentRetail|HomeBusinessRetail|PersonalRetail)$' })
     if ($leftovers.Count) { Write-Log "Consumer Office products remain: $($leftovers -join ', ')." 'WARN'; return $false }
-    Write-Log "Verified business Office: $($Configuration.VersionToReport), x64, $Channel."
+    Write-Log "Verified business Office: $($Configuration.VersionToReport), $Edition-bit ($($Configuration.Platform)), $Channel."
     return $true
 }
 
@@ -3315,7 +3417,7 @@ function Get-OfficeDeploymentTool {
 }
 
 function New-OfficeInstallXml {
-    param([string]$Path, [string]$SourceDir)
+    param([string]$Path, [string]$SourceDir, [ValidateSet('32', '64')][string]$Edition = '64')
     # Product ID O365BusinessRetail = Microsoft 365 Apps for business.
     # (O365ProPlusRetail is the "for enterprise" SKU - do not swap unless your tenant
     # licenses enterprise plans instead.)
@@ -3346,7 +3448,7 @@ function New-OfficeInstallXml {
     $sharedLicensingXml = if ($OfficeSharedComputerLicensing) { "`r`n  <Property Name=""SharedComputerLicensing"" Value=""1"" />" } else { '' }
     @"
 <Configuration>
-  <Add OfficeClientEdition="64" Channel="$OfficeChannel" SourcePath="$SourceDir">
+  <Add OfficeClientEdition="$Edition" Channel="$OfficeChannel" SourcePath="$SourceDir">
     <Product ID="O365BusinessRetail">
       <Language ID="$OfficeLanguage" />
 $excludeAppXml
@@ -3366,6 +3468,7 @@ $excludeAppXml
 }
 
 $script:officePreflightOk = $true
+$script:officeClientEdition = '64'
 
 function Invoke-OfficePreflight {
     param([string]$SetupPath, [string]$InstallXmlPath)
@@ -3400,6 +3503,7 @@ function Uninstall-ExistingOffice {
     Write-Log '--- Phase 2: Removing existing Office installation(s) ---'
 
     $c2rKey = 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration'
+    if (-not (Test-Path -LiteralPath $c2rKey)) { $c2rKey = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office\ClickToRun\Configuration' }
     $hasC2R = Test-Path $c2rKey
 
     if ($hasC2R) {
@@ -3425,11 +3529,13 @@ function Uninstall-ExistingOffice {
         $targetGuid = $channelGuidMap[$OfficeChannel]
         $onTargetChannel = $targetGuid -and $config.UpdateChannel -and ($config.UpdateChannel -match [regex]::Escape($targetGuid))
         $onlyExpectedSku = $products.Count -eq 1 -and $products[0] -eq 'O365BusinessRetail'
+        $expectedPlatform = if ($script:officeClientEdition -eq '32') { 'x86' } else { 'x64' }
+        $onTargetArchitecture = ($config.Platform -eq $expectedPlatform) -or ($script:officeClientEdition -eq '64' -and $config.Platform -eq 'arm64')
 
         if ($products.Count -eq 0 -or $unexpected.Count -gt 0) {
             Write-Log "Skipping Click-to-Run removal: the product inventory is empty or contains protected/unrecognized product IDs: $($unexpected -join ', '). Existing products will be preserved. Phase 3 can add/reconfigure O365BusinessRetail. This does not establish that Visio or Project is installed." 'WARN'
-        } elseif ($onlyExpectedSku -and $onTargetChannel) {
-            Write-Log "O365BusinessRetail is already installed on the $OfficeChannel channel - skipping removal, Phase 3 will reconfigure it in place."
+        } elseif ($onlyExpectedSku -and $onTargetChannel -and $onTargetArchitecture) {
+            Write-Log "O365BusinessRetail is already installed as $script:officeClientEdition-bit on the $OfficeChannel channel - skipping removal, Phase 3 will reconfigure it in place."
         } else {
             $removeXmlPath = Join-Path $workDir 'remove-all.xml'
             @'
@@ -3470,10 +3576,10 @@ function Uninstall-ExistingOffice {
 
 function Install-Microsoft365Business {
     param([string]$SetupPath, [string]$InstallXmlPath)
-    Write-Log "--- Phase 3: Installing Microsoft 365 Apps for business ($OfficeLanguage, $OfficeChannel channel) ---"
+    Write-Log "--- Phase 3: Installing Microsoft 365 Apps for business ($script:officeClientEdition-bit, $OfficeLanguage, $OfficeChannel channel) ---"
 
     $script:officeInstallSucceeded = $false
-    Invoke-Step "Installing Microsoft 365 Apps for business ($OfficeLanguage)" {
+    Invoke-Step "Installing Microsoft 365 Apps for business ($script:officeClientEdition-bit, $OfficeLanguage)" {
         $proc = Invoke-OfficeSetup -SetupPath $SetupPath -Arguments "/configure ""$InstallXmlPath""" -Operation installation
         if ($proc.ExitCode -notin @(0, 3010)) {
             $script:officeInstallSucceeded = $false
@@ -3507,14 +3613,46 @@ function Install-Microsoft365Business {
     }
 
     $c2rKey = 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration'
+    if (-not (Test-Path -LiteralPath $c2rKey)) { $c2rKey = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office\ClickToRun\Configuration' }
     try { $config = Get-ItemProperty -LiteralPath $c2rKey -ErrorAction Stop } catch {
         Write-Log 'Office configuration could not be read after installation.' 'ERROR'
         return
     }
-    if (Test-OfficeBusinessConfiguration -Configuration $config -Channel $OfficeChannel) {
+    if (Test-OfficeBusinessConfiguration -Configuration $config -Channel $OfficeChannel -Edition $script:officeClientEdition) {
         Write-Log 'Install complete. Activation happens on first app launch when the user signs in with their Microsoft 365 business account.'
     } else {
         Write-Log 'Office setup finished, but the requested configuration was not verified. Review the messages above before handing over the laptop.' 'WARN'
+    }
+}
+
+function Invoke-OfficeDeployment {
+    if ($SkipOfficeRemoval -and $SkipOfficeInstall) { return }
+    $script:officePreflightOk = $true
+    # Resolve once before download/removal so Auto cannot change after Office is removed.
+    try {
+        $officeInventory = @(Get-OfficeArchitectureInventory)
+        foreach ($entry in $officeInventory) { Write-Log "Detected $($entry.Edition)-bit $($entry.Name) [$($entry.Source)]" }
+        if (-not $officeInventory.Count) { Write-Log 'No existing Office architecture detected.' }
+        if (-not $SkipOfficeInstall) {
+            $script:officeClientEdition = Resolve-OfficeClientEdition -Requested $OfficeArchitecture -Inventory $officeInventory -SkipRemoval ([bool]$SkipOfficeRemoval)
+            Write-Log "Office architecture: requested=$OfficeArchitecture; resolved=$script:officeClientEdition-bit."
+        }
+    } catch {
+        $script:officePreflightOk = $false
+        Write-Log "Office architecture preflight failed: $($_.Exception.Message)" 'ERROR'
+        return
+    }
+    $officeSetupPath = Get-OfficeDeploymentTool
+    $officeInstallXmlPath = Join-Path $workDir 'install.xml'
+    $officeSourceDir = Join-Path $workDir 'OfficeSource'
+    New-OfficeInstallXml -Path $officeInstallXmlPath -SourceDir $officeSourceDir -Edition $script:officeClientEdition
+    Invoke-OfficePreflight -SetupPath $officeSetupPath -InstallXmlPath $officeInstallXmlPath
+
+    if ($script:officePreflightOk) {
+        if (-not $SkipOfficeRemoval) { Uninstall-ExistingOffice -SetupPath $officeSetupPath }
+        if ($script:officePreflightOk -and -not $SkipOfficeInstall) { Install-Microsoft365Business -SetupPath $officeSetupPath -InstallXmlPath $officeInstallXmlPath }
+    } else {
+        Write-Log 'Skipping both Office removal and install - pre-flight check failed (see ERROR above).' 'ERROR'
     }
 }
 
@@ -4694,7 +4832,7 @@ function Set-RegionalPowerLockBaseline {
 # MAIN
 # ============================================================================
 
-Write-Log "Starting run. DryRun=$DryRun CreateRestorePoint=$CreateRestorePoint SkipDebloat=$SkipDebloat SkipOfficeRemoval=$SkipOfficeRemoval SkipOfficeInstall=$SkipOfficeInstall OfficeExcludeApps=$OfficeExcludeApps OfficeSharedComputerLicensing=$OfficeSharedComputerLicensing TargetProfile=$TargetProfile Undo=$Undo"
+Write-Log "Starting run. DryRun=$DryRun CreateRestorePoint=$CreateRestorePoint SkipDebloat=$SkipDebloat SkipOfficeRemoval=$SkipOfficeRemoval SkipOfficeInstall=$SkipOfficeInstall OfficeArchitecture=$OfficeArchitecture OfficeExcludeApps=$OfficeExcludeApps OfficeSharedComputerLicensing=$OfficeSharedComputerLicensing TargetProfile=$TargetProfile Undo=$Undo"
 
 if ($Undo) {
     Invoke-UndoSnapshot -Path $Undo
@@ -4717,20 +4855,7 @@ if (-not $SkipDebloat) {
     Remove-OemBloatware
     Disable-OemScheduledTasksAndServices
 }
-if (-not $SkipOfficeRemoval -or -not $SkipOfficeInstall) {
-    $officeSetupPath = Get-OfficeDeploymentTool
-    $officeInstallXmlPath = Join-Path $workDir 'install.xml'
-    $officeSourceDir = Join-Path $workDir 'OfficeSource'
-    New-OfficeInstallXml -Path $officeInstallXmlPath -SourceDir $officeSourceDir
-    Invoke-OfficePreflight -SetupPath $officeSetupPath -InstallXmlPath $officeInstallXmlPath
-
-    if ($script:officePreflightOk) {
-        if (-not $SkipOfficeRemoval) { Uninstall-ExistingOffice -SetupPath $officeSetupPath }
-        if ($script:officePreflightOk -and -not $SkipOfficeInstall) { Install-Microsoft365Business -SetupPath $officeSetupPath -InstallXmlPath $officeInstallXmlPath }
-    } else {
-        Write-Log 'Skipping both Office removal and install - pre-flight check failed (see ERROR above).' 'ERROR'
-    }
-}
+Invoke-OfficeDeployment
 
 if ($FixSystemRepair) { Invoke-SystemRepair }
 if ($FixNetworkReset) { Invoke-NetworkReset }

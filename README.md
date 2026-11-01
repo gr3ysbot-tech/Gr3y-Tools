@@ -21,7 +21,14 @@ dense two-column layout instead of a typical "settings app" look. Five tabs:
   where there is one, the installer's own message - the run's warning count rises, and
   the finish banner counts warning lines, not programs); optionally creates a System
   Restore point first; fully removes any
-  existing Office install; installs Microsoft 365 Apps for business, with optional
+  existing Office install; installs Microsoft 365 Apps for business with an
+  **Architecture** selector: **Auto** keeps detected Office bitness (or uses Windows
+  bitness on a clean PC), **32-bit (accounting add-ins)** installs 32-bit Office, and
+  **64-bit** installs 64-bit Office. Detected bitness appears above the options and
+  in Scan This Machine. Select 32-bit explicitly for accountants whose software or
+  add-ins require it; detection identifies installed Office, not add-in requirements.
+  Changing bitness requires Office removal; preserved Visio/Project must match.
+  Installation also has optional
   `ExcludeApp` checkboxes (Teams, OneDrive, Access, Publisher, Skype for Business,
   OneNote) and a Shared Computer Activation option. Live log streaming, a
   CPU-activity heartbeat across the whole process tree so you can tell it's still
@@ -114,6 +121,18 @@ $script = irm get.gr3y.io/debloat
 Source: [`debloat/Deploy-DellOfficeSetup.ps1`](debloat/Deploy-DellOfficeSetup.ps1)
 (the worker script, runnable standalone from the command line too) and
 [`debloat/Gr3ysUtilities.ps1`](debloat/Gr3ysUtilities.ps1) (the GUI).
+
+For an Office-only 32-bit deployment from a local checkout, run the worker elevated:
+
+```powershell
+.\debloat\Deploy-DellOfficeSetup.ps1 -SkipDebloat -OfficeArchitecture 32
+```
+
+The worker and alternative web panel accept `Auto`, `32`, or `64`. The worker logs
+the detected and resolved architecture, stages that edition before removal, and
+verifies it after installation. An unknown architecture or conflicting protected
+product blocks Office changes for review.
+
 `debloat.ps1` at the repo root is the one-line entry point - it downloads the
 current version of every tool file (worker script, GUI, app catalog, bloat
 patterns, tweaks) from a single pinned commit and launches the GUI. A secondary

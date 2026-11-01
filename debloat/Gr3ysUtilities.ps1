@@ -376,6 +376,100 @@ function Get-UninstallEntries {
         Where-Object { $_.DisplayName }
 }
 
+# Keep these read-only helpers identical in the standalone worker and GUI.
+function Get-OfficeExecutableEdition {
+    param([string]$Path)
+    $stream = $null
+    $reader = $null
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        $reader = New-Object IO.BinaryReader($stream)
+        if ($stream.Length -lt 64 -or $reader.ReadUInt16() -ne 0x5A4D) { return 'Unknown' }
+        $stream.Position = 60
+        $offset = $reader.ReadInt32()
+        if ($offset -lt 64 -or $offset -gt ($stream.Length - 6)) { return 'Unknown' }
+        $stream.Position = $offset
+        if ($reader.ReadUInt32() -ne 0x00004550) { return 'Unknown' }
+        switch ($reader.ReadUInt16()) {
+            0x014C { return '32' }
+            0x8664 { return '64' }
+            0xAA64 { return '64' }
+            default { return 'Unknown' }
+        }
+    } catch { return 'Unknown' } finally {
+        if ($reader) { $reader.Dispose() } elseif ($stream) { $stream.Dispose() }
+    }
+}
+
+function Get-OfficeArchitectureInventory {
+    # Inspect both registry locations, independently of the Windows/Office bitness.
+    # Legacy InstallRoot keys are only evidence when an Office executable still exists.
+    $bases = @('HKLM:\SOFTWARE\Microsoft\Office', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office')
+    $seen = @{}
+    foreach ($base in $bases) {
+        $path = "$base\ClickToRun\Configuration"
+        if (Test-Path -LiteralPath $path -ErrorAction Stop) {
+            $config = Get-ItemProperty -LiteralPath $path -ErrorAction Stop
+            $edition = switch ($config.Platform) { 'x86' { '32' }; 'x64' { '64' }; 'arm64' { '64' }; default { 'Unknown' } }
+            $products = @($config.ProductReleaseIds -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            $unexpected = @($products | Where-Object { $_ -notmatch '^(O365BusinessRetail|O365ProPlusRetail|O365HomePremRetail|HomeStudentRetail|HomeBusinessRetail|PersonalRetail|OneNoteFreeRetail)$' })
+            [pscustomobject]@{
+                Name = "Click-to-Run Office ($($products -join ', '))"
+                Edition = $edition
+                Kind = 'ClickToRun'
+                Protected = ($products.Count -eq 0 -or $unexpected.Count -gt 0)
+                Source = $path
+            }
+        }
+        foreach ($version in @('16.0', '15.0', '14.0', '12.0')) {
+            foreach ($product in @('', 'Visio', 'Project')) {
+                $path = if ($product) { "$base\$version\$product\InstallRoot" } else { "$base\$version\Common\InstallRoot" }
+                if (-not (Test-Path -LiteralPath $path -ErrorAction Stop)) { continue }
+                $root = (Get-ItemProperty -LiteralPath $path -ErrorAction Stop).Path
+                if (-not $root) { continue }
+                $executables = if ($product -eq 'Visio') { @('VISIO.EXE') } elseif ($product -eq 'Project') { @('WINPROJ.EXE') } else { @('WINWORD.EXE', 'EXCEL.EXE', 'OUTLOOK.EXE', 'MSACCESS.EXE', 'POWERPNT.EXE', 'VISIO.EXE', 'WINPROJ.EXE') }
+                foreach ($exe in $executables) {
+                    $exePath = Join-Path $root $exe
+                    if ($seen.ContainsKey($exePath) -or -not (Test-Path -LiteralPath $exePath -PathType Leaf -ErrorAction Stop)) { continue }
+                    $seen[$exePath] = $true
+                    [pscustomobject]@{
+                        Name = "Office $version ($exe)"
+                        Edition = Get-OfficeExecutableEdition -Path $exePath
+                        Kind = 'Legacy'
+                        Protected = ($exe -in @('VISIO.EXE', 'WINPROJ.EXE'))
+                        Source = $exePath
+                    }
+                }
+            }
+        }
+    }
+}
+
+function Resolve-OfficeClientEdition {
+    param(
+        [ValidateSet('Auto', '32', '64')][string]$Requested = 'Auto',
+        [object[]]$Inventory = @(),
+        [bool]$SkipRemoval = $false,
+        [bool]$Is64BitOperatingSystem = [Environment]::Is64BitOperatingSystem
+    )
+    if (@($Inventory | Where-Object { $_.Edition -notin @('32', '64') }).Count) {
+        throw 'Existing Office architecture could not be verified. No Office changes were made. Check the installation before retrying.'
+    }
+    $editions = @($Inventory | Select-Object -ExpandProperty Edition -Unique)
+    $target = $Requested
+    if ($target -eq 'Auto') {
+        if ($editions.Count -gt 1) { throw 'Mixed 32-bit and 64-bit Office components were detected. Choose an architecture after reviewing the installed products. No Office changes were made.' }
+        $target = if ($editions.Count -eq 1) { $editions[0] } elseif ($Is64BitOperatingSystem) { '64' } else { '32' }
+    }
+    if ($target -eq '64' -and -not $Is64BitOperatingSystem) { throw '64-bit Office requires 64-bit Windows. Choose 32-bit Office. No Office changes were made.' }
+    foreach ($entry in $Inventory) {
+        if ($entry.Edition -eq $target) { continue }
+        if ($entry.Protected) { throw "Cannot install $target-bit Office while preserving $($entry.Name), which is $($entry.Edition)-bit. Match its architecture or remove/reinstall that product separately. No Office changes were made." }
+        if ($entry.Kind -eq 'ClickToRun' -and $SkipRemoval) { throw "Changing Office from $($entry.Edition)-bit to $target-bit requires removal first. Uncheck 'Skip removing existing Office' and retry. No Office changes were made." }
+    }
+    return $target
+}
+
 # Read-only inspection using the exact same bloat-detection patterns
 # Deploy-DellOfficeSetup.ps1 acts on (both load from bloat-patterns.json) - nothing here
 # changes the system, it only reports what a real run's Phase 1 (OEM bloat removal) would
@@ -472,7 +566,8 @@ $script:bloatScanAction = {
         }
     }
 
-    $hasC2R = Test-Path 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration'
+    $officeArchitectureInventory = @(Get-OfficeArchitectureInventory)
+    $hasC2R = @($officeArchitectureInventory | Where-Object { $_.Kind -eq 'ClickToRun' }).Count -gt 0
     $msiOffice = @($entries | Where-Object { $_.DisplayName -like 'Microsoft Office*' -and $_.UninstallString -match 'msiexec' })
 
     $lines.Add("Scan results for $env:COMPUTERNAME - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
@@ -510,9 +605,12 @@ $script:bloatScanAction = {
     $lines.Add('')
 
     $lines.Add('Office:')
-    if ($hasC2R) { $lines.Add('  - Click-to-Run Office install detected (would be fully removed, then Microsoft 365 Apps installed fresh)') }
+    foreach ($office in $officeArchitectureInventory) {
+        $lines.Add("  - $($office.Edition)-bit $($office.Name)")
+    }
+    if ($hasC2R) { $lines.Add('  - Click-to-Run removal/reconfiguration depends on the selected architecture, product and channel; protected products are preserved.') }
     foreach ($m in $msiOffice) { $lines.Add("  - MSI-based Office product detected: $($m.DisplayName)") }
-    if (-not $hasC2R -and $msiOffice.Count -eq 0) { $lines.Add('  - No existing Office installation detected') }
+    if ($officeArchitectureInventory.Count -eq 0 -and $msiOffice.Count -eq 0) { $lines.Add('  - No existing Office installation detected') }
 
     $totalFound = $foundAppx.Count + $foundWin32.Count + $foundTasks.Count + $foundServices.Count
     $lines.Add('')
@@ -1042,6 +1140,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                              ToolTip="Adds an explicit guard: a package identified as work/school Teams (AppX MSTeams, or the classic Teams Machine-Wide Installer) is never removed or de-provisioned, regardless of what any bloat pattern matches. The generic bloat pattern that removes consumer Teams (the old Chat-icon package, exact name MicrosoftTeams) already cannot match MSTeams - this is a second, independent layer. Scan This Machine reports whether work/school Teams is present on this machine either way."/>
                 </DockPanel>
                 <TextBlock Style="{StaticResource Header}" Text="Office" Margin="0,10,0,6"/>
+                <TextBlock Name="OfficeDetected" Text="Checking installed Office..." TextWrapping="Wrap" Foreground="#b0b0b0" Margin="2,0,0,5"/>
                 <DockPanel LastChildFill="False" Margin="0,0,0,1">
                   <CheckBox DockPanel.Dock="Left" Name="OptSkipOfficeRemoval" Content="Skip removing existing Office"/>
                   <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
@@ -1051,6 +1150,16 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
                   <CheckBox DockPanel.Dock="Left" Name="OptSkipOfficeInstall" Content="Skip installing Microsoft 365 Apps"/>
                   <TextBlock DockPanel.Dock="Left" Style="{StaticResource Hint}"
                              ToolTip="Does not install Microsoft 365 Apps for business at the end of the run."/>
+                </DockPanel>
+                <DockPanel LastChildFill="False" Margin="0,6,0,0">
+                  <TextBlock DockPanel.Dock="Left" Text="Architecture:" VerticalAlignment="Center" Margin="2,0,8,0"/>
+                  <ComboBox DockPanel.Dock="Left" Name="OptOfficeArchitecture" Width="205" SelectedIndex="0"
+                            AutomationProperties.Name="Office architecture"
+                            ToolTip="Auto keeps detected Office bitness, or uses Windows bitness on a clean PC. Choose 32-bit for accounting software and add-ins that require it. Changing bitness requires removing existing Office first; preserved Visio/Project must match.">
+                    <ComboBoxItem Content="Auto (keep detected bitness)" Tag="Auto"/>
+                    <ComboBoxItem Content="32-bit (accounting add-ins)" Tag="32"/>
+                    <ComboBoxItem Content="64-bit" Tag="64"/>
+                  </ComboBox>
                 </DockPanel>
                 <DockPanel LastChildFill="False" Margin="0,6,0,0">
                   <TextBlock DockPanel.Dock="Left" Text="Office channel:" VerticalAlignment="Center" Margin="2,0,8,0"/>
@@ -1650,6 +1759,22 @@ $optTweakTelemetry.Add_Checked({
 })
 
 $optChannel = $window.FindName('OptChannel')
+$optOfficeArchitecture = $window.FindName('OptOfficeArchitecture')
+$officeDetected = $window.FindName('OfficeDetected')
+
+function Update-OfficeArchitectureStatus {
+    try {
+        $script:officeInventory = @(Get-OfficeArchitectureInventory)
+        $editions = @($script:officeInventory | Select-Object -ExpandProperty Edition -Unique)
+        $officeDetected.Text = if ($editions.Count) { "Detected Office: $(($editions | ForEach-Object { if ($_ -eq 'Unknown') { 'unknown architecture' } else { "$_-bit" } }) -join ', ')" } else { 'Detected Office: none. Auto uses Windows bitness.' }
+    } catch {
+        $officeDetected.Text = "Office detection failed: $($_.Exception.Message)"
+        throw
+    }
+}
+try { Update-OfficeArchitectureStatus } catch {}
+$optSkipOfficeInstall.Add_Checked({ $optOfficeArchitecture.IsEnabled = $false })
+$optSkipOfficeInstall.Add_Unchecked({ $optOfficeArchitecture.IsEnabled = $true })
 $btnScan = $window.FindName('BtnScan')
 $btnStart = $window.FindName('BtnStart')
 $btnStop = $window.FindName('BtnStop')
@@ -4416,12 +4541,16 @@ $script:scanHandle = $null
 
 $btnScan.Add_Click({
     if ($script:scanPS) { return }
+    try { Update-OfficeArchitectureStatus } catch {}
     $btnScan.IsEnabled = $false
     $stateText.Text = 'Scanning...'
     $bannerBorder.Visibility = 'Collapsed'
     $logBox.Text = ''
 
     $script:scanPS = [powershell]::Create()
+    foreach ($helper in @('Get-OfficeExecutableEdition', 'Get-OfficeArchitectureInventory')) {
+        [void]$script:scanPS.AddScript("function $helper { $((Get-Command $helper).Definition) }")
+    }
     [void]$script:scanPS.AddScript($script:bloatScanAction.ToString())
     [void]$script:scanPS.AddArgument($bloatPatterns)
     [void]$script:scanPS.AddArgument([bool]$optDell.IsChecked)
@@ -4435,13 +4564,25 @@ $btnStart.Add_Click({
     # and both writing to gui_run_<same-second-stamp>.out.log.
     if ($script:deployProc -and -not $script:deployProc.HasExited) { return }
 
+    $architecture = [string]$optOfficeArchitecture.SelectedItem.Tag
+    $resolvedEdition = $null
+    if (-not $optSkipOfficeInstall.IsChecked) {
+        try {
+            Update-OfficeArchitectureStatus
+            $resolvedEdition = Resolve-OfficeClientEdition -Requested $architecture -Inventory $script:officeInventory -SkipRemoval ([bool]$optSkipOfficeRemoval.IsChecked)
+        } catch {
+            [System.Windows.MessageBox]::Show($_.Exception.Message, 'Office architecture', 'OK', 'Warning') | Out-Null
+            return
+        }
+    }
+
     if (-not $optDryRun.IsChecked) {
         $summaryParts = New-Object System.Collections.Generic.List[string]
         if (-not $optSkipDebloat.IsChecked) { $summaryParts.Add('- Remove OEM/McAfee bloatware (including SupportAssist for Business PCs and managed McAfee)') }
         if ($optInstallOemUpdate.IsChecked) { $summaryParts.Add('- Install Dell Command Update / Lenovo System Update (if applicable)') }
         if (-not $optSkipOfficeRemoval.IsChecked) { $summaryParts.Add('- Remove any existing Office install') }
         if (-not $optSkipOfficeInstall.IsChecked) {
-            $summaryParts.Add('- Install Microsoft 365 Apps for business')
+            $summaryParts.Add("- Install Microsoft 365 Apps for business ($resolvedEdition-bit; selection: $architecture)")
             $excludeSummary = New-Object System.Collections.Generic.List[string]
             if ($optExcludeTeams.IsChecked) { $excludeSummary.Add('Teams') }
             if ($optExcludeOneDrive.IsChecked) { $excludeSummary.Add('OneDrive') }
@@ -4479,6 +4620,7 @@ $btnStart.Add_Click({
     if ($optTweakDisableSAC.IsChecked) { $argList += '-TweakDisableSmartAppControl' }
     $channel = $optChannel.SelectedItem.Content
     $argList += @('-OfficeChannel', $channel)
+    $argList += @('-OfficeArchitecture', $architecture)
     $excludeApps = New-Object System.Collections.Generic.List[string]
     if ($optExcludeTeams.IsChecked) { $excludeApps.Add('Teams') }
     if ($optExcludeOneDrive.IsChecked) { $excludeApps.Add('OneDrive') }
@@ -6789,6 +6931,7 @@ $timer.Add_Tick({
             $btnDownloadLog.Visibility = 'Visible'
             if (-not $script:deployHasFinishedBannerShown) {
                 $script:deployHasFinishedBannerShown = $true
+                try { Update-OfficeArchitectureStatus } catch {}
                 # One-shot full-file read is fine here - this only runs once, right as
                 # the job finishes, not on every tick.
                 $finishedSummary = Get-LogSummary -LogPath $script:deployLogFile
