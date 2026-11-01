@@ -9,6 +9,19 @@ GitHub Releases `v1.0.0`-`v1.0.6` predate this model and are not maintained.)
 
 ## [Unreleased]
 
+### Added (2026-11-01)
+
+- Select Auto, 32-bit (accounting add-ins), or 64-bit Office in the native GUI and
+  alternative web panel, or pass `-OfficeArchitecture Auto|32|64` to the worker.
+  Auto preserves detected Office bitness and uses Windows bitness on a clean PC.
+- Detect Click-to-Run architecture in both registry locations and legacy Office
+  bitness from installed executables. Show it in the GUI and scan results, log the
+  requested/resolved edition, and verify the selected edition after installation.
+- Reinstall a recognized suite when switching bitness, even when its product and
+  channel already match. Block changes before download/removal when detection is
+  ambiguous, removal is skipped for an architecture switch, or a preserved product
+  (including Visio/Project) has a conflicting architecture.
+
 ### Fixed (2026-10-22)
 
 - Create recovery-key/password files with verified Administrators/SYSTEM permissions

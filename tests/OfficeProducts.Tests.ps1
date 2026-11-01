@@ -8,6 +8,7 @@ BeforeAll {
     function Write-Log { param($Message, $Level) }
     function Invoke-Step { param($Message, $Action) & $Action }
     $script:OfficeChannel = 'MonthlyEnterprise'
+    $script:officeClientEdition = '64'
 }
 
 Describe 'Office product inventory and removal guard' {
@@ -45,6 +46,7 @@ Describe 'Office product inventory and removal guard' {
     It 'reconfigures the target business SKU on its channel without uninstalling' {
         Mock Get-ItemProperty { [pscustomobject]@{
             ProductReleaseIds = 'O365BusinessRetail'
+            Platform = 'x64'
             UpdateChannel = 'https://officecdn.microsoft.com/pr/55336b82-a18d-4dd6-b5f6-9e5095c314a6'
         } }
         Uninstall-ExistingOffice -SetupPath 'setup.exe'

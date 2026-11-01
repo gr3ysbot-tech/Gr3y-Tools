@@ -219,6 +219,13 @@ $HtmlPage = @'
       <label class="opt"><input type="checkbox" id="optSkipOfficeInstall"> Skip installing Microsoft 365 Apps</label>
     </div>
     <div class="row">
+      <label>Office architecture:
+        <select id="optOfficeArchitecture">
+          <option value="Auto" selected>Auto (keep detected bitness)</option>
+          <option value="32">32-bit (accounting add-ins)</option>
+          <option value="64">64-bit</option>
+        </select>
+      </label>
       <label>Office channel:
         <select id="optChannel">
           <option value="MonthlyEnterprise" selected>MonthlyEnterprise (recommended)</option>
@@ -340,7 +347,8 @@ $HtmlPage = @'
       skipDebloat: document.getElementById('optSkipDebloat').checked,
       skipOfficeRemoval: document.getElementById('optSkipOfficeRemoval').checked,
       skipOfficeInstall: document.getElementById('optSkipOfficeInstall').checked,
-      officeChannel: document.getElementById('optChannel').value
+      officeChannel: document.getElementById('optChannel').value,
+      officeArchitecture: document.getElementById('optOfficeArchitecture').value
     };
     logEl.textContent = '';
     offset = 0;
@@ -426,6 +434,7 @@ while ($listener.IsListening) {
                 if ($opts.skipOfficeRemoval) { $argList += '-SkipOfficeRemoval' }
                 if ($opts.skipOfficeInstall) { $argList += '-SkipOfficeInstall' }
                 if ($opts.officeChannel) { $argList += @('-OfficeChannel', [string]$opts.officeChannel) }
+                if ($opts.officeArchitecture -in @('Auto', '32', '64')) { $argList += @('-OfficeArchitecture', [string]$opts.officeArchitecture) }
 
                 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
                 $script:logFile = Join-Path $workDir "webapp_run_$stamp.out.log"
