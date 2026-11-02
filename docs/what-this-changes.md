@@ -329,6 +329,8 @@ Customize Preferences panel writes back the Off column exactly.
 | Adobe Creative Cloud | Documents | `Adobe.CreativeCloud` |  |
 | Bluebeam Revu | Documents | `Bluebeam.Revu.21` |  |
 | LibreOffice | Documents | `TheDocumentFoundation.LibreOffice` |  |
+| Microsoft 365 Apps (32-bit) | Documents | *(manual install only - no automated download)* |  |
+| Microsoft 365 Apps (64-bit) | Documents | *(manual install only - no automated download)* |  |
 | PDF24 Creator | Documents | `geeksoftwareGmbH.PDF24Creator` |  |
 | SumatraPDF | Documents | `SumatraPDF.SumatraPDF` |  |
 | DataLink Viewer | Manual Install Only | *(manual install only - no automated download)* |  |
