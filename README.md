@@ -8,7 +8,10 @@ no keeping a USB kit in sync across every laptop.
 
 A native Windows GUI (WPF, no browser involved): a custom dark window chrome
 with the tabs and window controls built into the title bar itself, and a
-dense two-column layout instead of a typical "settings app" look. Five tabs:
+dense layout. It opens at 960 x 640 rather than maximizing or growing to fill the
+display, fits inside the available desktop on scaled laptop screens, and can be
+resized manually. Toolbars wrap, Debloat options scroll above the job controls,
+and Config stacks its log below the settings at smaller widths. Five tabs:
 
 - **Debloat + Office** - removes Dell/Lenovo OEM bloatware, McAfee software (every
   McAfee program, trial or not), the Dropbox and WildTangent promos, the Widgets
