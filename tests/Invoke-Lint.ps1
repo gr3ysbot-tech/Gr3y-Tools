@@ -90,11 +90,13 @@ if (Test-Path $appsCatalogPath) {
     # with no public silent/direct installer at all (tenant login, license key, or a
     # vendor email required), where a verified product/download page url is the best
     # this tool can offer. Every other category still needs a real wingetId or downloadUrl.
-    $missingIdentifier = $catalog.apps | Where-Object { -not $_.wingetId -and -not $_.downloadUrl -and $_.category -ne 'Manual Install Only' }
+    $missingIdentifier = $catalog.apps | Where-Object { -not $_.wingetId -and -not $_.downloadUrl -and -not $_.officeArchitecture -and $_.category -ne 'Manual Install Only' }
+    $invalidOffice = @($catalog.apps | Where-Object { $_.officeArchitecture -and ($_.officeArchitecture -notin @('32', '64') -or $_.wingetId -or $_.downloadUrl) })
+    if ($invalidOffice.Count) { Write-LintError 'Office catalog entries must select 32 or 64 and use the Office worker without a wingetId or downloadUrl' }
     if ($missingIdentifier) {
         Write-LintError "apps-catalog.json has entr(y/ies) with neither wingetId nor downloadUrl: $($missingIdentifier.name -join ', ')"
     } else {
-        Write-LintOk 'every apps-catalog.json entry has a wingetId or a downloadUrl (or is Manual Install Only with a url)'
+        Write-LintOk 'every apps-catalog.json entry has winget, direct download, Office deployment, or a manual-install URL'
     }
     $manualOnlyMissingUrl = $catalog.apps | Where-Object { $_.category -eq 'Manual Install Only' -and -not $_.url }
     if ($manualOnlyMissingUrl) {

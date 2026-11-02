@@ -42,7 +42,12 @@ dense two-column layout instead of a typical "settings app" look. Five tabs:
   appropriate for a client machine - is the default view; All shows
   everything, including things like Tor Browser and qBittorrent), select-all/
   clear (with a confirmation when selecting across every category at once),
-  and install/uninstall/upgrade-all actions. Entries known to be unsigned/
+  and install/uninstall/upgrade-all actions. **Microsoft 365 Apps (32-bit)** and
+  **Microsoft 365 Apps (64-bit)** are selectable under Documents; **Install Selected**
+  runs the existing Office deployment engine for the chosen edition after confirmation.
+  Select one Office edition at a time. These install the business product; the Office
+  checkboxes do not support Uninstall Selected or change its licensing.
+  Entries known to be unsigned/
   low-reputation are flagged and trigger a warning before install if Smart App
   Control is On. Utilities, the longest list, is split into headed groups
   (Security & Privacy; File Management & Archiving; Networking, Remote Access &
@@ -132,6 +137,18 @@ The worker and alternative web panel accept `Auto`, `32`, or `64`. The worker lo
 the detected and resolved architecture, stages that edition before removal, and
 verifies it after installation. An unknown architecture or conflicting protected
 product blocks Office changes for review.
+
+**Export Installed Apps** and the standalone `Export-InstalledApps.ps1` now record
+Office bitness as well as app names and winget IDs. The metadata travels through
+JSON files and pairing transfers. On the replacement PC, **Compare Against List**
+shows the old/new Office bitness and checks the matching 32-bit or 64-bit Microsoft
+365 Apps replacement option when needed. An installed 64-bit Office does not satisfy
+a 32-bit source. Compare labels Microsoft 365 Apps for business as a replacement
+choice, rather than promising to reproduce an old perpetual Office edition.
+
+Re-export the old machine with the updated tool to get this information. Older
+exports and plain-text lists remain supported, but Office bitness is reported as
+unknown when it was not recorded; you can choose the correct Office checkbox manually.
 
 `debloat.ps1` at the repo root is the one-line entry point - it downloads the
 current version of every tool file (worker script, GUI, app catalog, bloat
