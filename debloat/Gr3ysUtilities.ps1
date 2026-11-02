@@ -417,6 +417,7 @@ function Get-OfficeArchitectureInventory {
                 Name = "Click-to-Run Office ($($products -join ', '))"
                 Edition = $edition
                 Kind = 'ClickToRun'
+                ProductIds = $products
                 Protected = ($products.Count -eq 0 -or $unexpected.Count -gt 0)
                 Source = $path
             }
@@ -443,6 +444,122 @@ function Get-OfficeArchitectureInventory {
             }
         }
     }
+}
+
+function Get-OfficeAppInventory {
+    try {
+        $installations = @(foreach ($entry in @(Get-OfficeArchitectureInventory)) {
+            $ids = @($entry.ProductIds)
+            $isSuite = if ($entry.Kind -eq 'ClickToRun') {
+                [bool]@($ids | Where-Object { $_ -match '^(O365BusinessRetail|O365ProPlusRetail|O365HomePremRetail|HomeStudentRetail|HomeBusinessRetail|PersonalRetail|ProPlus|Standard|Professional)' }).Count
+            } else { $entry.Name -match '(WINWORD|EXCEL|OUTLOOK|MSACCESS|POWERPNT)\.EXE' }
+            [pscustomobject]@{
+                name = $entry.Name
+                architecture = $entry.Edition
+                installationType = $entry.Kind
+                productIds = $ids
+                isSuite = [bool]$isSuite
+            }
+        })
+        [pscustomobject]@{ Status = $(if ($installations.Count) { 'Detected' } else { 'NotDetected' }); Installations = $installations }
+    } catch {
+        [pscustomobject]@{ Status = 'Failed'; Installations = @() }
+    }
+}
+
+function Get-OfficeExportSummary {
+    param($Export)
+    if ($Export.officeDetectionStatus -eq 'Failed') { return 'Office: detection failed; verify before installing.' }
+    $editions = @($Export.officeInstallations | Where-Object { $_ } | ForEach-Object { if ($_.architecture -in @('32', '64')) { "$($_.architecture)-bit" } else { 'bitness unknown' } } | Select-Object -Unique)
+    if ($editions.Count) { return "Office detected: $($editions -join ', ')." }
+    return 'Office: none detected.'
+}
+
+function New-InstalledAppsExport {
+    param([string[]]$WingetIds = @(), [string[]]$ProgramNames = @())
+    $office = Get-OfficeAppInventory
+    [pscustomobject]@{
+        hostname = $env:COMPUTERNAME
+        exportedAt = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        wingetIds = @($WingetIds)
+        installedProgramNames = @($ProgramNames)
+        officeDetectionStatus = $office.Status
+        officeInstallations = @($office.Installations)
+    }
+}
+
+function Test-OfficeSuiteDisplayName {
+    param([string]$Name)
+    return $Name -match '^Microsoft (Office(?:\s|$)|365(?: Apps| Business| Enterprise| Personal| Family| -|$))' -and $Name -notmatch '(Copilot|Hub|Click-to-Run Extensibility|Language Pack|Proofing|MUI)'
+}
+
+function Test-OfficeCatalogInstalled {
+    param([ValidateSet('32', '64')][string]$Edition, $Inventory)
+    if ($Inventory.Status -ne 'Detected') { return $false }
+    foreach ($entry in @($Inventory.Installations)) {
+        if ($entry.installationType -eq 'ClickToRun' -and $entry.architecture -eq $Edition -and
+            @($entry.productIds) -contains 'O365BusinessRetail' -and
+            -not @($entry.productIds | Where-Object { $_ -match '^(O365HomePremRetail|HomeStudentRetail|HomeBusinessRetail|PersonalRetail)$' }).Count) { return $true }
+    }
+    return $false
+}
+
+function Get-OfficeComparePlan {
+    param($Baseline, $Current)
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+    $source = @($Baseline.officeInstallations | Where-Object { $_ })
+    $legacyNames = @($Baseline.installedProgramNames | Where-Object { Test-OfficeSuiteDisplayName $_ })
+    $recommended = $null
+    $lines.Add('Office comparison:')
+    if ($Baseline.officeDetectionStatus -eq 'Failed') {
+        $lines.Add('  Old machine: Office detection failed. Re-export or verify bitness before choosing an install.')
+    } elseif ($source.Count) {
+        foreach ($entry in $source) {
+            $bitness = if ($entry.architecture -in @('32', '64')) { "$($entry.architecture)-bit" } else { 'bitness unknown' }
+            $lines.Add("  Old machine: $($entry.name) - $bitness")
+        }
+        $suites = @($source | Where-Object { $_.isSuite -eq $true })
+        $editions = @($suites | Select-Object -ExpandProperty architecture -Unique)
+        if ($editions.Count -eq 1 -and $editions[0] -in @('32', '64')) { $recommended = [string]$editions[0] }
+        elseif ($suites.Count) { $lines.Add('  Office bitness is unknown or mixed. Choose a 32-bit or 64-bit Office checkbox after reviewing the source PC.') }
+    } elseif ($legacyNames.Count) {
+        foreach ($name in $legacyNames) { $lines.Add("  Old machine: $name - bitness not recorded in this export/list.") }
+        $lines.Add('  Re-export with the updated tool to detect Office bitness, or choose the correct Office checkbox manually.')
+    } else { $lines.Add('  Old machine: no Office installation recorded.') }
+    if ($Current.Status -eq 'Failed') { $lines.Add('  This machine: Office detection failed; installation must be reviewed.') }
+    elseif (@($Current.Installations).Count) {
+        foreach ($entry in @($Current.Installations)) {
+            $bitness = if ($entry.architecture -in @('32', '64')) { "$($entry.architecture)-bit" } else { 'bitness unknown' }
+            $lines.Add("  This machine: $($entry.name) - $bitness")
+        }
+    } else { $lines.Add('  This machine: no Office detected.') }
+    $alreadyHere = $false
+    if ($recommended) {
+        $alreadyHere = Test-OfficeCatalogInstalled -Edition $recommended -Inventory $Current
+        if ($alreadyHere) { $lines.Add("  Matching $recommended-bit Microsoft 365 Apps for business is already installed here.") }
+        else { $lines.Add("  Replacement option: Microsoft 365 Apps for business ($recommended-bit) is checked for Install Selected. Review the product choice before installing.") }
+    }
+    [pscustomobject]@{ Lines = $lines.ToArray(); Edition = $recommended; AlreadyInstalled = $alreadyHere }
+}
+
+function Test-OfficeCatalogRunSucceeded {
+    param([ValidateSet('32', '64')][string]$Edition, $ExitCode, [string]$LogText, $Inventory)
+    # Existing matching Office alone cannot prove this installation succeeded. Require
+    # this worker run's post-install verification of product, architecture and channel.
+    if ($ExitCode -ne 0 -or $LogText -notmatch "Office deployment verified: $Edition-bit\.") { return $false }
+    return (Test-OfficeCatalogInstalled -Edition $Edition -Inventory $Inventory)
+}
+
+function Start-OfficeCatalogInstall {
+    param([ValidateSet('32', '64')][string]$Edition, [string]$LogPath)
+    # Use the existing ODT worker so the selected Office edition is staged, protected
+    # products are checked, and the installed edition is verified. Never infer x86 from
+    # a winget package's own installer architecture.
+    $arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$deployScript`"",
+                   '-SkipDebloat', '-OfficeArchitecture', $Edition, '-NoReboot')
+    if ($Version) { $arguments += @('-Version', $Version) }
+    if ($Commit) { $arguments += @('-Commit', $Commit) }
+    Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -RedirectStandardOutput $LogPath -RedirectStandardError "$LogPath.err" -WindowStyle Hidden -PassThru
 }
 
 function Resolve-OfficeClientEdition {
@@ -1287,9 +1404,9 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
             <Button Name="BtnUpgradeAll" Content="Upgrade All Installed"/>
             <Border Width="14"/>
             <Button Name="BtnExportInstalled" Content="Export Installed Apps..." BorderBrush="{StaticResource AccentBrush}"
-                    ToolTip="Run this on the OLD machine, if you can - saves a small JSON file listing everything winget sees as installed, plus every other installed program's name. Not required: Compare Against List also accepts a plain-text app-name list (e.g. copy-pasted Get-ItemProperty/RMM output), for when the old machine is still in use and this tool can't run there at all."/>
+                    ToolTip="Run this on the OLD machine, if you can - saves a JSON file with installed app names, winget IDs, and detected Office bitness (32-bit or 64-bit). Not required: Compare Against List also accepts a plain-text app-name list (e.g. copy-pasted Get-ItemProperty/RMM output), for when the old machine is still in use and this tool can't run there at all."/>
             <Button Name="BtnCompareBaseline" Content="Compare Against List..." BorderBrush="{StaticResource AccentBrush}"
-                    ToolTip="Run this on the NEW machine. Get the old machine's list here by pairing code (needs an access code; run one command on the old machine and its list arrives by itself), or by loading an Export Installed Apps JSON file or a plain-text list. The dialog also has the command-line export commands for an old machine with no GUI, and Manage Access Codes for handing out guest codes. Then checks the box for every catalog app that's on the old list but missing here, in a Compare Results filter - pick which ones you want, then Install Selected. Apps already installed here are listed as such, and anything with no catalog match is listed for manual install."/>
+                    ToolTip="Run this on the NEW machine. Get the old machine's list here by pairing code (needs an access code; run one command on the old machine and its list arrives by itself), or by loading an Export Installed Apps JSON file or a plain-text list. The dialog also has the command-line export commands for an old machine with no GUI, and Manage Access Codes for handing out guest codes. Then checks the box for every catalog app that's on the old list but missing here, in a Compare Results filter - pick which ones you want, then Install Selected. Office bitness is shown and the matching 32-bit or 64-bit Office replacement is offered. Apps already installed here are listed as such, and anything with no catalog match is listed for manual install."/>
             <Button Name="BtnStopInstall" Content="Stop" Visibility="Collapsed"/>
             <TextBlock Name="InstallStatusText" Text="Idle" VerticalAlignment="Center" Margin="12,0,0,0"/>
           </StackPanel>
@@ -4416,6 +4533,7 @@ foreach ($block in @(Get-AppCatalogLayout -Catalog $catalog)) {
             $cb.Content = $app.name
             $cb.Tag = $app.wingetId
             $cb.MaxWidth = 208
+            if ($app.officeArchitecture) { $cb.ToolTip = "Install $($app.officeArchitecture)-bit Microsoft 365 Apps for business using the Office deployment engine. Requires the corresponding Microsoft 365 license. Existing Office may be removed/reconfigured after confirmation." }
             $row.Children.Add($cb) | Out-Null
 
             if ($app.url) {
@@ -4437,7 +4555,7 @@ foreach ($block in @(Get-AppCatalogLayout -Catalog $catalog)) {
             # Msp defaults to true (business-appropriate) when the catalog entry omits the
             # field - only the handful of entries explicitly flagged "msp": false (Tor
             # Browser, qBittorrent, OpenRGB and similar) are excluded from Business Baseline.
-            $entry = [PSCustomObject]@{ CheckBox = $cb; Row = $row; Name = $app.name; Category = $block.Category; Group = [string]$grp.Name; WingetId = $app.wingetId; DownloadUrl = $app.downloadUrl; DynamicDownloadPage = $app.dynamicDownloadPage; Url = $app.url; SacRisk = [bool]$app.sacRisk; Msp = ($app.msp -ne $false); CompareMatch = $false }
+            $entry = [PSCustomObject]@{ CheckBox = $cb; Row = $row; Name = $app.name; Category = $block.Category; Group = [string]$grp.Name; WingetId = $app.wingetId; OfficeArchitecture = [string]$app.officeArchitecture; DownloadUrl = $app.downloadUrl; DynamicDownloadPage = $app.dynamicDownloadPage; Url = $app.url; SacRisk = [bool]$app.sacRisk; Msp = ($app.msp -ne $false); CompareMatch = $false }
             $script:appEntries.Add($entry)
             # Checked/Unchecked (not Click) since they fire off IsChecked itself changing,
             # regardless of interaction method - Click alone was observed to not reliably
@@ -4563,6 +4681,10 @@ $btnStart.Add_Click({
     # without this a fast double-click launched two workers racing on OEM/Office removal
     # and both writing to gui_run_<same-second-stamp>.out.log.
     if ($script:deployProc -and -not $script:deployProc.HasExited) { return }
+    if ($script:currentQueueEntry -and $script:currentQueueEntry.OfficeArchitecture -and $script:installProc -and -not $script:installProc.HasExited) {
+        [System.Windows.MessageBox]::Show('An Office installation is already running in Install Apps. Wait for it to finish.', 'Office installation running', 'OK', 'Warning') | Out-Null
+        return
+    }
 
     $architecture = [string]$optOfficeArchitecture.SelectedItem.Tag
     $resolvedEdition = $null
@@ -4973,6 +5095,32 @@ function Start-NextInQueue {
     }
     $installStatusText.Text = "$actionWord $($entry.Name)... ($($script:installDone + 1)/$($script:installTotal))"
 
+    if ($entry.OfficeArchitecture) {
+        $runningJobs = @(Get-RunningToolJobs)
+        if ($runningJobs.Count) {
+            $installLogBox.AppendText("Office was not started because another job is running: $($runningJobs -join ', '). Retry Office after it finishes.`r`n")
+            $script:installDone++
+            $script:installFailedCount++
+            $script:installFailedNames.Add($entry.Name)
+            Complete-InstallQueueItem
+            return
+        }
+        $script:installLogFile = Join-Path $workDir "office_install_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').log"
+        $installLogBox.AppendText("=== Installing Microsoft 365 Apps for business ($($entry.OfficeArchitecture)-bit) ===`r`n")
+        try {
+            $script:installProc = Start-OfficeCatalogInstall -Edition $entry.OfficeArchitecture -LogPath $script:installLogFile
+            $script:installProc.Handle | Out-Null
+            $script:installDone++
+        } catch {
+            $installLogBox.AppendText("Office installation could not start: $($_.Exception.Message)`r`n")
+            $script:installDone++
+            $script:installFailedCount++
+            $script:installFailedNames.Add($entry.Name)
+            Complete-InstallQueueItem
+        }
+        return
+    }
+
     # Manual Install Only entries (no winget package, no direct-download URL either -
     # tenant login, license key, or a vendor email is required) have nothing this tool
     # can run. Point at the real product/download page instead of falling through to the
@@ -5065,6 +5213,28 @@ function Start-AppQueue {
     param([string]$Mode)
     $selected = @($script:appEntries | Where-Object { $_.CheckBox.IsChecked })
     if ($selected.Count -eq 0) { return }
+    $officeSelected = @($selected | Where-Object { $_.OfficeArchitecture })
+    if ($officeSelected.Count -gt 1) {
+        $installStatusText.Text = 'Choose one Office edition: 32-bit or 64-bit. Clear the other checkbox.'
+        $installLogBox.Text = $installStatusText.Text
+        return
+    }
+    if ($officeSelected.Count) {
+        if ($Mode -ne 'install') {
+            $installStatusText.Text = 'Office checkboxes support installation. Use Debloat + Office to manage Office removal.'
+            $installLogBox.Text = $installStatusText.Text
+            return
+        }
+        $runningJobs = @(Get-RunningToolJobs)
+        if ($runningJobs.Count) {
+            $installStatusText.Text = "Wait for the running job before installing Office: $($runningJobs -join ', ')"
+            $installLogBox.Text = $installStatusText.Text
+            return
+        }
+        $edition = $officeSelected[0].OfficeArchitecture
+        $answer = [System.Windows.MessageBox]::Show("Install $edition-bit Microsoft 365 Apps for business on THIS machine?`r`n`r`nExisting Office may be removed/reconfigured. Visio/Project are preserved and must have a compatible architecture. The Office engine downloads the selected edition before removing existing Office.", 'Confirm Office installation', 'YesNo', 'Warning')
+        if ($answer -ne 'Yes') { return }
+    }
     # $sacPolicyState (read once at window load) is 1 only when Smart App Control is On
     # and actually enforcing - 0 (off) or 2 (evaluation/audit-only) don't block installs,
     # so there's nothing useful to warn about in those states.
@@ -6774,12 +6944,14 @@ function Import-CompareBaselineFromFile {
     $baseline = $null
     try {
         $parsedJson = $rawText | ConvertFrom-Json -ErrorAction Stop
-        if ($parsedJson.installedProgramNames -or $parsedJson.wingetIds) {
+        if ($parsedJson.installedProgramNames -or $parsedJson.wingetIds -or $parsedJson.officeDetectionStatus -or $parsedJson.officeInstallations) {
             $baseline = [PSCustomObject]@{
                 hostname = if ($parsedJson.hostname) { $parsedJson.hostname } else { Split-Path -Leaf $dialog.FileName }
                 exportedAt = if ($parsedJson.exportedAt) { $parsedJson.exportedAt } else { (Get-Item $dialog.FileName).LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss') }
                 wingetIds = @($parsedJson.wingetIds)
                 installedProgramNames = @($parsedJson.installedProgramNames)
+                officeDetectionStatus = $parsedJson.officeDetectionStatus
+                officeInstallations = @($parsedJson.officeInstallations)
             }
         }
     } catch {}
@@ -6994,12 +7166,8 @@ $timer.Add_Tick({
                 if ($script:installPendingAction -eq 'export') {
                     $script:installPendingAction = $null
                     $programNames = @(Get-UninstallEntries | Select-Object -ExpandProperty DisplayName -Unique | Sort-Object)
-                    $export = [PSCustomObject]@{
-                        hostname = $env:COMPUTERNAME
-                        exportedAt = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-                        wingetIds = @($installedIds)
-                        installedProgramNames = $programNames
-                    }
+                    $export = New-InstalledAppsExport -WingetIds @($installedIds) -ProgramNames $programNames
+                    $officeSummary = Get-OfficeExportSummary -Export $export
                     $saveDialog = New-Object Microsoft.Win32.SaveFileDialog
                     $saveDialog.FileName = "installed-apps_$(Get-MachineTag).json"
                     $saveDialog.InitialDirectory = [Environment]::GetFolderPath('Desktop')
@@ -7007,8 +7175,9 @@ $timer.Add_Tick({
                     if ($saveDialog.ShowDialog()) {
                         try {
                             ($export | ConvertTo-Json -Depth 4) | Set-Content -Path $saveDialog.FileName -Encoding UTF8
-                            $installStatusText.Text = "Exported $($export.wingetIds.Count) winget app(s) and $($programNames.Count) program name(s) to $($saveDialog.FileName)"
-                            [System.Windows.MessageBox]::Show("Saved to $($saveDialog.FileName)`r`n`r`nRun Compare Against Export on the new machine and point it at this file.", 'Gr3y Tools', 'OK', 'Information') | Out-Null
+                            $installStatusText.Text = "Exported $($export.wingetIds.Count) winget app(s), $($programNames.Count) names. $officeSummary"
+                            $installLogBox.AppendText("$officeSummary`r`n")
+                            [System.Windows.MessageBox]::Show("Saved to $($saveDialog.FileName)`r`n$officeSummary`r`n`r`nRun Compare Against List on the new machine and point it at this file.", 'Gr3y Tools', 'OK', 'Information') | Out-Null
                         } catch {
                             [System.Windows.MessageBox]::Show("Could not save: $($_.Exception.Message)", 'Gr3y Tools', 'OK', 'Error') | Out-Null
                         }
@@ -7034,6 +7203,8 @@ $timer.Add_Tick({
                     # never a wrong auto-check, so this tradeoff was kept deliberately
                     # simple rather than chasing a token/synonym matcher for marginal gain.
                     $currentProgramNames = @(Get-UninstallEntries | Select-Object -ExpandProperty DisplayName)
+                    $currentOffice = Get-OfficeAppInventory
+                    $officePlan = Get-OfficeComparePlan -Baseline $baseline -Current $currentOffice
                     $currentNameSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
                     foreach ($n in $currentProgramNames) { [void]$currentNameSet.Add($n) }
 
@@ -7063,19 +7234,28 @@ $timer.Add_Tick({
                             $entry.CheckBox.Content = $entry.Name
                         }
                         $entry.CompareMatch = $false
-                        $onBaseline = ($entry.WingetId -and ($baseline.wingetIds -contains $entry.WingetId)) -or
+                        if ($entry.OfficeArchitecture) {
+                            $onBaseline = $officePlan.Edition -eq $entry.OfficeArchitecture
+                            if ($officePlan.Edition -and -not $onBaseline) { $entry.CheckBox.IsChecked = $false }
+                        } else {
+                            $onBaseline = ($entry.WingetId -and ($baseline.wingetIds -contains $entry.WingetId)) -or
                                       [bool]($baseline.installedProgramNames | Where-Object { $_ -and (($_ -like "*$($entry.Name)*") -or (Test-DotNetRuntimeNameMatch -CatalogName $entry.Name -CandidateName $_)) } | Select-Object -First 1)
+                        }
                         if (-not $onBaseline) { continue }
                         [void]$accountedCatalogNames.Add($entry.Name)
-                        $alreadyHere = ($entry.WingetId -and $installedIds.Contains($entry.WingetId)) -or
+                        if ($entry.OfficeArchitecture) {
+                            $alreadyHere = Test-OfficeCatalogInstalled -Edition $entry.OfficeArchitecture -Inventory $currentOffice
+                        } else {
+                            $alreadyHere = ($entry.WingetId -and $installedIds.Contains($entry.WingetId)) -or
                                        [bool]($currentProgramNames | Where-Object { $_ -and (($_ -like "*$($entry.Name)*") -or (Test-DotNetRuntimeNameMatch -CatalogName $entry.Name -CandidateName $_)) } | Select-Object -First 1)
+                        }
                         if ($alreadyHere) {
                             $alreadyInstalledNames.Add($entry.Name)
                             continue
                         }
                         $entry.CheckBox.IsChecked = $true
                         $entry.CheckBox.Foreground = $accentBrush
-                        $entry.CheckBox.Content = "$($entry.Name) (missing - on old machine)"
+                        $entry.CheckBox.Content = if ($entry.OfficeArchitecture) { $entry.Name } else { "$($entry.Name) (missing - on old machine)" }
                         $entry.CompareMatch = $true
                         [void]$matchedCatalogNames.Add($entry.Name)
                         $matchedCount++
@@ -7089,6 +7269,7 @@ $timer.Add_Tick({
                     foreach ($name in @($baseline.installedProgramNames)) {
                         if (-not $name) { continue }
                         if ($currentNameSet.Contains($name)) { continue }
+                        if ($officePlan.Edition -and (Test-OfficeSuiteDisplayName $name)) { continue }
                         # Catalog names are short ("Firefox") and registry DisplayNames are
                         # the full product name ("Mozilla Firefox") - they're different
                         # strings for the same app, so an exact-match check here would never
@@ -7114,6 +7295,8 @@ $timer.Add_Tick({
                     # view reads as "this is broken," not "good news, nothing missing."
                     $lines = New-Object System.Collections.Generic.List[string]
                     $lines.Add("Compared against $($baseline.hostname) (exported $($baseline.exportedAt)).")
+                    foreach ($officeLine in $officePlan.Lines) { $lines.Add($officeLine) }
+                    $lines.Add('')
                     if ($matchedCount -gt 0) {
                         $catCompareResultsBtn.Visibility = 'Visible'
                         $script:activeCategory = 'Compare Results'
@@ -7149,7 +7332,21 @@ $timer.Add_Tick({
                     # Windows Terminal/VC++ redists/.NET runtimes don't end up pre-selected for
                     # Uninstall Selected.
                     $foundCount = 0
+                    $currentOffice = Get-OfficeAppInventory
+                    $scanOfficeExport = [pscustomobject]@{ officeDetectionStatus = $currentOffice.Status; officeInstallations = $currentOffice.Installations }
+                    $installLogBox.AppendText("$(Get-OfficeExportSummary $scanOfficeExport)`r`n")
                     foreach ($entry in $script:appEntries) {
+                        if ($entry.OfficeArchitecture) {
+                            if (Test-OfficeCatalogInstalled -Edition $entry.OfficeArchitecture -Inventory $currentOffice) {
+                                $entry.CheckBox.Foreground = $greenBrush
+                                $entry.CheckBox.Content = "$($entry.Name) (installed)"
+                                $foundCount++
+                            } else {
+                                $entry.CheckBox.ClearValue([System.Windows.Controls.Control]::ForegroundProperty)
+                                $entry.CheckBox.Content = $entry.Name
+                            }
+                            continue
+                        }
                         if (-not $entry.WingetId) { continue }
                         if ($installedIds.Contains($entry.WingetId)) {
                             $entry.CheckBox.Foreground = $greenBrush
@@ -7202,6 +7399,14 @@ $timer.Add_Tick({
 
                 $exitCode = $null
                 try { $exitCode = $script:installProc.ExitCode } catch {}
+                if ($script:currentQueueEntry -and $script:currentQueueEntry.OfficeArchitecture) {
+                    $officeAfterInstall = Get-OfficeAppInventory
+                    if (-not (Test-OfficeCatalogRunSucceeded -Edition $script:currentQueueEntry.OfficeArchitecture -ExitCode $exitCode -LogText $tail -Inventory $officeAfterInstall)) {
+                        $exitCode = 1
+                        $installLogBox.AppendText("Office setup ended, but the selected $($script:currentQueueEntry.OfficeArchitecture)-bit business edition was not verified. Review the Office log before handing over this machine.`r`n")
+                    }
+                    try { Update-OfficeArchitectureStatus } catch {}
+                }
                 if ($script:currentQueueEntry -and $exitCode -ne 0) {
                     $script:installFailedCount++
                     $script:installFailedNames.Add($script:currentQueueEntry.Name)

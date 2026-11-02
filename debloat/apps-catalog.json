@@ -27,6 +27,8 @@
     {"name": "SumatraPDF", "category": "Documents", "wingetId": "SumatraPDF.SumatraPDF", "url": "https://www.sumatrapdfreader.org/"},
     {"name": "PDF24 Creator", "category": "Documents", "wingetId": "geeksoftwareGmbH.PDF24Creator", "url": "https://www.pdf24.org/"},
     {"name": "LibreOffice", "category": "Documents", "wingetId": "TheDocumentFoundation.LibreOffice", "url": "https://www.libreoffice.org/"},
+    {"name": "Microsoft 365 Apps (32-bit)", "category": "Documents", "officeArchitecture": "32", "url": "https://www.microsoft.com/microsoft-365/business"},
+    {"name": "Microsoft 365 Apps (64-bit)", "category": "Documents", "officeArchitecture": "64", "url": "https://www.microsoft.com/microsoft-365/business"},
 
     {"name": "Zoom", "category": "Communications", "wingetId": "Zoom.Zoom", "url": "https://zoom.us/"},
     {"name": "Slack", "category": "Communications", "wingetId": "SlackTechnologies.Slack", "url": "https://slack.com/"},

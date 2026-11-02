@@ -11,6 +11,16 @@ GitHub Releases `v1.0.0`-`v1.0.6` predate this model and are not maintained.)
 
 ### Added (2026-11-01)
 
+- Include detected Office bitness and product IDs in both GUI and command-line app
+  exports, including pairing transfers. Compare shows source/current Office bitness,
+  distinguishes a 32-bit source from installed 64-bit Office, and offers the matching
+  Microsoft 365 Apps replacement checkbox. Old exports report missing bitness rather
+  than guessing it.
+- Add 32-bit and 64-bit Microsoft 365 Apps checkboxes under Install Apps / Documents.
+  Install Selected uses the existing Office deployment engine, confirms Office
+  changes, blocks contradictory selections/concurrent jobs, and verifies the chosen
+  business edition after installation.
+
 - Select Auto, 32-bit (accounting add-ins), or 64-bit Office in the native GUI and
   alternative web panel, or pass `-OfficeArchitecture Auto|32|64` to the worker.
   Auto preserves detected Office bitness and uses Windows bitness on a clean PC.

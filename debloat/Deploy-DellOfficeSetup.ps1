@@ -3326,6 +3326,7 @@ function Get-OfficeArchitectureInventory {
                 Name = "Click-to-Run Office ($($products -join ', '))"
                 Edition = $edition
                 Kind = 'ClickToRun'
+                ProductIds = $products
                 Protected = ($products.Count -eq 0 -or $unexpected.Count -gt 0)
                 Source = $path
             }
@@ -3619,6 +3620,7 @@ function Install-Microsoft365Business {
         return
     }
     if (Test-OfficeBusinessConfiguration -Configuration $config -Channel $OfficeChannel -Edition $script:officeClientEdition) {
+        Write-Log "Office deployment verified: $script:officeClientEdition-bit."
         Write-Log 'Install complete. Activation happens on first app launch when the user signs in with their Microsoft 365 business account.'
     } else {
         Write-Log 'Office setup finished, but the requested configuration was not verified. Review the messages above before handing over the laptop.' 'WARN'
