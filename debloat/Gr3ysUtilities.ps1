@@ -756,7 +756,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
 [xml]$xamlDoc = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Gr3yLabs" Height="820" Width="1150" MinHeight="640" MinWidth="980"
+        Title="Gr3yLabs" Height="640" Width="960" MinHeight="480" MinWidth="860"
         WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize"
         AllowsTransparency="False" Background="#232629"
         FontFamily="Segoe UI" FontSize="12"
@@ -874,11 +874,11 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
     </Style>
 
     <Style x:Key="NavButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-      <Setter Property="Width" Value="110"/>
+      <Setter Property="MinWidth" Value="70"/>
+      <Setter Property="Padding" Value="8,2"/>
       <Setter Property="Background" Value="{StaticResource BgBrush}"/>
       <Setter Property="BorderBrush" Value="{StaticResource TextBrush}"/>
       <Setter Property="Margin" Value="0,0,6,0"/>
-      <Setter Property="Padding" Value="4,2"/>
       <Style.Triggers>
         <Trigger Property="Tag" Value="selected">
           <Setter Property="Background" Value="{StaticResource NavSelectedBrush}"/>
@@ -887,7 +887,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
     </Style>
 
     <Style x:Key="WindowButton" TargetType="Button">
-      <Setter Property="Width" Value="46"/>
+      <Setter Property="Width" Value="36"/>
       <Setter Property="Height" Value="44"/>
       <Setter Property="Background" Value="Transparent"/>
       <Setter Property="BorderThickness" Value="0"/>
@@ -1163,7 +1163,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
       </Grid.ColumnDefinitions>
 
       <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-        <Image Name="LogoImage" Width="44" Height="44" Margin="14,0,16,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+        <Image Name="LogoImage" Width="38" Height="38" Margin="10,0,10,0" VerticalAlignment="Center" Visibility="Collapsed"/>
       </StackPanel>
 
       <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
@@ -1211,7 +1211,8 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
             <RowDefinition Height="*"/>
           </Grid.RowDefinitions>
 
-          <Grid Grid.Row="0">
+          <ScrollViewer Grid.Row="0" Name="DebloatOptionsScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+          <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="3*"/>
               <ColumnDefinition Width="10"/>
@@ -1334,14 +1335,15 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
               </StackPanel>
             </Border>
           </Grid>
+          </ScrollViewer>
 
-          <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,10,0,0">
+          <WrapPanel Grid.Row="1" Margin="0,10,0,0">
             <Button Name="BtnScan" Content="Scan This Machine" MinWidth="140"/>
             <Button Name="BtnStart" Content="Start" MinWidth="110" BorderBrush="{StaticResource GreenBrush}"/>
             <Button Name="BtnStop" Content="Stop" MinWidth="90" BorderBrush="{StaticResource RedBrush}" Visibility="Collapsed"/>
             <Button Name="BtnDownloadLog" Content="Download Log" MinWidth="120" Visibility="Collapsed"/>
             <Button Name="BtnReboot" Content="Reboot Now" MinWidth="110" BorderBrush="{StaticResource YellowBrush}" Visibility="Collapsed"/>
-          </StackPanel>
+          </WrapPanel>
 
           <Border Grid.Row="2" Style="{StaticResource Panel}" Padding="10,5" Margin="0,10,0,0">
             <StackPanel Orientation="Horizontal">
@@ -1372,49 +1374,49 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
 
       <TabItem Header="Install Apps">
         <DockPanel>
-          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+          <WrapPanel DockPanel.Dock="Top" Name="InstallFilters" Margin="0,0,0,8">
             <Button Name="CatBusinessBaseline" Content="Business Baseline"
-                    ToolTip="Default view - hides apps not generally appropriate for a client machine (Tor Browser, qBittorrent, OpenRGB, and similar). Pick All to see everything."/>
-            <Button Name="CatAll" Content="All"/>
-            <Button Name="CatBrowsers" Content="Browsers"/>
-            <Button Name="CatMsTools" Content="Microsoft Tools"/>
-            <Button Name="CatDocuments" Content="Documents"/>
-            <Button Name="CatCommunications" Content="Communications"/>
-            <Button Name="CatUtilities" Content="Utilities"/>
-            <Button Name="CatNonSilent" Content="Non-Silent Installs"/>
+                    ToolTip="Default view - hides apps not generally appropriate for a client machine (Tor Browser, qBittorrent, OpenRGB, and similar). Pick All to see everything." Margin="0,0,6,4"/>
+            <Button Name="CatAll" Content="All" Margin="0,0,6,4"/>
+            <Button Name="CatBrowsers" Content="Browsers" Margin="0,0,6,4"/>
+            <Button Name="CatMsTools" Content="Microsoft Tools" Margin="0,0,6,4"/>
+            <Button Name="CatDocuments" Content="Documents" Margin="0,0,6,4"/>
+            <Button Name="CatCommunications" Content="Communications" Margin="0,0,6,4"/>
+            <Button Name="CatUtilities" Content="Utilities" Margin="0,0,6,4"/>
+            <Button Name="CatNonSilent" Content="Non-Silent Installs" Margin="0,0,6,4"/>
             <Button Name="CatManualOnly" Content="Manual Install Only"
-                    ToolTip="No automated installer exists for these (tenant login, license key, or vendor email required) - the (?) link opens the real product/download page so you can grab it yourself."/>
+                    ToolTip="No automated installer exists for these (tenant login, license key, or vendor email required) - the (?) link opens the real product/download page so you can grab it yourself." Margin="0,0,6,4"/>
             <Button Name="CatCompareResults" Content="Compare Results" BorderBrush="{StaticResource AccentBrush}" Visibility="Collapsed"
-                    ToolTip="Shows only the apps Compare Against Export found missing on this machine - pick which ones to install, then Install Selected."/>
+                    ToolTip="Shows only the apps Compare Against Export found missing on this machine - pick which ones to install, then Install Selected." Margin="0,0,6,4"/>
             <Border Width="12"/>
-            <Button Name="BtnSelectAll" Content="Select All"/>
-            <Button Name="BtnClearSelection" Content="Clear Selection"/>
+            <Button Name="BtnSelectAll" Content="Select All" Margin="0,0,6,4"/>
+            <Button Name="BtnClearSelection" Content="Clear Selection" Margin="0,0,6,4"/>
             <TextBlock Name="SelectedCountText" Text="Selected: 0" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{StaticResource MutedBrush}"/>
             <Ellipse Name="WinGetStatusDot" Width="8" Height="8" Fill="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="16,0,5,0"/>
             <TextBlock Name="WinGetStatusText" Text="Checking winget..." VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
-            <Button Name="BtnInstallWinGet" Content="Install winget" Margin="10,0,0,0"
+            <Button Name="BtnInstallWinGet" Content="Install winget" Margin="10,0,0,4"
                     Background="{StaticResource AccentBrush}" Foreground="{StaticResource BgBrush}"
                     Visibility="Collapsed"
                     ToolTip="Runs Install-Module Microsoft.WinGet.Client -Force; Repair-WinGetPackageManager - needs internet access."/>
-          </StackPanel>
-          <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
-            <Button Name="BtnCheckInstalled" Content="Scan" BorderBrush="{StaticResource OrangeBrush}" ToolTip="Scan the catalog against what's actually installed on this machine and check the boxes for anything found - ready to hand off to Uninstall Selected."/>
-            <Button Name="BtnInstallSelected" Content="Install Selected" BorderBrush="{StaticResource GreenBrush}"/>
-            <Button Name="BtnUninstallSelected" Content="Uninstall Selected" BorderBrush="{StaticResource RedBrush}"/>
-            <Button Name="BtnUpgradeAll" Content="Upgrade All Installed"/>
+          </WrapPanel>
+          <WrapPanel DockPanel.Dock="Bottom" Name="InstallActions" Margin="0,8,0,0">
+            <Button Name="BtnCheckInstalled" Content="Scan" BorderBrush="{StaticResource OrangeBrush}" ToolTip="Scan the catalog against what's actually installed on this machine and check the boxes for anything found - ready to hand off to Uninstall Selected." Margin="0,0,6,4"/>
+            <Button Name="BtnInstallSelected" Content="Install Selected" BorderBrush="{StaticResource GreenBrush}" Margin="0,0,6,4"/>
+            <Button Name="BtnUninstallSelected" Content="Uninstall Selected" BorderBrush="{StaticResource RedBrush}" Margin="0,0,6,4"/>
+            <Button Name="BtnUpgradeAll" Content="Upgrade All Installed" Margin="0,0,6,4"/>
             <Border Width="14"/>
             <Button Name="BtnExportInstalled" Content="Export Installed Apps..." BorderBrush="{StaticResource AccentBrush}"
-                    ToolTip="Run this on the OLD machine, if you can - saves a JSON file with installed app names, winget IDs, and detected Office bitness (32-bit or 64-bit). Not required: Compare Against List also accepts a plain-text app-name list (e.g. copy-pasted Get-ItemProperty/RMM output), for when the old machine is still in use and this tool can't run there at all."/>
+                    ToolTip="Run this on the OLD machine, if you can - saves a JSON file with installed app names, winget IDs, and detected Office bitness (32-bit or 64-bit). Not required: Compare Against List also accepts a plain-text app-name list (e.g. copy-pasted Get-ItemProperty/RMM output), for when the old machine is still in use and this tool can't run there at all." Margin="0,0,6,4"/>
             <Button Name="BtnCompareBaseline" Content="Compare Against List..." BorderBrush="{StaticResource AccentBrush}"
-                    ToolTip="Run this on the NEW machine. Get the old machine's list here by pairing code (needs an access code; run one command on the old machine and its list arrives by itself), or by loading an Export Installed Apps JSON file or a plain-text list. The dialog also has the command-line export commands for an old machine with no GUI, and Manage Access Codes for handing out guest codes. Then checks the box for every catalog app that's on the old list but missing here, in a Compare Results filter - pick which ones you want, then Install Selected. Office bitness is shown and the matching 32-bit or 64-bit Office replacement is offered. Apps already installed here are listed as such, and anything with no catalog match is listed for manual install."/>
-            <Button Name="BtnStopInstall" Content="Stop" Visibility="Collapsed"/>
-            <TextBlock Name="InstallStatusText" Text="Idle" VerticalAlignment="Center" Margin="12,0,0,0"/>
-          </StackPanel>
+                    ToolTip="Run this on the NEW machine. Get the old machine's list here by pairing code (needs an access code; run one command on the old machine and its list arrives by itself), or by loading an Export Installed Apps JSON file or a plain-text list. The dialog also has the command-line export commands for an old machine with no GUI, and Manage Access Codes for handing out guest codes. Then checks the box for every catalog app that's on the old list but missing here, in a Compare Results filter - pick which ones you want, then Install Selected. Office bitness is shown and the matching 32-bit or 64-bit Office replacement is offered. Apps already installed here are listed as such, and anything with no catalog match is listed for manual install." Margin="0,0,6,4"/>
+            <Button Name="BtnStopInstall" Content="Stop" Visibility="Collapsed" Margin="0,0,6,4"/>
+            <TextBlock Name="InstallStatusText" Text="Idle" TextWrapping="Wrap" MaxWidth="520" VerticalAlignment="Center" Margin="12,0,0,0"/>
+          </WrapPanel>
           <Grid>
             <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="*" MinWidth="300"/>
+              <ColumnDefinition Width="2*" MinWidth="260"/>
               <ColumnDefinition Width="6"/>
-              <ColumnDefinition Width="340" MinWidth="220"/>
+              <ColumnDefinition Width="*" MinWidth="220"/>
             </Grid.ColumnDefinitions>
             <Border Grid.Column="0" Style="{StaticResource Panel}">
               <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -1430,11 +1432,12 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
       </TabItem>
 
       <TabItem Header="Config">
-        <Grid>
+        <Grid Name="ConfigLayout">
+          <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="0"/></Grid.RowDefinitions>
           <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="5*" MinWidth="700"/>
+            <ColumnDefinition Width="5*" MinWidth="480"/>
             <ColumnDefinition Width="10"/>
-            <ColumnDefinition Width="3*" MinWidth="300"/>
+            <ColumnDefinition Width="3*" MinWidth="220"/>
           </Grid.ColumnDefinitions>
           <Border Grid.Column="0" Style="{StaticResource Panel}">
             <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -1522,7 +1525,7 @@ $tweaksCatalog = (Get-Content -Path $tweaksJsonPath -Raw | ConvertFrom-Json).twe
               </StackPanel>
             </ScrollViewer>
           </Border>
-          <Grid Grid.Column="2">
+          <Grid Grid.Column="2" Name="ConfigLogPanel">
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="Auto"/>
@@ -1779,26 +1782,65 @@ if (Test-Path $logoPath) {
     } catch {}
 }
 
-# The XAML's Height="820"/Width="1150" isn't clamped to the work area - on a 1366x768
-# laptop, or a 13-inch FHD panel at 150% scaling (a ~700px-tall effective work area), that
-# puts the Install Apps action bar and window controls off-screen with no way to reach
-# them.
-$workArea = [System.Windows.SystemParameters]::WorkArea
-if ($workArea.Height -lt 840) {
-    $window.WindowState = 'Maximized'
-} else {
-    # Also grow on a bigger display, not just shrink on a small one - the XAML default
-    # only ever got smaller here before, so on a big/wide monitor the window opened
-    # noticeably smaller than the screen and had to be resized by hand every time.
-    # Capped well short of the actual work area (never Maximized/fullscreen by this path -
-    # that's the branch above, for small screens only) - just a roomier default.
-    $targetHeight = [Math]::Min($workArea.Height - 40, 1000)
-    $targetWidth = [Math]::Min($workArea.Width - 40, 1600)
-    if ($targetHeight -gt $window.Height) { $window.Height = $targetHeight }
-    if ($targetWidth -gt $window.Width) { $window.Width = $targetWidth }
-    if ($window.Height -gt $workArea.Height - 20) { $window.Height = $workArea.Height - 20 }
-    if ($window.Width -gt $workArea.Width - 20) { $window.Width = $workArea.Width - 20 }
+function Get-MainWindowSize {
+    param([double]$WorkAreaWidth, [double]$WorkAreaHeight)
+    # WorkArea uses WPF device-independent units, so Windows display scaling and
+    # the taskbar are already accounted for. Keep a margin instead of maximizing.
+    $width = [Math]::Min(960, [Math]::Max(1, $WorkAreaWidth - 32))
+    $height = [Math]::Min(640, [Math]::Max(1, $WorkAreaHeight - 32))
+    [pscustomobject]@{ Width = $width; Height = $height; MinWidth = [Math]::Min(860, $width); MinHeight = [Math]::Min(480, $height) }
 }
+
+function Set-MainWindowLayout {
+    param($Window)
+    $width = if ($Window.ActualWidth -gt 0) { $Window.ActualWidth } else { $Window.Width }
+    $height = if ($Window.ActualHeight -gt 0) { $Window.ActualHeight } else { $Window.Height }
+    $Window.FindName('DebloatOptionsScroll').MaxHeight = [Math]::Max(100, $height - 290)
+
+    $sacText = $Window.FindName('SacStatusText')
+    $fullState = $sacText.Text -replace '^SAC:', 'Smart App Control:'
+    $sacText.ToolTip = $fullState
+    $sacText.Text = if ($width -lt 1100) { $fullState -replace '^Smart App Control:', 'SAC:' } else { $fullState }
+
+    $grid = $Window.FindName('ConfigLayout')
+    $log = $Window.FindName('ConfigLogPanel')
+    $mode = if ($width -lt 1100) { 'compact' } else { 'wide' }
+    if ($grid.Tag -eq $mode) { return }
+    $grid.Tag = $mode
+    if ($mode -eq 'compact') {
+        $grid.ColumnDefinitions[0].MinWidth = 0
+        $grid.ColumnDefinitions[2].MinWidth = 0
+        $grid.ColumnDefinitions[0].Width = [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star)
+        $grid.ColumnDefinitions[1].Width = [Windows.GridLength]::new(0)
+        $grid.ColumnDefinitions[2].Width = [Windows.GridLength]::new(0)
+        $grid.RowDefinitions[0].Height = [Windows.GridLength]::new(2, [Windows.GridUnitType]::Star)
+        $grid.RowDefinitions[1].Height = [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star)
+        [Windows.Controls.Grid]::SetColumn($log, 0)
+        [Windows.Controls.Grid]::SetRow($log, 1)
+        $log.Margin = [Windows.Thickness]::new(0, 8, 0, 0)
+    } else {
+        $grid.ColumnDefinitions[0].Width = [Windows.GridLength]::new(5, [Windows.GridUnitType]::Star)
+        $grid.ColumnDefinitions[0].MinWidth = 480
+        $grid.ColumnDefinitions[1].Width = [Windows.GridLength]::new(10)
+        $grid.ColumnDefinitions[2].Width = [Windows.GridLength]::new(3, [Windows.GridUnitType]::Star)
+        $grid.ColumnDefinitions[2].MinWidth = 220
+        $grid.RowDefinitions[0].Height = [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star)
+        $grid.RowDefinitions[1].Height = [Windows.GridLength]::new(0)
+        [Windows.Controls.Grid]::SetColumn($log, 2)
+        [Windows.Controls.Grid]::SetRow($log, 0)
+        $log.Margin = [Windows.Thickness]::new(0)
+    }
+}
+
+$workArea = [System.Windows.SystemParameters]::WorkArea
+$initialSize = Get-MainWindowSize -WorkAreaWidth $workArea.Width -WorkAreaHeight $workArea.Height
+$window.MinWidth = $initialSize.MinWidth
+$window.MinHeight = $initialSize.MinHeight
+$window.Width = $initialSize.Width
+$window.Height = $initialSize.Height
+Set-MainWindowLayout -Window $window
+$window.Add_SizeChanged({ Set-MainWindowLayout -Window $window })
+$window.Add_Loaded({ Set-MainWindowLayout -Window $window })
 
 # --- Tab 1 controls ---
 $optDryRun = $window.FindName('OptDryRun')

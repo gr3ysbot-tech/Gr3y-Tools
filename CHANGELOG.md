@@ -9,6 +9,15 @@ GitHub Releases `v1.0.0`-`v1.0.6` predate this model and are not maintained.)
 
 ## [Unreleased]
 
+### Changed (2026-11-01)
+
+- Open the main window at 960 x 640 in a normal resizable state. Remove automatic
+  maximization on laptops and automatic enlargement on bigger displays. Clamp the
+  initial size and minimum bounds to the taskbar/scaling-aware desktop work area.
+- Wrap Install Apps filters/actions, keep Debloat options scrollable above visible
+  job controls/logs, and stack the Config log below its settings at laptop widths.
+  Compact the header while retaining readable text and manual maximize/resize.
+
 ### Added (2026-11-01)
 
 - Include detected Office bitness and product IDs in both GUI and command-line app
